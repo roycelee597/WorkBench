@@ -1,0 +1,67 @@
+name: 提交分工作台
+description: 提交分工作台资料以便后续人工审核
+title: "[工作台] "
+body:
+  - type: input
+    id: workbench-id
+    attributes:
+      label: 分工作台 ID
+      placeholder: com.example.workbench
+    validations:
+      required: true
+  - type: input
+    id: name-version
+    attributes:
+      label: 名称与版本
+    validations:
+      required: true
+  - type: input
+    id: author
+    attributes:
+      label: 作者
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 功能说明
+    validations:
+      required: true
+  - type: input
+    id: repository
+    attributes:
+      label: 源码仓库链接
+    validations:
+      required: true
+  - type: input
+    id: download
+    attributes:
+      label: 发布包链接
+      description: 提供 GitHub Release 或其他可访问的 .wbpkg 下载链接。
+    validations:
+      required: true
+  - type: textarea
+    id: manifest
+    attributes:
+      label: manifest.json
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: permissions
+    attributes:
+      label: 申请权限及其用途
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: 许可证
+    validations:
+      required: true
+  - type: input
+    id: min-host-version
+    attributes:
+      label: 最低宿主版本
+    validations:
+      required: true

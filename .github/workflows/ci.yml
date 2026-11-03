@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows CI
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 安装项目指定的 pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+          cache: false
+
+      - name: 安装 Node.js 24 LTS 并缓存 pnpm
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 检查代码规范
+        run: pnpm lint
+
+      - name: 检查类型
+        run: pnpm typecheck
+
+      - name: 运行单元测试
+        run: pnpm test
+
+      - name: 编译 Windows 桌面应用
+        run: pnpm --filter desktop tauri build --no-bundle
