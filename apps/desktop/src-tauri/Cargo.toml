@@ -1,0 +1,26 @@
+[package]
+name = "workbench"
+version = "0.1.0"
+description = "模块化工作台桌面主程序"
+authors = ["Royce Lee"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+# Windows 上库与可执行文件使用不同名称，避免 Cargo 产物冲突。
+name = "workbench_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
