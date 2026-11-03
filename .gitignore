@@ -1,0 +1,69 @@
+# ===== Node / pnpm =====
+node_modules/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+.eslintcache
+
+# ===== 构建产物 (Vite / 包) =====
+dist/
+dist-ssr/
+build/
+out/
+coverage/
+*.local
+
+# ===== Rust / Tauri =====
+target/
+**/src-tauri/target/
+**/src-tauri/gen/schemas/
+# 移动端生成的工程（Phase 6 再决定是否提交）
+**/src-tauri/gen/android/
+**/src-tauri/gen/apple/
+
+# ===== 打包产物（安装包通过 GitHub Releases 发布，不进仓库）=====
+*.msi
+*.exe
+*.dmg
+*.app
+*.apk
+*.aab
+*.ipa
+*.wbpkg
+*.zip
+
+# ===== 本地数据 / 数据库 =====
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# ===== 密钥与环境变量（绝对不能提交）=====
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+.tauri/
+**/tauri-signing*.key
+
+# ===== 编辑器 / 系统 =====
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== 日志 =====
+logs/
+*.log
