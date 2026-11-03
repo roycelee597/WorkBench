@@ -6,6 +6,8 @@ WorkBench 是一个以本地数据为中心的模块化桌面工作台，使用 
 当前处于 **Phase 0：仓库骨架**，主程序显示一个最小中文页面，SDK、共享 UI、manifest 和综合工作台均为空包。
 项目的唯一设计依据是 [ARCHITECTURE.md](ARCHITECTURE.md)，开发规则见 [AGENTS.md](AGENTS.md)。
 
+![Windows 桌面骨架运行截图](docs/images/desktop-scaffold.jpg)
+
 ## 目录
 
 ```text
