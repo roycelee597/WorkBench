@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: 检出代码
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: 安装项目指定的 pnpm
         uses: pnpm/action-setup@v6
