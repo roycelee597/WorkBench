@@ -175,6 +175,7 @@ workbench/
 CREATE TABLE memos (
   id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   deleted_at INTEGER, device_id TEXT NOT NULL,
+  deletion_group_id TEXT, purged_at INTEGER, -- 联动删除分组、已清空内容标记
   title TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL DEFAULT '',        -- Markdown
   pinned INTEGER NOT NULL DEFAULT 0,
@@ -184,6 +185,7 @@ CREATE TABLE memos (
 CREATE TABLE events (                       -- 日程
   id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   deleted_at INTEGER, device_id TEXT NOT NULL,
+  deletion_group_id TEXT, purged_at INTEGER,
   title TEXT NOT NULL,
   notes TEXT NOT NULL DEFAULT '',
   start_at INTEGER NOT NULL,
@@ -192,12 +194,17 @@ CREATE TABLE events (                       -- 日程
   timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
   rrule TEXT,                               -- 重复规则（RFC 5545），NULL 表示不重复
   color TEXT,
-  source_workbench TEXT                     -- 由哪个工作台创建
+  source_workbench TEXT,                    -- 由哪个工作台创建
+  exdates TEXT NOT NULL DEFAULT '[]',        -- 原实例开始时间（毫秒）数组
+  recurrence_id TEXT REFERENCES events(id),
+  original_start_at INTEGER,
+  remind_before_minutes INTEGER             -- NULL = 不提醒，0 = 准时
 );
 
 CREATE TABLE reminders (                    -- 提醒事项
   id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   deleted_at INTEGER, device_id TEXT NOT NULL,
+  deletion_group_id TEXT, purged_at INTEGER,
   title TEXT NOT NULL,
   notes TEXT NOT NULL DEFAULT '',
   due_at INTEGER,                           -- 到点时间，NULL 表示只是待办
@@ -207,8 +214,13 @@ CREATE TABLE reminders (                    -- 提醒事项
   snooze_until INTEGER,
   priority INTEGER NOT NULL DEFAULT 0,
   event_id TEXT,                            -- 可关联日程
-  source_workbench TEXT
+  source_workbench TEXT,
+  source TEXT NOT NULL DEFAULT 'manual'      -- manual / event
 );
+CREATE INDEX idx_events_range ON events(start_at, end_at) WHERE deleted_at IS NULL;
+CREATE INDEX idx_reminders_event ON reminders(event_id) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX idx_events_exception ON events(recurrence_id, original_start_at)
+  WHERE recurrence_id IS NOT NULL AND deleted_at IS NULL;
 CREATE INDEX idx_reminders_due ON reminders(due_at) WHERE deleted_at IS NULL AND completed_at IS NULL;
 
 CREATE TABLE installed_workbenches (
@@ -235,14 +247,20 @@ CREATE TABLE workbench_kv (                 -- 每个工作台自己的存储空
 );
 
 CREATE TABLE settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,                      -- JSON
-  updated_at INTEGER NOT NULL
+  id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  deleted_at INTEGER, device_id TEXT NOT NULL,
+  deletion_group_id TEXT, purged_at INTEGER,
+  key TEXT NOT NULL UNIQUE,
+  value TEXT NOT NULL                       -- JSON
 );
 -- 本地专用：sync_state / migrations 记录等，不参与同步
 ```
 
 **规则**
+- 综合工作台以 `docs/specs/general-workbench.md` §8、§10 补充本节；可执行约束以 `apps/desktop/src-tauri/migrations/0001_init.sql` 为准。
+- `memos`、`events`、`reminders`、`settings` 使用 `deletion_group_id` 标识一次联动删除，使用 `purged_at` 区分可恢复记录和已清空内容的墓碑；永久清空不删除行，也不清除 `deleted_at`。
+- `settings` 继续按唯一 `key` 读写 JSON，同时带完整元数据；`device_id` 首次生成后保持不变，`last_trash_purge_at` 与清理操作在同一事务中写入。
+- 数据库使用 SQL 插件预加载和版本迁移；Windows 路径为 `%APPDATA%/com.royce.workbench/workbench.db`。联动写入通过插件连接池的通用事务适配执行，业务逻辑仍在 TypeScript。
 - 改表结构只能**新增迁移文件**（`0002_xxx.sql`），不能改已发布的旧迁移。
 - 所有读写都通过 `core/repositories/*`，界面和工作台不直接写 SQL。
 - 单个工作台的 kv 设上限（如 10 MB），防止滥用。
