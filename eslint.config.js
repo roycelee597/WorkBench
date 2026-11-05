@@ -20,7 +20,11 @@ export default defineConfig([
     rules: { "@typescript-eslint/no-explicit-any": "error" },
   },
   {
-    files: ["apps/desktop/src/**/*.{ts,tsx}", "packages/ui/src/**/*.{ts,tsx}"],
+    files: [
+      "apps/desktop/src/**/*.{ts,tsx}",
+      "packages/ui/src/**/*.{ts,tsx}",
+      "workbenches/general/src/**/*.{ts,tsx}",
+    ],
     extends: [reactHooks.configs.flat.recommended, reactRefresh.configs.vite],
   },
   prettier,
