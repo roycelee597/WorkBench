@@ -50,9 +50,26 @@ export interface ReminderFields {
   event_id: string | null;
   source_workbench: string | null;
   source: "manual" | "event";
+  timezone: string;
+  recurrence_start_at: number | null;
+  schedule_version: string;
 }
 export interface Reminder extends RecordMetadata, ReminderFields {}
 export type NewReminder = Pick<ReminderFields, "title"> & Partial<Omit<ReminderFields, "title">>;
+
+export interface ReminderOccurrenceFields {
+  reminder_id: string;
+  occurrence_key: string;
+  schedule_key: string;
+  due_at: number | null;
+  title: string;
+  notes: string;
+  priority: number;
+  notified_at: number | null;
+  completed_at: number | null;
+  snooze_until: number | null;
+}
+export interface ReminderOccurrence extends RecordMetadata, ReminderOccurrenceFields {}
 
 export interface SettingFields {
   key: string;

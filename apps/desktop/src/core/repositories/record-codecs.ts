@@ -1,5 +1,13 @@
 import type { SqlRow, SqlValue } from "../db/database";
-import type { CalendarEvent, JsonValue, Memo, RecordMetadata, Reminder, Setting } from "./models";
+import type {
+  CalendarEvent,
+  JsonValue,
+  Memo,
+  RecordMetadata,
+  Reminder,
+  ReminderOccurrence,
+  Setting,
+} from "./models";
 
 function text(row: SqlRow, key: string): string {
   const value = row[key];
@@ -57,7 +65,7 @@ function numberArray(row: SqlRow, key: string): number[] {
 }
 
 export interface RecordDefinition<T> {
-  table: "memos" | "events" | "reminders" | "settings";
+  table: "memos" | "events" | "reminders" | "settings" | "reminder_occurrences";
   columns: string[];
   order: string;
   cleared: Record<string, SqlValue>;
@@ -142,6 +150,9 @@ export const reminderDefinition: RecordDefinition<Reminder> = {
     "event_id",
     "source_workbench",
     "source",
+    "timezone",
+    "recurrence_start_at",
+    "schedule_version",
   ],
   cleared: {
     title: "",
@@ -155,6 +166,9 @@ export const reminderDefinition: RecordDefinition<Reminder> = {
     event_id: null,
     source_workbench: null,
     source: "manual",
+    timezone: "UTC",
+    recurrence_start_at: null,
+    schedule_version: "",
   },
   decode: (row) => {
     const source = text(row, "source");
@@ -172,8 +186,51 @@ export const reminderDefinition: RecordDefinition<Reminder> = {
       event_id: nullableText(row, "event_id"),
       source_workbench: nullableText(row, "source_workbench"),
       source,
+      timezone: text(row, "timezone"),
+      recurrence_start_at: nullableNumber(row, "recurrence_start_at"),
+      schedule_version: text(row, "schedule_version"),
     };
   },
+};
+export const reminderOccurrenceDefinition: RecordDefinition<ReminderOccurrence> = {
+  table: "reminder_occurrences",
+  columns: [
+    "reminder_id",
+    "occurrence_key",
+    "schedule_key",
+    "due_at",
+    "title",
+    "notes",
+    "priority",
+    "notified_at",
+    "completed_at",
+    "snooze_until",
+  ],
+  order: "due_at, id",
+  cleared: {
+    occurrence_key: "",
+    schedule_key: "",
+    due_at: null,
+    title: "",
+    notes: "",
+    priority: 0,
+    notified_at: null,
+    completed_at: null,
+    snooze_until: null,
+  },
+  decode: (row) => ({
+    ...metadata(row),
+    reminder_id: text(row, "reminder_id"),
+    occurrence_key: text(row, "occurrence_key"),
+    schedule_key: text(row, "schedule_key"),
+    due_at: nullableNumber(row, "due_at"),
+    title: text(row, "title"),
+    notes: text(row, "notes"),
+    priority: number(row, "priority"),
+    notified_at: nullableNumber(row, "notified_at"),
+    completed_at: nullableNumber(row, "completed_at"),
+    snooze_until: nullableNumber(row, "snooze_until"),
+  }),
 };
 export const settingDefinition: RecordDefinition<Setting> = {
   table: "settings",

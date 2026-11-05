@@ -34,6 +34,12 @@ export class SettingsRepository extends BaseRepository<Setting, SettingFields> {
     if (key === "device_id") throw new Error("设备标识不能通过普通设置修改");
     await this.db.batch([this.valueStatement(key, value, this.context.now())]);
   }
+  async claimAutostartPrompt(): Promise<boolean> {
+    const statement = this.valueStatement("autostart_prompted", true, this.context.now());
+    statement.query +=
+      " WHERE settings.value != 'true' OR settings.deleted_at IS NOT NULL OR settings.purged_at IS NOT NULL";
+    return ((await this.db.batch([statement]))[0] ?? 0) > 0;
+  }
   async ensureDeviceId(): Promise<string> {
     const statement = this.valueStatement("device_id", this.context.deviceId, this.context.now());
     statement.query =

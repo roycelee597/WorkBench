@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { URL as NodeURL } from "node:url";
 import type { SqlDatabase, SqlStatement, SqlValue } from "../src/core/db/database";
@@ -10,9 +10,11 @@ export class MemoryDatabase implements SqlDatabase {
   failAt: number | null = null;
   constructor() {
     this.connection.exec("PRAGMA foreign_keys = ON");
-    this.connection.exec(
-      readFileSync(new NodeURL("../src-tauri/migrations/0001_init.sql", import.meta.url), "utf8"),
-    );
+    const directory = new NodeURL("../src-tauri/migrations/", import.meta.url);
+    for (const file of readdirSync(directory)
+      .filter((file) => /^\d+.*\.sql$/.test(file))
+      .sort())
+      this.connection.exec(readFileSync(new NodeURL(file, directory), "utf8"));
   }
   async select<T>(query: string, values: SqlValue[] = []): Promise<T[]> {
     return this.connection.prepare(query).all(...values) as T[];

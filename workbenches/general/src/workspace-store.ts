@@ -7,6 +7,8 @@ import {
   type MemoDraft,
   type Theme,
   type CalendarEvent,
+  type Reminder,
+  type ReminderTarget,
 } from "./api";
 import { MemoAutosave, type SaveStatus } from "./memo-autosave";
 
@@ -20,6 +22,13 @@ interface WorkspaceState {
   memos: Memo[];
   deleted: Memo[];
   deletedEvents: CalendarEvent[];
+  deletedReminders: Reminder[];
+  reminderTarget: ReminderTarget | null;
+  reminderCreate: boolean;
+  reminderNavigationVersion: number;
+  missedCount: number;
+  autostartOffer: boolean;
+  desktopError: string | null;
   selectedId: string | null;
   query: string;
   tag: string;
@@ -35,6 +44,11 @@ interface WorkspaceState {
   purgeMemo: (id: string) => Promise<void>;
   restoreEvent: (id: string) => Promise<void>;
   purgeEvent: (id: string) => Promise<void>;
+  restoreReminder: (id: string) => Promise<void>;
+  purgeReminder: (id: string) => Promise<void>;
+  openReminder: (target: ReminderTarget) => Promise<void>;
+  newReminder: () => Promise<void>;
+  openMissed: (count: number) => Promise<void>;
   refreshTrash: () => Promise<void>;
   setTheme: (theme: Theme) => Promise<void>;
   setQuery: (query: string) => void;
@@ -51,10 +65,15 @@ export function createWorkspace(api: GeneralApi) {
   let initialization: Promise<void> | undefined;
   const useWorkspace = create<WorkspaceState>((set, get) => {
     async function refresh() {
-      const [result, deletedEvents] = await Promise.all([api.load(), api.listDeletedEvents()]);
+      const [result, deletedEvents, deletedReminders] = await Promise.all([
+        api.load(),
+        api.listDeletedEvents(),
+        api.listDeletedReminders(),
+      ]);
       set((state) => ({
         ...result,
         deletedEvents,
+        deletedReminders,
         ready: true,
         selectedId: result.memos.some((row) => row.id === state.selectedId)
           ? state.selectedId
@@ -82,6 +101,13 @@ export function createWorkspace(api: GeneralApi) {
       memos: [],
       deleted: [],
       deletedEvents: [],
+      deletedReminders: [],
+      reminderTarget: null,
+      reminderCreate: false,
+      reminderNavigationVersion: 0,
+      missedCount: 0,
+      autostartOffer: false,
+      desktopError: null,
       selectedId: null,
       query: "",
       tag: "",
@@ -106,13 +132,14 @@ export function createWorkspace(api: GeneralApi) {
         action(async () => {
           await queue.flush();
           if (page === "trash") {
-            const [deleted, deletedEvents] = await Promise.all([
+            const [deleted, deletedEvents, deletedReminders] = await Promise.all([
               api.listDeleted(),
               api.listDeletedEvents(),
+              api.listDeletedReminders(),
             ]);
-            set({ deleted, deletedEvents });
+            set({ deleted, deletedEvents, deletedReminders });
           }
-          set({ page });
+          set({ page, reminderTarget: null, reminderCreate: false });
         }),
       selectMemo: (id) =>
         action(async () => {
@@ -157,11 +184,12 @@ export function createWorkspace(api: GeneralApi) {
         }),
       refreshTrash: async () => {
         try {
-          const [deleted, deletedEvents] = await Promise.all([
+          const [deleted, deletedEvents, deletedReminders] = await Promise.all([
             api.listDeleted(),
             api.listDeletedEvents(),
+            api.listDeletedReminders(),
           ]);
-          set({ deleted, deletedEvents });
+          set({ deleted, deletedEvents, deletedReminders });
         } catch (error) {
           console.error("刷新回收站失败", error);
         }
@@ -169,12 +197,55 @@ export function createWorkspace(api: GeneralApi) {
       restoreEvent: (id) =>
         action(async () => {
           await api.restoreEvent(id);
-          set({ deletedEvents: await api.listDeletedEvents() });
+          const [deletedEvents, deletedReminders] = await Promise.all([
+            api.listDeletedEvents(),
+            api.listDeletedReminders(),
+          ]);
+          set({ deletedEvents, deletedReminders });
         }),
       purgeEvent: (id) =>
         action(async () => {
           await api.purgeEvent(id);
-          set({ deletedEvents: await api.listDeletedEvents() });
+          const [deletedEvents, deletedReminders] = await Promise.all([
+            api.listDeletedEvents(),
+            api.listDeletedReminders(),
+          ]);
+          set({ deletedEvents, deletedReminders });
+        }),
+      restoreReminder: (id) =>
+        action(async () => {
+          await api.restoreReminder(id);
+          set({ deletedReminders: await api.listDeletedReminders() });
+        }),
+      purgeReminder: (id) =>
+        action(async () => {
+          await api.purgeReminder(id);
+          set({ deletedReminders: await api.listDeletedReminders() });
+        }),
+      openReminder: (target) =>
+        action(async () => {
+          await queue.flush();
+          set((state) => ({
+            page: "reminders",
+            reminderTarget: target,
+            reminderCreate: false,
+            reminderNavigationVersion: state.reminderNavigationVersion + 1,
+          }));
+        }),
+      newReminder: () =>
+        action(async () => {
+          await queue.flush();
+          set((state) => ({
+            page: "reminders",
+            reminderTarget: null,
+            reminderCreate: true,
+            reminderNavigationVersion: state.reminderNavigationVersion + 1,
+          }));
+        }),
+      openMissed: (count) =>
+        action(async () => {
+          await queue.flush();
+          set({ page: "today", missedCount: count, reminderCreate: false, reminderTarget: null });
         }),
       setTheme: (theme) =>
         action(async () => {

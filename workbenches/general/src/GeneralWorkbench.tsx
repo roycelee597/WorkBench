@@ -8,6 +8,9 @@ import { TrashPage } from "./components/TrashPage";
 const CalendarPage = lazy(() =>
   import("./components/CalendarPage").then((module) => ({ default: module.CalendarPage })),
 );
+const RemindersPage = lazy(() =>
+  import("./components/RemindersPage").then((module) => ({ default: module.RemindersPage })),
+);
 
 const tabs = [
   { page: "today", label: "今天", Icon: Sun },
@@ -169,6 +172,15 @@ export function GeneralWorkbench() {
         role={utility ? undefined : "tabpanel"}
         aria-labelledby={utility ? undefined : `tab-${state.page}`}
       >
+        {state.page === "today" && state.missedCount > 0 && (
+          <div className="missed-reminders-banner">
+            <Bell size={18} />
+            <span>你有 {state.missedCount} 条错过的提醒。</span>
+            <Button size="sm" variant="outline" onClick={() => void state.navigate("reminders")}>
+              查看提醒
+            </Button>
+          </div>
+        )}
         {state.page === "memos" ? (
           <MemosPage />
         ) : state.page === "settings" ? (
@@ -184,6 +196,20 @@ export function GeneralWorkbench() {
             }
           >
             <CalendarPage />
+          </Suspense>
+        ) : state.page === "reminders" ? (
+          <Suspense
+            fallback={
+              <p className="p-6" role="status">
+                正在打开提醒…
+              </p>
+            }
+          >
+            <RemindersPage
+              key={state.reminderNavigationVersion}
+              focus={state.reminderTarget}
+              createRequested={state.reminderCreate}
+            />
           </Suspense>
         ) : (
           <Placeholder page={state.page} />

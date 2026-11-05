@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostServices } from "../src/host-services";
 import {
   createGeneralApi,
   filterMemos,
@@ -20,6 +21,86 @@ afterEach(() => {
   databases.splice(0).forEach((db) => db.close());
 });
 describe("综合工作台数据入口", () => {
+  it.each(["this", "following"] as const)("%s 首次开启实例提前提醒也提示自启", async (scope) => {
+    const { data, clock } = await setup();
+    const offer = vi.fn();
+    const api = createGeneralApi(async () => data, { offerAutostart: offer });
+    const event = await api.createEvent({
+      title: "重复日程",
+      start_at: clock.now,
+      end_at: clock.now + 1000,
+      rrule: "FREQ=DAILY;COUNT=3",
+      timezone: "UTC",
+    });
+    expect(offer).not.toHaveBeenCalled();
+    await api.editEventOccurrence(event.id, clock.now + 86_400_000, scope, {
+      remind_before_minutes: 10,
+    });
+    expect(offer).toHaveBeenCalledOnce();
+    expect(await data.settings.getValue("autostart_prompted")).toBe(true);
+  });
+  it("首次带时间提醒或提前日程只提示自启一次，普通待办不提示", async () => {
+    const { data, clock } = await setup();
+    const offer = vi.fn();
+    const api = createGeneralApi(async () => data, { now: () => clock.now, offerAutostart: offer });
+    await api.createReminder({ title: "普通待办" });
+    expect(offer).not.toHaveBeenCalled();
+    await api.createEvent({ title: "无提醒日程", start_at: clock.now, end_at: clock.now + 1000 });
+    expect(offer).not.toHaveBeenCalled();
+    const row = await api.createReminder({ title: "定时", due_at: clock.now + 5000 });
+    await api.createEvent({
+      title: "有提醒日程",
+      start_at: clock.now,
+      end_at: clock.now + 1000,
+      remind_before_minutes: 0,
+    });
+    await api.saveReminder(row.id, { ...row, title: "修改" }, row);
+    expect(offer).toHaveBeenCalledTimes(1);
+    expect(await data.settings.getValue("autostart_prompted")).toBe(true);
+  });
+  it("提醒入口完成、贪睡、过期表单保护和回收站均通过仓库", async () => {
+    const { data, clock } = await setup();
+    const api = createGeneralApi(async () => data, {
+      now: () => clock.now,
+      offerAutostart: () => undefined,
+    });
+    const row = await api.createReminder({ title: "提醒", due_at: clock.now + 1000 });
+    await api.snoozeReminder({ reminderId: row.id });
+    expect((await api.listReminders())[0]?.snooze_until).toBe(clock.now + 600_000);
+    await expect(api.saveReminder(row.id, { ...row, title: "过期表单" }, row)).rejects.toThrow(
+      "发生变化",
+    );
+    await api.completeReminder({ reminderId: row.id });
+    const item = (await api.listReminders())[0]!;
+    expect(item.completed_at).toBe(clock.now);
+    expect(await api.reminderTarget(item.occurrenceId!)).toEqual({
+      reminderId: row.id,
+      occurrenceId: item.occurrenceId,
+    });
+    await api.deleteReminder(row.id);
+    expect(await api.listReminders()).toEqual([]);
+    expect(await api.listDeletedReminders()).toHaveLength(1);
+    await expect(api.reminderTarget(item.occurrenceId!)).rejects.toThrow("已删除");
+    await api.restoreReminder(row.id);
+    expect((await api.listReminders())[0]?.completed_at).toBe(clock.now);
+    await api.deleteReminder(row.id);
+    await api.purgeReminder(row.id);
+    expect(await api.listDeletedReminders()).toEqual([]);
+    await expect(api.restoreReminder(row.id)).rejects.toThrow();
+  });
+  it("自启以系统实际状态为准，系统写入失败不记录为成功", async () => {
+    const { api, data } = await setup();
+    const setAutostart = vi.fn(async () => undefined);
+    configureHostServices({ getAutostart: async () => false, setAutostart });
+    expect(await api.getAutostart()).toBe(false);
+    expect(await data.settings.getValue("autostart")).toBeUndefined();
+    await api.setAutostart(true);
+    expect(setAutostart).toHaveBeenCalledWith(true);
+    expect(await data.settings.getValue("autostart")).toBe(true);
+    setAutostart.mockRejectedValueOnce(new Error("系统拒绝"));
+    await expect(api.setAutostart(false)).rejects.toThrow("系统拒绝");
+    expect(await data.settings.getValue("autostart")).toBe(true);
+  });
   it("新建、保存及标签规范化通过仓库持久化 Markdown", async () => {
     const { api, data, clock } = await setup();
     const memo = await api.createMemo();

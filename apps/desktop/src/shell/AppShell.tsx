@@ -1,8 +1,50 @@
-import { useEffect } from "react";
-import { isTauri } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { GeneralWorkbench, workspace } from "@workbench/general";
-import { cn } from "@workbench/ui";
+import { useEffect, useState } from "react";
+import { isTauri, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
+import { initializeReminderRuntime } from "../core/scheduler/runtime";
+import {
+  createInAppNotificationPort,
+  type NotificationAction,
+} from "../core/scheduler/notification-port";
+import { useReminderNotices } from "./reminder-notices";
+import { ReminderNotices } from "./ReminderNotices";
+import type { ReminderScheduler } from "../core/scheduler/scheduler";
+import {
+  GeneralWorkbench,
+  workspace,
+  generalApi,
+  configureHostServices,
+  onAutostartOffer,
+} from "@workbench/general";
+import { cn, Button, Dialog } from "@workbench/ui";
+
+async function handleNotification(action: NotificationAction) {
+  if (workspace.useWorkspace.getState().busy) {
+    await new Promise<void>((resolve) => {
+      const off = workspace.useWorkspace.subscribe((state) => {
+        if (!state.busy) {
+          off();
+          resolve();
+        }
+      });
+    });
+  }
+  if (action.kind === "missed") {
+    await workspace.useWorkspace.getState().openMissed(action.count);
+    const error = workspace.useWorkspace.getState().error;
+    if (error) throw new Error(error);
+    return;
+  }
+  const target = await generalApi.reminderTarget(action.occurrenceId);
+  if (action.kind === "complete") await generalApi.completeReminder(target);
+  else if (action.kind === "snooze") await generalApi.snoozeReminder(target);
+  else {
+    await workspace.useWorkspace.getState().openReminder(target);
+    const error = workspace.useWorkspace.getState().error;
+    if (error) throw new Error(error);
+  }
+}
 
 function NavIcon({ type }: { type: "workspace" | "settings" | "trash" }) {
   return (
@@ -39,37 +81,101 @@ function NavIcon({ type }: { type: "workspace" | "settings" | "trash" }) {
 }
 export function AppShell() {
   const state = workspace.useWorkspace();
+  const [enabling, setEnabling] = useState(false);
+  const [offerError, setOfferError] = useState<string | null>(null);
   useEffect(() => {
     if (!isTauri()) return;
+    configureHostServices({
+      getAutostart: isEnabled,
+      setAutostart: async (enabled) => {
+        if (enabled) await enable();
+        else await disable();
+      },
+    });
+    const offOffer = onAutostartOffer(() =>
+      workspace.useWorkspace.setState({ autostartOffer: true }),
+    );
     let disposed = false;
-    let unlisten: (() => void) | undefined;
-    const current = getCurrentWindow();
-    void current
-      .onCloseRequested(async (event) => {
-        event.preventDefault();
-        try {
-          await workspace.flush();
-          await current.destroy();
-        } catch (error) {
-          console.error("关闭前保存失败", error);
+    let offRequests: (() => void) | undefined;
+    let scheduler: ReminderScheduler | undefined;
+    let sequence = Promise.resolve();
+    async function idle() {
+      if (!workspace.useWorkspace.getState().busy) return;
+      await new Promise<void>((resolve) => {
+        const off = workspace.useWorkspace.subscribe((state) => {
+          if (!state.busy) {
+            off();
+            resolve();
+          }
+        });
+      });
+    }
+    function queue(action: () => Promise<void>) {
+      sequence = sequence
+        .then(async () => {
+          await idle();
+          await action();
+        })
+        .catch(async (error: unknown) => {
+          console.error("桌面操作失败", error);
           workspace.useWorkspace.setState({
-            error: "尚有修改未能保存，窗口已保留。请重试保存后再关闭。",
+            desktopError: error instanceof Error ? error.message : "操作未完成，请在提醒页重试。",
           });
-        }
-      })
+          await invoke("show_main").catch(() => undefined);
+        });
+      return sequence;
+    }
+    async function drain() {
+      const requests = await invoke<string[]>("take_shell_requests");
+      for (const request of requests)
+        await queue(async () => {
+          if (request === "new-reminder") await workspace.useWorkspace.getState().newReminder();
+          else if (request === "hide") {
+            await workspace.flush();
+            await invoke("hide_main");
+          } else if (request === "exit") {
+            await workspace.flush();
+            scheduler?.stop();
+            await invoke("exit_app");
+          }
+        });
+    }
+    void listen("shell-requests", () => {
+      void drain().catch((error: unknown) => {
+        console.error("读取托盘请求失败", error);
+      });
+    })
       .then((off) => {
         if (disposed) off();
-        else unlisten = off;
+        else offRequests = off;
+        return drain();
       })
       .catch((error: unknown) => {
-        console.error("注册关闭保存失败", error);
+        console.error("桌面生命周期初始化失败", error);
+        workspace.useWorkspace.setState({ desktopError: "桌面控制暂不可用，请重启应用。" });
+      });
+    void initializeReminderRuntime(
+      createInAppNotificationPort({
+        showMain: () => invoke("show_main"),
+        push: (message) => useReminderNotices.getState().push(message),
+      }),
+      () =>
         workspace.useWorkspace.setState({
-          error: "关闭前保存暂时不可用，请等待修改保存完成后再退出。",
-        });
+          desktopError: "提醒显示暂不可用，应用会在稍后重试。",
+        }),
+      () => workspace.useWorkspace.setState({ desktopError: null }),
+    )
+      .then((value) => {
+        scheduler = value;
+      })
+      .catch((error: unknown) => {
+        console.error("提醒服务初始化失败", error);
+        workspace.useWorkspace.setState({ desktopError: "提醒服务暂不可用，请重启应用。" });
       });
     return () => {
       disposed = true;
-      unlisten?.();
+      offRequests?.();
+      offOffer();
     };
   }, []);
   return (
@@ -116,8 +222,11 @@ export function AppShell() {
           >
             <NavIcon type="trash" />
             回收站
-            {state.deleted.length > 0 && (
-              <span className="sidebar-count">{state.deleted.length}</span>
+            {state.deleted.length + state.deletedEvents.length + state.deletedReminders.length >
+              0 && (
+              <span className="sidebar-count">
+                {state.deleted.length + state.deletedEvents.length + state.deletedReminders.length}
+              </span>
             )}
           </button>
           <div className="sidebar-footer">
@@ -127,8 +236,57 @@ export function AppShell() {
         </div>
       </aside>
       <main className="app-main">
+        {state.desktopError && (
+          <div className="desktop-error" role="alert">
+            {state.desktopError}
+          </div>
+        )}
         <GeneralWorkbench />
       </main>
+      <ReminderNotices onAction={handleNotification} />
+      <Dialog
+        open={state.autostartOffer}
+        onOpenChange={(open) => {
+          if (!open && !enabling) workspace.useWorkspace.setState({ autostartOffer: false });
+        }}
+        title="开启开机自启？"
+        description="开启开机自启，重启电脑后提醒才能准时？"
+        footer={
+          <>
+            <Button
+              variant="outline"
+              autoFocus
+              disabled={enabling}
+              onClick={() => workspace.useWorkspace.setState({ autostartOffer: false })}
+            >
+              暂不
+            </Button>
+            <Button
+              disabled={enabling}
+              onClick={async () => {
+                setEnabling(true);
+                setOfferError(null);
+                try {
+                  await generalApi.setAutostart(true);
+                  workspace.useWorkspace.setState({ autostartOffer: false });
+                } catch {
+                  setOfferError("未能开启，请稍后在设置页重试。");
+                } finally {
+                  setEnabling(false);
+                }
+              }}
+            >
+              {enabling ? "正在开启…" : "开启"}
+            </Button>
+          </>
+        }
+      >
+        {offerError && (
+          <p role="alert" className="event-form-error">
+            {offerError}
+          </p>
+        )}
+      </Dialog>
     </div>
   );
 }
