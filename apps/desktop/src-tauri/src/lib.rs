@@ -1,8 +1,21 @@
 mod database;
+mod desktop;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(desktop::ShellState::default())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().any(|argument| argument == "--background") {
+                desktop::request(app, "open");
+            }
+        }))
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .args(["--background"])
+                .build(),
+        )
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(
@@ -24,7 +37,25 @@ pub fn run() {
                 )
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![database::execute_batch])
+        .setup(|app| {
+            desktop::setup(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    desktop::request(window.app_handle(), "hide");
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            database::execute_batch,
+            desktop::take_shell_requests,
+            desktop::hide_main,
+            desktop::show_main,
+            desktop::exit_app
+        ])
         .run(tauri::generate_context!())
         .expect("启动 WorkBench 失败");
 }

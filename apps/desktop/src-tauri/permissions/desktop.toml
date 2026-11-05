@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-desktop-lifecycle"
+description = "允许主窗口读取托盘请求、显示隐藏窗口并在保存后退出。"
+commands.allow = ["take_shell_requests", "hide_main", "show_main", "exit_app"]

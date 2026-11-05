@@ -5,8 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "autostart:default",
+    "allow-desktop-lifecycle",
     "sql:allow-select",
-    "allow-execute-batch",
-    "core:window:allow-destroy"
+    "allow-execute-batch"
   ]
 }
