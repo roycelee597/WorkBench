@@ -1,12 +1,5 @@
+import { AppShell } from "./shell/AppShell";
 import "./styles.css";
-
-function App() {
-  return (
-    <main className="app">
-      <h1>WorkBench</h1>
-      <p>工作台骨架已就绪。</p>
-    </main>
-  );
+export default function App() {
+  return <AppShell />;
 }
-
-export default App;

@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "主窗口的基础权限",
   "windows": ["main"],
-  "permissions": ["core:default", "sql:allow-select", "allow-execute-batch"]
+  "permissions": [
+    "core:default",
+    "sql:allow-select",
+    "allow-execute-batch",
+    "core:window:allow-destroy"
+  ]
 }
