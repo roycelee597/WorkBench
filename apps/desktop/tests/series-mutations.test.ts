@@ -162,6 +162,23 @@ describe("重复日程的三种修改", () => {
     ).toThrow();
     expect(() => editSeries(state, at(2), "this", { rrule: "FREQ=DAILY" }, context)).toThrow();
   });
+  it("全部改规则后保留的不匹配例外仍可操作，拆分时只扣除实际出现过的次数", () => {
+    const state = freeze({
+      series: event({ rrule: "FREQ=WEEKLY;BYDAY=TH;COUNT=5", exdates: [at(2)] }),
+      exceptions: [exception(2)],
+    });
+    expect(
+      editSeries(state, at(2), "this", { title: "保留例外再编辑" }, context).updated[1]?.title,
+    ).toBe("保留例外再编辑");
+    expect(editSeries(state, at(2), "all", { title: "整个系列" }, context).updated[0]?.title).toBe(
+      "整个系列",
+    );
+    expect(
+      editSeries(state, at(2), "following", { title: "后续安排" }, context).created[0]?.rrule,
+    ).toContain("COUNT=4");
+    for (const scope of ["this", "following", "all"] as const)
+      expect(() => deleteSeries(state, at(2), scope, context)).not.toThrow();
+  });
 });
 
 describe("重复日程的三种删除", () => {

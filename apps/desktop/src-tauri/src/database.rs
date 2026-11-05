@@ -6,9 +6,11 @@ use tauri_plugin_sql::{DbInstances, DbPool};
 pub const DATABASE_URL: &str = "sqlite:workbench.db";
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Statement {
     query: String,
     values: Vec<Value>,
+    expected_rows: Option<u64>,
 }
 
 // SQL 插件的独立 IPC 调用不保证使用同一连接；联动写入在此共用一个事务。
@@ -43,6 +45,11 @@ pub async fn execute_batch(
             .execute(&mut *transaction)
             .await
             .map_err(|error| error.to_string())?;
+        if let Some(expected) = statement.expected_rows {
+            if result.rows_affected() != expected {
+                return Err("内容已发生变化，请刷新后重试".into());
+            }
+        }
         affected.push(result.rows_affected());
     }
     transaction
