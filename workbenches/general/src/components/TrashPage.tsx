@@ -13,7 +13,8 @@ import { memoTitle } from "../api";
 import { markdownSummary } from "../markdown";
 import { workspace } from "../workspace-store";
 
-type Category = "memos" | "events";
+type Category = "memos" | "events" | "reminders";
+const names = { memos: "备忘录", events: "日程", reminders: "提醒事项" };
 interface Target {
   id: string;
   title: string;
@@ -48,13 +49,32 @@ export function TrashPage() {
           title: memoTitle(memo),
           summary: markdownSummary(memo.content) || "没有正文",
           deletedAt: memo.deleted_at!,
+          restoreBlocked: false,
         }))
-      : deletedEvents.map((event) => ({
-          id: event.id,
-          title: event.title,
-          summary: `${event.recurrence_id ? "系列例外 · " : event.rrule ? "重复日程 · " : ""}${new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: event.timezone }).format(event.start_at)} · 关联提醒随日程恢复`,
-          deletedAt: event.deleted_at!,
-        }));
+      : category === "events"
+        ? deletedEvents.map((event) => ({
+            id: event.id,
+            title: event.title,
+            summary: `${event.recurrence_id ? "系列例外 · " : event.rrule ? "重复日程 · " : ""}${new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: event.timezone }).format(event.start_at)} · 关联提醒随日程恢复`,
+            deletedAt: event.deleted_at!,
+            restoreBlocked: Boolean(
+              event.recurrence_id &&
+              state.deletedEvents.some((parent) => parent.id === event.recurrence_id),
+            ),
+          }))
+        : state.deletedReminders.map((reminder) => ({
+            id: reminder.id,
+            title: reminder.title,
+            summary:
+              reminder.source === "event"
+                ? "由日程生成；关联日程已删除时，请先恢复日程。"
+                : reminder.notes || "没有备注",
+            deletedAt: reminder.deleted_at!,
+            restoreBlocked: Boolean(
+              reminder.event_id &&
+              state.deletedEvents.some((event) => event.id === reminder.event_id),
+            ),
+          }));
   return (
     <section className="utility-page trash-page">
       <div className="utility-heading">
@@ -86,10 +106,15 @@ export function TrashPage() {
           <CalendarDays size={15} />
           日程 <b>{deletedEvents.length}</b>
         </button>
-        <span aria-disabled="true">
+        <button
+          type="button"
+          className={cn(category === "reminders" && "active")}
+          aria-pressed={category === "reminders"}
+          onClick={() => setCategory("reminders")}
+        >
           <Bell size={15} />
-          提醒事项 <small>准备中</small>
-        </span>
+          提醒事项 <b>{state.deletedReminders.length}</b>
+        </button>
       </div>
       <div className="trash-info">
         <Clock3 size={15} />
@@ -104,8 +129,10 @@ export function TrashPage() {
             <div className="trash-file-icon">
               {category === "memos" ? (
                 <FileText size={20} strokeWidth={1.4} />
-              ) : (
+              ) : category === "events" ? (
                 <CalendarDays size={20} strokeWidth={1.4} />
+              ) : (
+                <Bell size={20} strokeWidth={1.4} />
               )}
             </div>
             <div className="trash-content">
@@ -127,11 +154,14 @@ export function TrashPage() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={state.busy}
+                disabled={state.busy || row.restoreBlocked}
+                title={row.restoreBlocked ? "请先在日程分组恢复关联日程" : undefined}
                 onClick={() =>
                   void (category === "memos"
                     ? state.restoreMemo(row.id)
-                    : state.restoreEvent(row.id))
+                    : category === "events"
+                      ? state.restoreEvent(row.id)
+                      : state.restoreReminder(row.id))
                 }
               >
                 <RotateCcw />
@@ -156,7 +186,7 @@ export function TrashPage() {
               <ArchiveRestore size={30} strokeWidth={1.3} />
             </div>
             <h2>这一组是空的</h2>
-            <p>删除的{category === "memos" ? "备忘录" : "日程和关联提醒"}会暂时留在这里。</p>
+            <p>删除的{names[category]}会暂时留在这里。</p>
           </div>
         )}
       </div>
@@ -165,7 +195,7 @@ export function TrashPage() {
         onOpenChange={(open) => {
           if (!open && !state.busy) setTarget(null);
         }}
-        title={`永久删除这条${target?.kind === "events" ? "日程" : "备忘录"}？`}
+        title={`永久删除这条${names[target?.kind ?? "memos"]}？`}
         description={`“${target?.title ?? ""}”的内容${target?.kind === "events" ? "及已删除的系列例外、关联提醒" : ""}将被清空，此操作无法撤销。`}
         footer={
           <>
@@ -179,12 +209,18 @@ export function TrashPage() {
                 if (!target) return;
                 await (target.kind === "memos"
                   ? state.purgeMemo(target.id)
-                  : state.purgeEvent(target.id));
+                  : target.kind === "events"
+                    ? state.purgeEvent(target.id)
+                    : state.purgeReminder(target.id));
                 const current = workspace.useWorkspace.getState();
                 if (
-                  !(target.kind === "memos" ? current.deleted : current.deletedEvents).some(
-                    (row) => row.id === target.id,
-                  )
+                  !(
+                    target.kind === "memos"
+                      ? current.deleted
+                      : target.kind === "events"
+                        ? current.deletedEvents
+                        : current.deletedReminders
+                  ).some((row) => row.id === target.id)
                 )
                   setTarget(null);
               }}

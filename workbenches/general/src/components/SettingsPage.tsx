@@ -15,6 +15,9 @@ export function SettingsPage() {
   const [reminder, setReminder] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [autostart, setAutostart] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(true);
+  const [autoError, setAutoError] = useState<string | null>(null);
   useEffect(() => {
     let current = true;
     void generalApi
@@ -27,6 +30,17 @@ export function SettingsPage() {
       })
       .finally(() => {
         if (current) setLoading(false);
+      });
+    void generalApi
+      .getAutostart()
+      .then((value) => {
+        if (current) setAutostart(value);
+      })
+      .catch(() => {
+        if (current) setAutoError("未能读取自启状态，请重新打开设置。");
+      })
+      .finally(() => {
+        if (current) setAutoBusy(false);
       });
     return () => {
       current = false;
@@ -127,6 +141,36 @@ export function SettingsPage() {
           </select>
         </label>
         {error && <p role="alert">{error}</p>}
+      </div>
+      <div className="settings-section autostart-setting">
+        <div>
+          <h2>开机自启</h2>
+          <p>默认关闭。开启后应用会在登录 Windows 时启动并留在托盘，提醒才可持续运行。</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-label="开机自启"
+          aria-checked={autostart}
+          disabled={autoBusy || state.busy}
+          className="autostart-switch"
+          onClick={async () => {
+            setAutoBusy(true);
+            setAutoError(null);
+            try {
+              await generalApi.setAutostart(!autostart);
+              setAutostart(await generalApi.getAutostart());
+            } catch {
+              setAutoError("未能更改自启设置，请重试。");
+            } finally {
+              setAutoBusy(false);
+            }
+          }}
+        >
+          <span />
+          {autostart ? "已开启" : "已关闭"}
+        </button>
+        {autoError && <p role="alert">{autoError}</p>}
       </div>
     </section>
   );

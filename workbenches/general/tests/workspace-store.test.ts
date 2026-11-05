@@ -17,6 +17,49 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 describe("工作台编辑状态", () => {
+  it("提醒定位、托盘新建和错过汇总跳转前保存备忘录，并刷新通知目标", async () => {
+    const { state, data } = await setup();
+    await state().initialize();
+    await state().createMemo();
+    const id = state().selectedId!;
+    state().editMemo(id, { title: "跳转前保存" });
+    const target = { reminderId: "reminder", occurrenceId: "occurrence" };
+    await state().openReminder(target);
+    expect((await data.memos.get(id))?.title).toBe("跳转前保存");
+    expect(state()).toMatchObject({
+      page: "reminders",
+      reminderTarget: target,
+      reminderNavigationVersion: 1,
+    });
+    await state().newReminder();
+    expect(state()).toMatchObject({
+      page: "reminders",
+      reminderCreate: true,
+      reminderTarget: null,
+      reminderNavigationVersion: 2,
+    });
+    await state().openMissed(2);
+    expect(state()).toMatchObject({
+      page: "today",
+      missedCount: 2,
+      reminderCreate: false,
+      reminderTarget: null,
+    });
+  });
+  it("提醒导航保存失败保留当前页与输入，修复后才能打开今天汇总", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { state, db } = await setup();
+    await state().initialize();
+    await state().createMemo();
+    state().editMemo(state().selectedId!, { title: "不能丢失" });
+    db.failAt = 0;
+    await state().openMissed(2);
+    expect(state()).toMatchObject({ page: "memos", missedCount: 0, saveStatus: "error" });
+    expect(state().memos[0]?.title).toBe("不能丢失");
+    db.failAt = null;
+    await state().openMissed(2);
+    expect(state()).toMatchObject({ page: "today", missedCount: 2 });
+  });
   it("新建、切换页签和切换记录前会保存，回收站操作刷新列表", async () => {
     const { workspace, state, data } = await setup();
     await state().initialize();
