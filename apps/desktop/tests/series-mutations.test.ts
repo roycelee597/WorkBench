@@ -24,6 +24,28 @@ function freeze(state: SeriesState): SeriesState {
 }
 
 describe("重复日程的三种修改", () => {
+  it("全天实例在夏令时周调整时长后，全部系列仍以当地午夜结束", () => {
+    const root = event({
+      all_day: true,
+      timezone: "America/New_York",
+      start_at: Date.parse("2026-03-01T05:00Z"),
+      end_at: Date.parse("2026-03-02T05:00Z"),
+      rrule: "FREQ=DAILY;COUNT=10",
+    });
+    const original = Date.parse("2026-03-08T05:00Z");
+    const end = Date.parse("2026-03-10T04:00Z");
+    const state = { series: root, exceptions: [] };
+    const changes = editSeries(state, original, "all", { end_at: end }, context);
+    expect(changes.updated[0]?.end_at).toBe(Date.parse("2026-03-03T05:00Z"));
+    const selected = expandEvents(apply(state, changes), {
+      start: original,
+      end: original + 1,
+    }).find((occurrence) => occurrence.start_at === original)!;
+    expect(selected.end_at).toBe(end);
+    expect(
+      editSeries(state, original, "following", { end_at: end }, context).created[0]?.end_at,
+    ).toBe(end);
+  });
   it("仅此次和此后全部修改全天日程时保留夏令时日历边界", () => {
     const root = event({
       all_day: true,
@@ -161,6 +183,23 @@ describe("重复日程的三种修改", () => {
       editSeries({ ...state, series: event({ deleted_at: 2 }) }, at(2), "all", {}, context),
     ).toThrow();
     expect(() => editSeries(state, at(2), "this", { rrule: "FREQ=DAILY" }, context)).toThrow();
+  });
+  it("全部改规则后保留的不匹配例外仍可操作，拆分时只扣除实际出现过的次数", () => {
+    const state = freeze({
+      series: event({ rrule: "FREQ=WEEKLY;BYDAY=TH;COUNT=5", exdates: [at(2)] }),
+      exceptions: [exception(2)],
+    });
+    expect(
+      editSeries(state, at(2), "this", { title: "保留例外再编辑" }, context).updated[1]?.title,
+    ).toBe("保留例外再编辑");
+    expect(editSeries(state, at(2), "all", { title: "整个系列" }, context).updated[0]?.title).toBe(
+      "整个系列",
+    );
+    expect(
+      editSeries(state, at(2), "following", { title: "后续安排" }, context).created[0]?.rrule,
+    ).toContain("COUNT=4");
+    for (const scope of ["this", "following", "all"] as const)
+      expect(() => deleteSeries(state, at(2), scope, context)).not.toThrow();
   });
 });
 

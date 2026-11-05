@@ -42,7 +42,9 @@
 - `following`：旧系列 UNTIL 截断到目标之前；修改时创建新系列并保留剩余 COUNT，迁移仍符合新规则的未来例外，软删除不再匹配的例外；删除时移除目标及未来实例。
 - `all`：修改原系列，时间平移时重新对应 EXDATE 和例外的 `original_start_at`，保留例外自身的内容与实际时间；删除软删除父系列和有效例外。
 
-首个实例的 `following` 等价于 `all`。已有例外的实际内容在“全部”操作中保留。调用层后续需要把变更集放在一个仓库事务中持久化，并处理关联提醒；本阶段不接入界面或提醒生成。
+首个实例的 `following` 等价于 `all`。已有例外的实际内容在“全部”操作中保留；全部改变规则后，保留的不匹配例外仍可继续选择修改／删除范围。
+
+日程页已在后续日程 PR 中接入：`events.editOccurrence(id, originalStart, scope, patch)`、`deleteOccurrence(...)` 调用上述纯函数并原子持久化。`create`、`update` 和实例操作同时同步 `source='event'` 的提醒；关闭提前提醒只软删除自动提醒，独立的手动提醒保持原状。通用事务语句可指定 `expectedRows`，快照过期或条件不匹配时整体回滚。详见 [日程联动与验证](calendar-verification.md)。
 
 ## 验证步骤（PowerShell）
 

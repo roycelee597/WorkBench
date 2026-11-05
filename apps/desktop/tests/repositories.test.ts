@@ -191,7 +191,7 @@ describe("仓库、元数据和软删除", () => {
     await expect(data.reminders.create({ title: "错", due_at: 0.5 })).rejects.toThrow();
     await expect(data.reminders.create({ title: "错", source: "event" })).rejects.toThrow();
     await data.reminders.softDelete(reminder.id);
-    expect(await data.reminders.list()).toEqual([]);
+    expect((await data.reminders.list()).map((row) => row.id)).not.toContain(reminder.id);
     await data.reminders.restore(reminder.id);
     await data.reminders.softDelete(reminder.id);
     await data.reminders.purgeContent(reminder.id);

@@ -22,7 +22,12 @@ export class MemoryDatabase implements SqlDatabase {
     try {
       const results = statements.map((statement, index) => {
         if (index === this.failAt) throw new Error("模拟事务失败");
-        return Number(this.connection.prepare(statement.query).run(...statement.values).changes);
+        const changed = Number(
+          this.connection.prepare(statement.query).run(...statement.values).changes,
+        );
+        if (statement.expectedRows !== undefined && changed !== statement.expectedRows)
+          throw new Error("内容已发生变化，请刷新后重试");
+        return changed;
       });
       this.connection.exec("COMMIT");
       return results;

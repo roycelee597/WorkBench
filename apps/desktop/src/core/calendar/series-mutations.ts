@@ -1,5 +1,5 @@
 import type { CalendarEvent, EventFields } from "../repositories/models";
-import { validateEvent } from "../repositories/events";
+import { validateEvent } from "./event-validation";
 import {
   floatingTime,
   occurrenceEnd,
@@ -72,7 +72,14 @@ function history(state: SeriesState, originalStart: number): number[] {
   if (!state.series.rrule || state.series.deleted_at !== null || state.series.purged_at !== null)
     throw new Error("原日程不是可用的重复日程");
   const starts = seriesStarts(state.series, state.series.start_at, originalStart + 1);
-  if (starts.at(-1) !== originalStart) throw new Error("目标时间不是原日程的重复实例");
+  if (starts.at(-1) !== originalStart) {
+    // 全部修改重复规则后，保留下来的例外可能已不匹配新规则；仍允许对它选择修改范围。
+    const retained = activeExceptions(state).some(
+      (event) => event.original_start_at === originalStart,
+    );
+    if (!retained) throw new Error("目标时间不是原日程的重复实例");
+    starts.push(originalStart);
+  }
   return starts;
 }
 function unique(values: number[]): number[] {
@@ -157,12 +164,19 @@ export function editSeries(
   if (baseStart === null) throw new Error("修改后的起始时间不存在");
   const duration =
     patch.end_at !== undefined ? patch.end_at - selectedStart : series.end_at - series.start_at;
+  let editedEnd =
+    patch.end_at === undefined ? occurrenceEnd(series, baseStart, newZone) : baseStart + duration;
+  if (patch.end_at !== undefined && (patch.all_day ?? series.all_day)) {
+    const wallDuration = floatingTime(patch.end_at, newZone) - floatingTime(selectedStart, newZone);
+    const end = timestampFromFloating(floatingTime(baseStart, newZone) + wallDuration, newZone);
+    if (end === null) throw new Error("修改后的全天结束时间不存在");
+    editedEnd = end;
+  }
   const edited: CalendarEvent = {
     ...touch(series, context),
     ...patch,
     start_at: baseStart,
-    end_at:
-      patch.end_at === undefined ? occurrenceEnd(series, baseStart, newZone) : baseStart + duration,
+    end_at: editedEnd,
     timezone: newZone,
   };
 

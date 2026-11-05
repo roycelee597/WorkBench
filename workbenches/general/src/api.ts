@@ -1,15 +1,30 @@
 import type { DataLayer } from "../../../apps/desktop/src/core/repositories";
-import type { Memo, MemoFields } from "../../../apps/desktop/src/core/repositories/models";
+import type {
+  Memo,
+  MemoFields,
+  CalendarEvent,
+  NewEvent,
+} from "../../../apps/desktop/src/core/repositories/models";
+import {
+  expandEvents,
+  type TimeRange,
+  type EventOccurrence,
+} from "../../../apps/desktop/src/core/calendar/recurrence";
+import type {
+  SeriesPatch,
+  SeriesScope,
+} from "../../../apps/desktop/src/core/calendar/series-mutations";
+import { reminderChoices } from "./calendar-model";
 import { markdownSummary } from "./markdown";
 
-export type { Memo };
+export type { Memo, CalendarEvent, EventOccurrence, SeriesPatch, SeriesScope, TimeRange };
 export type MemoDraft = Pick<MemoFields, "title" | "content" | "pinned" | "tags">;
 export type Theme = "system" | "light" | "dark";
 export interface MemoFilter {
   query?: string;
   tag?: string;
 }
-type DataAccess = Pick<DataLayer, "memos" | "settings">;
+type DataAccess = Pick<DataLayer, "memos" | "settings" | "events">;
 const fold = (value: string) => value.toLocaleLowerCase("zh-CN");
 
 export function normalizeTags(tags: string[]): string[] {
@@ -92,6 +107,60 @@ export function createGeneralApi(getData: () => Promise<DataAccess>) {
     async setTheme(theme: Theme) {
       if (!["system", "light", "dark"].includes(theme)) throw new Error("主题选项无效");
       await (await getData()).settings.setValue("theme", theme);
+    },
+    async loadCalendar(range: TimeRange) {
+      const data = await getData();
+      const [events, preference] = await Promise.all([
+        data.events.list(),
+        data.settings.getValue("default_event_remind"),
+      ]);
+      const defaultReminder =
+        typeof preference === "number" &&
+        reminderChoices.some((choice) => choice.value === preference)
+          ? preference
+          : null;
+      return { events, occurrences: expandEvents(events, range), defaultReminder };
+    },
+    async createEvent(input: NewEvent) {
+      return (await getData()).events.create(input);
+    },
+    async updateEvent(id: string, patch: SeriesPatch) {
+      return (await getData()).events.update(id, patch);
+    },
+    async editEventOccurrence(
+      id: string,
+      originalStart: number,
+      scope: SeriesScope,
+      patch: SeriesPatch,
+    ) {
+      await (await getData()).events.editOccurrence(id, originalStart, scope, patch);
+    },
+    async deleteEventOccurrence(id: string, originalStart: number, scope: SeriesScope) {
+      await (await getData()).events.deleteOccurrence(id, originalStart, scope);
+    },
+    async deleteEvent(id: string) {
+      return (await getData()).events.softDelete(id);
+    },
+    async listDeletedEvents() {
+      return (await getData()).events.listDeleted();
+    },
+    async restoreEvent(id: string) {
+      return (await getData()).events.restore(id);
+    },
+    async purgeEvent(id: string) {
+      return (await getData()).events.purgeContent(id);
+    },
+    async getDefaultEventReminder() {
+      const preference = await (await getData()).settings.getValue("default_event_remind");
+      return typeof preference === "number" &&
+        reminderChoices.some((choice) => choice.value === preference)
+        ? preference
+        : null;
+    },
+    async setDefaultEventReminder(minutes: number | null) {
+      if (!reminderChoices.some((choice) => choice.value === minutes))
+        throw new Error("提前提醒选项无效");
+      await (await getData()).settings.setValue("default_event_remind", minutes);
     },
   };
 }

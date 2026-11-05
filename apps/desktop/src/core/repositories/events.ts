@@ -1,41 +1,19 @@
-import { parseRule } from "../calendar/recurrence";
+import { validateEvent } from "../calendar/event-validation";
+import {
+  editSeries,
+  deleteSeries,
+  type EventChangeSet,
+  type SeriesPatch,
+  type SeriesScope,
+} from "../calendar/series-mutations";
+import type { SqlStatement, SqlValue, SqlRow } from "../db/database";
+export { validateEvent } from "../calendar/event-validation";
 import type { SqlDatabase } from "../db/database";
 import { BaseRepository } from "./base-repository";
 import type { CalendarEvent, EventFields, NewEvent, RepositoryContext } from "./models";
 import { eventDefinition, reminderDefinition } from "./record-codecs";
-import { updateStatement } from "./sql-statements";
-
-export function validateEvent(fields: EventFields): void {
-  if (
-    typeof fields.title !== "string" ||
-    typeof fields.notes !== "string" ||
-    typeof fields.all_day !== "boolean"
-  )
-    throw new Error("日程字段无效");
-  if (
-    !Number.isSafeInteger(fields.start_at) ||
-    !Number.isSafeInteger(fields.end_at) ||
-    fields.end_at < fields.start_at
-  )
-    throw new Error("日程起止时间无效");
-  new Intl.DateTimeFormat("en", { timeZone: fields.timezone }).format(fields.start_at);
-  if (fields.rrule !== null) {
-    parseRule(fields.rrule);
-  }
-  if (!Array.isArray(fields.exdates) || !fields.exdates.every(Number.isSafeInteger))
-    throw new Error("排除日期必须为毫秒时间戳");
-  if ((fields.recurrence_id === null) !== (fields.original_start_at === null))
-    throw new Error("例外日程必须同时记录原日程和原实例时间");
-  if (fields.original_start_at !== null && !Number.isSafeInteger(fields.original_start_at))
-    throw new Error("原实例时间无效");
-  if (fields.recurrence_id !== null && fields.rrule !== null)
-    throw new Error("例外日程不能再次重复");
-  if (
-    fields.remind_before_minutes !== null &&
-    (!Number.isSafeInteger(fields.remind_before_minutes) || fields.remind_before_minutes < 0)
-  )
-    throw new Error("提前提醒分钟数无效");
-}
+import { encodeFields, insertStatement, updateStatement } from "./sql-statements";
+import { eventReminderStatements } from "./event-reminder-sync";
 
 export class EventsRepository extends BaseRepository<CalendarEvent, EventFields> {
   constructor(db: SqlDatabase, context: RepositoryContext) {
@@ -56,19 +34,51 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
       ...input,
     };
     validateEvent(fields);
-    await this.validateParent(fields);
-    return this.insert(fields);
+    const parent = await this.validateParent(fields);
+    const now = this.context.now();
+    const event: CalendarEvent = {
+      ...fields,
+      id: this.context.newId(),
+      created_at: now,
+      updated_at: now,
+      deleted_at: null,
+      device_id: this.context.deviceId,
+      deletion_group_id: null,
+      purged_at: null,
+    };
+    const updated = parent
+      ? [
+          {
+            ...parent,
+            exdates: [...new Set([...parent.exdates, fields.original_start_at!])].sort(
+              (a, b) => a - b,
+            ),
+            updated_at: now,
+            device_id: this.context.deviceId,
+          },
+        ]
+      : [];
+    await this.commitChanges({ created: [event], updated }, parent ? [parent] : []);
+    return this.requireActive(event.id);
   }
   async update(id: string, patch: Partial<EventFields>): Promise<CalendarEvent> {
     const current = await this.requireActive(id);
+    encodeFields(patch, this.definition.columns);
     const fields = { ...current, ...patch };
     validateEvent(fields);
     if (fields.recurrence_id === id) throw new Error("日程不能引用自身");
     await this.validateParent(fields);
-    return this.writePatch(id, patch);
+    await this.commitChanges(
+      {
+        created: [],
+        updated: [{ ...fields, updated_at: this.context.now(), device_id: this.context.deviceId }],
+      },
+      [current],
+    );
+    return this.requireActive(id);
   }
-  private async validateParent(fields: EventFields): Promise<void> {
-    if (fields.recurrence_id === null) return;
+  private async validateParent(fields: EventFields): Promise<CalendarEvent | null> {
+    if (fields.recurrence_id === null) return null;
     const parent = await this.get(fields.recurrence_id);
     if (
       !parent ||
@@ -76,6 +86,143 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
       (parent.rrule === null && !parent.exdates.includes(fields.original_start_at!))
     )
       throw new Error("例外日程必须引用可用的原重复日程");
+    return parent;
+  }
+
+  private encoded(event: CalendarEvent): Record<string, SqlValue> {
+    const {
+      id,
+      created_at,
+      updated_at,
+      deleted_at,
+      device_id,
+      deletion_group_id,
+      purged_at,
+      ...fields
+    } = event;
+    return {
+      id,
+      created_at,
+      updated_at,
+      deleted_at,
+      device_id,
+      deletion_group_id,
+      purged_at,
+      ...encodeFields(fields, this.definition.columns),
+    };
+  }
+  private guardedUpdate(current: CalendarEvent, fields: Record<string, SqlValue>): SqlStatement {
+    const snapshot = this.encoded(current);
+    const where = Object.keys(snapshot)
+      .map((key) => (key === "exdates" ? 'json("exdates") = json(?)' : `"${key}" IS ?`))
+      .join(" AND ");
+    return {
+      ...updateStatement("events", fields, where, Object.values(snapshot)),
+      expectedRows: 1,
+    };
+  }
+  private async commitChanges(changes: EventChangeSet, originals: CalendarEvent[]): Promise<void> {
+    const statements: SqlStatement[] = [];
+    const snapshot = new Map(originals.map((event) => [event.id, event]));
+    const now = this.context.now();
+    const temporaryGroup = this.context.newId();
+    // 先暂时软删除要重定位的例外，再在同一事务恢复最终内容，避免交换实例时间时触碰唯一索引。
+    for (const event of changes.updated) {
+      const current = snapshot.get(event.id);
+      if (!current) throw new Error("缺少日程变更前快照");
+      if (current.recurrence_id !== null)
+        statements.push(
+          this.guardedUpdate(current, { deleted_at: now, deletion_group_id: temporaryGroup }),
+        );
+    }
+    for (const event of changes.created) {
+      validateEvent(event);
+      statements.push({ ...insertStatement("events", this.encoded(event)), expectedRows: 1 });
+    }
+    for (const event of changes.updated) {
+      validateEvent(event);
+      const current = snapshot.get(event.id)!;
+      const fields = this.encoded(event);
+      delete fields.id;
+      delete fields.created_at;
+      if (current.recurrence_id !== null)
+        statements.push({
+          ...updateStatement(
+            "events",
+            fields,
+            "id = ? AND deleted_at = ? AND deletion_group_id = ?",
+            [event.id, now, temporaryGroup],
+          ),
+          expectedRows: 1,
+        });
+      else statements.push(this.guardedUpdate(current, fields));
+    }
+    const deleted = changes.updated.filter((event) => event.deleted_at !== null);
+    for (const event of deleted)
+      statements.push(
+        updateStatement(
+          "reminders",
+          {
+            deleted_at: event.deleted_at,
+            deletion_group_id: event.deletion_group_id,
+            updated_at: now,
+            device_id: this.context.deviceId,
+          },
+          "event_id = ? AND deleted_at IS NULL",
+          [event.id],
+        ),
+      );
+    const active = [...changes.created, ...changes.updated].filter(
+      (event) => event.deleted_at === null,
+    );
+    const ids = active.map((event) => event.id);
+    const linked = ids.length
+      ? (
+          await this.db.select<SqlRow>(
+            `SELECT * FROM reminders WHERE source = 'event' AND deleted_at IS NULL AND event_id IN (${ids.map(() => "?").join(",")}) ORDER BY created_at, id`,
+            ids,
+          )
+        ).map(reminderDefinition.decode)
+      : [];
+    for (const event of active)
+      statements.push(...eventReminderStatements(event, linked, this.context));
+    await this.db.batch(statements);
+  }
+  private async seriesState(id: string, originalStart: number) {
+    const series = await this.requireActive(id);
+    const exceptions = await this.read(
+      "recurrence_id = ? AND deleted_at IS NULL AND purged_at IS NULL",
+      [id],
+    );
+    if (
+      series.exdates.includes(originalStart) &&
+      !exceptions.some((event) => event.original_start_at === originalStart)
+    )
+      throw new Error("此实例已删除，请刷新日程");
+    return { series, exceptions };
+  }
+  async editOccurrence(
+    id: string,
+    originalStart: number,
+    scope: SeriesScope,
+    patch: SeriesPatch,
+  ): Promise<void> {
+    const state = await this.seriesState(id, originalStart);
+    const changes = editSeries(state, originalStart, scope, patch, {
+      now: this.context.now(),
+      deviceId: this.context.deviceId,
+      newId: this.context.newId(),
+    });
+    await this.commitChanges(changes, [state.series, ...state.exceptions]);
+  }
+  async deleteOccurrence(id: string, originalStart: number, scope: SeriesScope): Promise<void> {
+    const state = await this.seriesState(id, originalStart);
+    const changes = deleteSeries(state, originalStart, scope, {
+      now: this.context.now(),
+      deviceId: this.context.deviceId,
+      newId: this.context.newId(),
+    });
+    await this.commitChanges(changes, [state.series, ...state.exceptions]);
   }
   override async softDelete(id: string): Promise<boolean> {
     if (!(await this.get(id))) return false;

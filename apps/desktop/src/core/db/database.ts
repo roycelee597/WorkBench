@@ -6,6 +6,7 @@ export type SqlRow = Record<string, SqlValue>;
 export interface SqlStatement {
   query: string;
   values: SqlValue[];
+  expectedRows?: number;
 }
 
 export interface SqlDatabase {
