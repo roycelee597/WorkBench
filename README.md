@@ -3,7 +3,7 @@
 WorkBench 是一个以本地数据为中心的模块化桌面工作台，使用 Tauri 2、React、TypeScript 和 Vite 构建。
 项目先支持 Windows，内置综合工作台，后续按架构计划加入沙盒分工作台。
 
-当前进入 **Phase 1：综合工作台**，已提供 SQLite 数据层、主框架、Tiptap 备忘录、主题设置和备忘录回收站；今天、日程、提醒事项暂为占位页，SDK 与插件运行时将在后续阶段实现。
+当前进入 **Phase 1：综合工作台**，已提供 SQLite 数据层、主框架、Tiptap 备忘录、月／周／日日程、日程提前提醒数据联动、主题设置和备忘录／日程回收站；今天、提醒事项暂为占位页，通知调度与 SDK、插件运行时将在后续阶段实现。
 项目的唯一设计依据是 [ARCHITECTURE.md](ARCHITECTURE.md)，开发规则见 [AGENTS.md](AGENTS.md)。
 
 ![Windows 备忘录运行截图](docs/screenshots/memos-light.jpg)
@@ -77,7 +77,8 @@ pnpm --filter desktop tauri dev
 
 1. 确认命令没有报错，桌面窗口标题为 WorkBench，中文页面能正常显示。
 2. 按 [备忘录手动验证步骤](docs/memos-verification.md) 检查编辑、自动保存、主题和回收站；截图说明也在该文档中。
-3. 关闭窗口并在终端按 `Ctrl+C`，确认开发进程退出。
+3. 按 [日程手动验证步骤](docs/calendar-verification.md) 检查三种视图、编辑／拖动／缩放、重复范围、默认提醒及日程恢复。该文档包含 FullCalendar 的选型与 MIT 许可证说明。
+4. 关闭窗口并在终端按 `Ctrl+C`，确认开发进程退出。
 
 GitHub Actions 会在 `windows-latest` 上检查安装、lint、类型、测试和桌面编译。
 
