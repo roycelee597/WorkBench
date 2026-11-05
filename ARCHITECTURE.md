@@ -113,7 +113,7 @@ flowchart TB
 
 **关键原则**
 - 工作台**永远拿不到** Tauri API，也不能直接碰数据库；一切都经过 Bridge，Bridge 每次都检查权限。
-- **综合工作台也走 SDK**（自己吃自己的狗粮）：这样插件接口一定是够用、经过检验的。如果某个功能实在做不了（比如复杂的系统托盘菜单），允许它通过"内置专属权限"访问，但要在代码里注明原因。
+- **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问；Phase 2 只替换该入口为 SDK。其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
 - 业务逻辑尽量写在 TypeScript（④），Rust（⑤）只做系统能力。
 
 ---
@@ -474,8 +474,8 @@ gh repo create workbench --public --source . --remote origin --push
 - 首次启动生成 device_id 存入 settings。
 - 在 src/core/repositories 下实现 memos、events、reminders、settings 的仓库：统一用 UUID v7、毫秒时间戳、软删除，查询默认排除已删除。为每个仓库写 Vitest 单元测试。
 第二步（界面）：
-- 用 Tailwind + shadcn/ui 做主框架：左侧工作台侧边栏、顶部标题、内容区、设置页；支持浅色/深色主题。
-- 在 workbenches/general 实现综合工作台三个页签：备忘录（列表+Markdown 编辑、置顶、搜索）、日程（月/周视图，新建/编辑/删除，支持简单重复）、提醒事项（列表、到期时间、完成、贪睡）。
+- 用 Tailwind + shadcn/ui 做主框架：左侧工作台侧边栏，底部设置与回收站入口；主题默认跟随系统，可切换浅色/深色并保存设置。
+- 在 workbenches/general 实现四个页签：今天 / 备忘录 / 日程 / 提醒事项，默认今天。备忘录使用 Tiptap 所见即所得编辑并以 Markdown 存储，500ms 防抖自动保存，切换/关闭前立即保存，支持置顶、标签补全、搜索与筛选；其余功能按 `docs/specs/general-workbench.md` 分步实现。
 - 本阶段综合工作台可以直接调用 core 仓库，但所有调用集中在 workbenches/general/src/api.ts 一个文件里，方便 Phase 2 换成 SDK。
 第三步（托盘与提醒）：
 - 启用系统托盘（tray-icon），关闭窗口改为隐藏到托盘，托盘菜单：打开、新建提醒、退出。
