@@ -1,6 +1,7 @@
 import { useRef, type ReactNode } from "react";
 import * as Primitive from "@radix-ui/react-dialog";
 import { Button } from "./Button";
+import { cn } from "./utils";
 
 // shadcn/ui 的 Radix 对话框结构：焦点圈定、Esc 关闭、关闭后还原焦点。
 export function Dialog({
@@ -10,6 +11,7 @@ export function Dialog({
   description,
   children,
   footer,
+  className,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -17,6 +19,7 @@ export function Dialog({
   description: string;
   children?: ReactNode;
   footer?: ReactNode;
+  className?: string;
 }) {
   const previousFocus = useRef<HTMLElement | null>(null);
   return (
@@ -32,7 +35,10 @@ export function Dialog({
             event.preventDefault();
             previousFocus.current?.focus();
           }}
-          className="fixed left-1/2 top-1/2 z-50 w-[min(440px,calc(100%-40px))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-6 shadow-xl focus:outline-none"
+          className={cn(
+            "fixed left-1/2 top-1/2 z-50 w-[min(440px,calc(100%-40px))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border bg-card p-6 shadow-xl focus:outline-none",
+            className,
+          )}
         >
           <Primitive.Title className="text-lg font-semibold tracking-tight">
             {title}

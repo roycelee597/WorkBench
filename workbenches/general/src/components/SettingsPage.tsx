@@ -2,6 +2,9 @@ import { Monitor, Sun, Moon, Check } from "lucide-react";
 import { cn } from "@workbench/ui";
 import { workspace } from "../workspace-store";
 import type { Theme } from "../api";
+import { generalApi } from "../api";
+import { reminderChoices } from "../calendar-model";
+import { useEffect, useState } from "react";
 const choices = [
   { value: "system", label: "跟随系统", Icon: Monitor },
   { value: "light", label: "浅色", Icon: Sun },
@@ -9,6 +12,26 @@ const choices = [
 ] as const;
 export function SettingsPage() {
   const state = workspace.useWorkspace();
+  const [reminder, setReminder] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void generalApi
+      .getDefaultEventReminder()
+      .then((value) => {
+        if (current) setReminder(value);
+      })
+      .catch(() => {
+        if (current) setError("未能读取日程默认提醒，请重新打开设置。");
+      })
+      .finally(() => {
+        if (current) setLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
   function choose(theme: Theme) {
     void state.setTheme(theme);
   }
@@ -70,6 +93,40 @@ export function SettingsPage() {
             </button>
           ))}
         </div>
+      </div>
+      <div className="settings-section event-default-setting">
+        <div>
+          <h2>日程默认提前提醒</h2>
+          <p>用于新建日程，已有日程保持原来的提前量。</p>
+        </div>
+        <label className="event-field">
+          提前量
+          <select
+            aria-label="日程默认提前提醒"
+            disabled={loading || state.busy}
+            value={reminder ?? "none"}
+            onChange={async (event) => {
+              const value = event.target.value === "none" ? null : Number(event.target.value);
+              setLoading(true);
+              setError(null);
+              try {
+                await generalApi.setDefaultEventReminder(value);
+                setReminder(value);
+              } catch {
+                setError("保存失败，请重试。");
+              } finally {
+                setLoading(false);
+              }
+            }}
+          >
+            {reminderChoices.map((choice) => (
+              <option value={choice.value ?? "none"} key={choice.value ?? "none"}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {error && <p role="alert">{error}</p>}
       </div>
     </section>
   );

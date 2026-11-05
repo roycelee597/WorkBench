@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Sun, FileText, CalendarDays, Bell, ArrowUpRight, CircleAlert, Leaf } from "lucide-react";
 import { Button, cn } from "@workbench/ui";
 import { workspace, type Page } from "./workspace-store";
 import { MemosPage } from "./components/MemosPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { TrashPage } from "./components/TrashPage";
+const CalendarPage = lazy(() =>
+  import("./components/CalendarPage").then((module) => ({ default: module.CalendarPage })),
+);
 
 const tabs = [
   { page: "today", label: "今天", Icon: Sun },
@@ -172,6 +175,16 @@ export function GeneralWorkbench() {
           <SettingsPage />
         ) : state.page === "trash" ? (
           <TrashPage />
+        ) : state.page === "calendar" ? (
+          <Suspense
+            fallback={
+              <p className="p-6" role="status">
+                正在打开日历…
+              </p>
+            }
+          >
+            <CalendarPage />
+          </Suspense>
         ) : (
           <Placeholder page={state.page} />
         )}

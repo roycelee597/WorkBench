@@ -6,6 +6,7 @@ import {
   type Memo,
   type MemoDraft,
   type Theme,
+  type CalendarEvent,
 } from "./api";
 import { MemoAutosave, type SaveStatus } from "./memo-autosave";
 
@@ -18,6 +19,7 @@ interface WorkspaceState {
   page: Page;
   memos: Memo[];
   deleted: Memo[];
+  deletedEvents: CalendarEvent[];
   selectedId: string | null;
   query: string;
   tag: string;
@@ -31,6 +33,8 @@ interface WorkspaceState {
   deleteMemo: (id: string) => Promise<void>;
   restoreMemo: (id: string) => Promise<void>;
   purgeMemo: (id: string) => Promise<void>;
+  restoreEvent: (id: string) => Promise<void>;
+  purgeEvent: (id: string) => Promise<void>;
   refreshTrash: () => Promise<void>;
   setTheme: (theme: Theme) => Promise<void>;
   setQuery: (query: string) => void;
@@ -47,9 +51,10 @@ export function createWorkspace(api: GeneralApi) {
   let initialization: Promise<void> | undefined;
   const useWorkspace = create<WorkspaceState>((set, get) => {
     async function refresh() {
-      const result = await api.load();
+      const [result, deletedEvents] = await Promise.all([api.load(), api.listDeletedEvents()]);
       set((state) => ({
         ...result,
+        deletedEvents,
         ready: true,
         selectedId: result.memos.some((row) => row.id === state.selectedId)
           ? state.selectedId
@@ -76,6 +81,7 @@ export function createWorkspace(api: GeneralApi) {
       page: "today",
       memos: [],
       deleted: [],
+      deletedEvents: [],
       selectedId: null,
       query: "",
       tag: "",
@@ -99,7 +105,13 @@ export function createWorkspace(api: GeneralApi) {
       navigate: (page) =>
         action(async () => {
           await queue.flush();
-          if (page === "trash") set({ deleted: await api.listDeleted() });
+          if (page === "trash") {
+            const [deleted, deletedEvents] = await Promise.all([
+              api.listDeleted(),
+              api.listDeletedEvents(),
+            ]);
+            set({ deleted, deletedEvents });
+          }
           set({ page });
         }),
       selectMemo: (id) =>
@@ -145,11 +157,25 @@ export function createWorkspace(api: GeneralApi) {
         }),
       refreshTrash: async () => {
         try {
-          set({ deleted: await api.listDeleted() });
+          const [deleted, deletedEvents] = await Promise.all([
+            api.listDeleted(),
+            api.listDeletedEvents(),
+          ]);
+          set({ deleted, deletedEvents });
         } catch (error) {
           console.error("刷新回收站失败", error);
         }
       },
+      restoreEvent: (id) =>
+        action(async () => {
+          await api.restoreEvent(id);
+          set({ deletedEvents: await api.listDeletedEvents() });
+        }),
+      purgeEvent: (id) =>
+        action(async () => {
+          await api.purgeEvent(id);
+          set({ deletedEvents: await api.listDeletedEvents() });
+        }),
       setTheme: (theme) =>
         action(async () => {
           await api.setTheme(theme);
