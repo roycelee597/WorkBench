@@ -164,12 +164,19 @@ export function editSeries(
   if (baseStart === null) throw new Error("修改后的起始时间不存在");
   const duration =
     patch.end_at !== undefined ? patch.end_at - selectedStart : series.end_at - series.start_at;
+  let editedEnd =
+    patch.end_at === undefined ? occurrenceEnd(series, baseStart, newZone) : baseStart + duration;
+  if (patch.end_at !== undefined && (patch.all_day ?? series.all_day)) {
+    const wallDuration = floatingTime(patch.end_at, newZone) - floatingTime(selectedStart, newZone);
+    const end = timestampFromFloating(floatingTime(baseStart, newZone) + wallDuration, newZone);
+    if (end === null) throw new Error("修改后的全天结束时间不存在");
+    editedEnd = end;
+  }
   const edited: CalendarEvent = {
     ...touch(series, context),
     ...patch,
     start_at: baseStart,
-    end_at:
-      patch.end_at === undefined ? occurrenceEnd(series, baseStart, newZone) : baseStart + duration,
+    end_at: editedEnd,
     timezone: newZone,
   };
 

@@ -173,4 +173,33 @@ describe("日程表单与重复预设", () => {
     );
     expect(sameTime.rrule).toBeUndefined();
   });
+  it("移动到夏令时日的全天例外调整时长时，给系列传递日历天长度", () => {
+    const anchor = Date.parse("2026-03-01T05:00Z");
+    const moved = Date.parse("2026-03-08T05:00Z");
+    const end = Date.parse("2026-03-10T04:00Z");
+    const series = event({
+      all_day: true,
+      timezone: "America/New_York",
+      start_at: anchor,
+      end_at: anchor + DAY,
+      rrule: "FREQ=DAILY;COUNT=10",
+    });
+    const child = event({
+      id: "child",
+      all_day: true,
+      timezone: series.timezone,
+      start_at: moved,
+      end_at: Date.parse("2026-03-09T04:00Z"),
+      recurrence_id: series.id,
+      original_start_at: anchor,
+      rrule: null,
+    });
+    const occurrence = expandEvents([series, child], { start: moved, end: moved + 1 }).find(
+      (row) => row.is_exception,
+    )!;
+    expect(scopedPatch({ end_at: end }, occurrence, series, "all").end_at).toBe(
+      Date.parse("2026-03-03T05:00Z"),
+    );
+    expect(scopedPatch({ end_at: end }, occurrence, series, "this").end_at).toBe(end);
+  });
 });

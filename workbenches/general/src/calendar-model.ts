@@ -283,8 +283,21 @@ export function scopedPatch(
     delete result.rrule;
     return result;
   }
-  if (patch.start_at === undefined && patch.end_at !== undefined)
-    patch = { ...patch, end_at: occurrence.original_start_at + patch.end_at - occurrence.start_at };
+  if (patch.start_at === undefined && patch.end_at !== undefined) {
+    let end = occurrence.original_start_at + patch.end_at - occurrence.start_at;
+    if ((patch.all_day ?? series.all_day) && occurrence.event.all_day) {
+      const duration =
+        floatingTime(patch.end_at, occurrence.event.timezone) -
+        floatingTime(occurrence.start_at, occurrence.event.timezone);
+      const converted = timestampFromFloating(
+        floatingTime(occurrence.original_start_at, series.timezone) + duration,
+        series.timezone,
+      );
+      if (converted === null) throw new Error("修改后的全天结束时间不存在");
+      end = converted;
+    }
+    patch = { ...patch, end_at: end };
+  }
   if (patch.start_at === undefined || patch.rrule !== undefined || !series.rrule) return patch;
   const rule = reanchorRule(
     series.rrule,
