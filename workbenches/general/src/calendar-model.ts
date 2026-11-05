@@ -283,6 +283,19 @@ export function scopedPatch(
     delete result.rrule;
     return result;
   }
+  // 例外可能已单独切换为全天/定时。把时间调整应用到系列时，时间与类型必须一起传递。
+  if (
+    (patch.start_at !== undefined || patch.end_at !== undefined) &&
+    patch.all_day === undefined &&
+    occurrence.event.all_day !== series.all_day
+  ) {
+    patch = {
+      ...patch,
+      all_day: occurrence.event.all_day,
+      start_at: patch.start_at ?? occurrence.start_at,
+      end_at: patch.end_at ?? occurrence.end_at,
+    };
+  }
   if (patch.start_at === undefined && patch.end_at !== undefined) {
     let end = occurrence.original_start_at + patch.end_at - occurrence.start_at;
     if ((patch.all_day ?? series.all_day) && occurrence.event.all_day) {

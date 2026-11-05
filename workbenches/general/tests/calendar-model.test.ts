@@ -202,4 +202,39 @@ describe("日程表单与重复预设", () => {
     );
     expect(scopedPatch({ end_at: end }, occurrence, series, "this").end_at).toBe(end);
   });
+  it.each([true, false])("系列为全天=%s 时，例外调整时长并应用全部会同时传递时间类型", (allDay) => {
+    const midnight = Date.parse("2026-01-05T00:00Z");
+    const anchor = midnight + (allDay ? 0 : 9 * HOUR);
+    const original = anchor + DAY;
+    const actual = midnight + DAY + (allDay ? 9 * HOUR : 0);
+    const end = actual + (allDay ? 2 * HOUR : 2 * DAY);
+    const series = event({
+      all_day: allDay,
+      start_at: anchor,
+      end_at: anchor + (allDay ? DAY : HOUR),
+      rrule: "FREQ=DAILY;COUNT=5",
+    });
+    const child = event({
+      id: "child",
+      all_day: !allDay,
+      start_at: actual,
+      end_at: actual + (allDay ? HOUR : DAY),
+      rrule: null,
+      recurrence_id: series.id,
+      original_start_at: original,
+    });
+    const occurrence = expandEvents([series, child], { start: actual, end: actual + 1 }).find(
+      (row) => row.is_exception,
+    )!;
+    const patch = scopedPatch({ end_at: end }, occurrence, series, "all");
+    expect(patch).toMatchObject({ all_day: !allDay, start_at: actual, end_at: end });
+    const changed = editSeries({ series, exceptions: [child] }, original, "all", patch, {
+      now: 1,
+      deviceId: "device",
+      newId: "unused",
+    }).updated[0]!;
+    expect(changed.all_day).toBe(!allDay);
+    expect(changed.start_at).toBe(midnight + (allDay ? 9 * HOUR : 0));
+    expect(changed.end_at - changed.start_at).toBe(allDay ? 2 * HOUR : 2 * DAY);
+  });
 });
