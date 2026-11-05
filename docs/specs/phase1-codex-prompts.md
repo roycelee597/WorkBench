@@ -46,10 +46,10 @@
 请先阅读 ARCHITECTURE.md（§7）、AGENTS.md 和 docs/specs/general-workbench.md（本次重点 §6、§7）。从最新 main 新建分支 feat/reminders：
 1. 提醒页：今天/计划中/全部/已完成四组；字段、勾选完成、优先级、重复按 spec §6；由日程生成的提醒显示日程图标并限制改时间。
 2. apps/desktop/src/core/scheduler：精确定时 + 30 秒轮询兜底；写 notified_at 防重复；贪睡固定 10 分钟；重复提醒完成或触发后推进下一次；启动时合并补发错过的提醒。用假时间写单测。
-3. 系统通知（tauri-plugin-notification）：先验证 Windows 下动作按钮是否可用；可用则提供「完成」「稍后 10 分钟」，不可用则点击通知打开应用并定位该提醒、在应用内提供这两个按钮。PR 说明写清采用哪种。
+3. 软件内通知（不要用 Windows 系统通知 / tauri-plugin-notification）：到点在应用内弹出通知条（标题 + 备注首行），按钮「完成」「稍后 10 分钟」；主窗口若在托盘则先显示并聚焦再弹。错过补发同样用软件内通知条。
 4. 托盘：关窗隐藏到托盘，菜单 打开/新建提醒/退出，双击打开。
 5. 开机自启（tauri-plugin-autostart）：默认关闭，设置页可开关；首次创建带时间提醒或带提前提醒的日程时弹一次提示，记录 autostart_prompted。
-6. 回收站页加入提醒分组。lint、typecheck、test、prettier、tauri dev 手测（含真实到点通知）通过。Conventional Commits，gh 开 PR，报告验证结果和 PR 链接。
+6. 回收站页加入提醒分组。lint、typecheck、test、prettier、tauri dev 手测（含软件内到点通知条）通过。Conventional Commits，gh 开 PR，报告验证结果和 PR 链接。
 ```
 
 ## PR 5：今天页 + 快速新建（feat/today）

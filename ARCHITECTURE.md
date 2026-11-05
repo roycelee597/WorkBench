@@ -94,7 +94,7 @@ flowchart TB
 
     subgraph Native["⑤ 系统层 Rust（apps/desktop/src-tauri）"]
         SQL["SQLite（plugin-sql）"]
-        Notify["通知（plugin-notification）"]
+        Notify["软件内通知条"]
         Tray["托盘 / 自启 / 单实例"]
         Install["插件安装：解压 zip、校验、wbpkg:// 协议"]
     end
@@ -257,8 +257,9 @@ CREATE TABLE settings (
 ```
 
 **规则**
-- 综合工作台以 `docs/specs/general-workbench.md` §8、§10 补充本节；可执行约束以 `apps/desktop/src-tauri/migrations/0001_init.sql` 为准。
-- `memos`、`events`、`reminders`、`settings` 使用 `deletion_group_id` 标识一次联动删除，使用 `purged_at` 区分可恢复记录和已清空内容的墓碑；永久清空不删除行，也不清除 `deleted_at`。
+- 综合工作台以 `docs/specs/general-workbench.md` §8、§10 补充本节；可执行约束以 `apps/desktop/src-tauri/migrations/` 中按序执行的迁移为准。
+- `0002_reminder_scheduler.sql` 新增提醒的 `timezone`、`recurrence_start_at`、`schedule_version`，保留 RRULE 原起点与版本；新增 `reminder_occurrences`，记录父提醒、规则版本、实际到期时间、内容快照及完成/通知/贪睡状态，带完整 UUID v7 与墓碑元数据。活动实例按 `(occurrence_key, schedule_key)` 唯一，并有父提醒与待通知索引。
+- `memos`、`events`、`reminders`、`reminder_occurrences`、`settings` 使用 `deletion_group_id` 标识一次联动删除，使用 `purged_at` 区分可恢复记录和已清空内容的墓碑；永久清空不删除行，也不清除 `deleted_at`。
 - `settings` 继续按唯一 `key` 读写 JSON，同时带完整元数据；`device_id` 首次生成后保持不变，`last_trash_purge_at` 与清理操作在同一事务中写入。
 - 数据库使用 SQL 插件预加载和版本迁移；Windows 路径为 `%APPDATA%/com.royce.workbench/workbench.db`。联动写入通过插件连接池的通用事务适配执行，业务逻辑仍在 TypeScript。
 - 改表结构只能**新增迁移文件**（`0002_xxx.sql`），不能改已发布的旧迁移。
@@ -321,27 +322,27 @@ CREATE TABLE settings (
 
 ## 7. 提醒与通知机制（Windows）
 
-**结论：应用必须常驻系统托盘，提醒才会准时触发。** Tauri 的通知插件在桌面端只负责"立即弹出"，定时靠我们自己的调度器。
+**应用必须保持运行，提醒才会准时触发。** 关闭主窗口时常驻托盘，到点先显示并聚焦主窗口，再展示软件内通知条；不使用 Windows 系统通知或 `tauri-plugin-notification`。
 
 ```mermaid
 sequenceDiagram
     participant S as 调度器 Scheduler (TS)
     participant DB as SQLite
-    participant N as 通知插件
-    loop 每 30 秒 + 数据变动时
-        S->>DB: 查 due_at <= now 且未完成、未通知、未贪睡
-        DB-->>S: 到期提醒列表
-        S->>N: sendNotification(标题, 内容)
-        S->>DB: 写 notified_at；若有 rrule 则生成下一次 due_at
+    participant W as 主窗口与通知条
+    loop 精确定时 + 每 30 秒 + 数据变动时
+        S->>DB: 查询到期、未完成、未通知、未贪睡的实例
+        S->>DB: 事务领取 notified_at，推进重复提醒下一次
+        S->>W: 显示并聚焦主窗口
+        W->>W: 通知条（标题、备注首行、完成、稍后 10 分钟）
     end
 ```
 
-- **关窗口 = 隐藏到托盘**，不是退出；托盘菜单有"打开 / 新建提醒 / 退出"。
-- 开启 `autostart`（默认开、可关）+ `single-instance`。
-- **补发**：启动时检查"关机期间错过的提醒"，合并成一条"你有 N 条错过的提醒"。
-- 用 `setTimeout` 精确对准下一个到期时间，再用 30 秒轮询兜底（电脑睡眠唤醒后计时器可能不准）。
-- ⚠️ 开发模式（`pnpm tauri dev`）下通知会显示 PowerShell 图标；**要测真实效果需先打包安装**（Phase 3 前可用 `pnpm tauri build` 装一次）。
-- 以后（Phase 6）手机端改用系统级定时通知，桌面逻辑不变。
+- **关窗口 = 隐藏到托盘**；托盘菜单为「打开 WorkBench / 新建提醒 / 退出」，双击图标打开。
+- 接入 `autostart`（默认关闭、设置页可切换）与 `single-instance`。首次创建带时间提醒或带提前提醒的日程，仅提示一次是否开启自启，写入 `autostart_prompted`；自启以 `--background` 隐藏启动。
+- `setTimeout` 精确对准下一次到期时间，30 秒轮询兜底；数据变动立即重排。`notified_at` 在通知展示前以条件事务写入，唤起窗口失败则释放回执并重试。
+- 贪睡固定 10 分钟。重复提醒的每个实例独立保存回执，完成或触发后从固定规则起点推进下一次；旧通知的完成或贪睡不影响未来实例。
+- **启动补发**：关机期间到期且未通知的提醒合并为一条软件内通知条「你有 N 条错过的提醒」，点击打开「今天」页。
+- 开发模式即可验证软件内通知，不依赖 Windows 通知权限或安装包。退出应用或关机后无法即时提醒；再次启动时补发。
 
 ---
 
@@ -479,9 +480,9 @@ gh repo create workbench --public --source . --remote origin --push
 - 本阶段综合工作台可以直接调用 core 仓库，但所有调用集中在 workbenches/general/src/api.ts 一个文件里，方便 Phase 2 换成 SDK。
 第三步（托盘与提醒）：
 - 启用系统托盘（tray-icon），关闭窗口改为隐藏到托盘，托盘菜单：打开、新建提醒、退出。
-- 接入 tauri-plugin-notification、autostart、single-instance、window-state。
+- 接入 autostart、single-instance；到点先唤起窗口，再显示带完成/贪睡按钮的软件内通知条。
 - 按第 7 节实现 src/core/scheduler：精确定时 + 30 秒轮询兜底，写 notified_at，处理 rrule 生成下一次，启动时合并补发错过的提醒。为调度逻辑写单元测试（用假时间）。
-每一步完成后：确保 lint/typecheck/test 通过，按 Conventional Commits 提交，告诉我手动测试步骤。注意：开发模式下 Windows 通知显示 PowerShell 图标是正常的。
+每一步完成后：确保 lint/typecheck/test 通过，按 Conventional Commits 提交，告诉我手动测试步骤。软件内通知在开发模式下即可验证。
 ```
 
 ### Phase 2：插件运行时 + 本地安装 + 示例分工作台
