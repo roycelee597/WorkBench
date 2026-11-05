@@ -74,7 +74,12 @@ export function serializeRule(options: Parameters<typeof RRule.optionsToString>[
   return line.slice("RRULE:".length);
 }
 
-export function seriesStarts(event: CalendarEvent, from: number, to: number): number[] {
+export function seriesStarts(
+  event: CalendarEvent,
+  from: number,
+  to: number,
+  limit = Infinity,
+): number[] {
   if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from >= to)
     throw new Error("展开范围必须是有效的半开时间区间");
   if (event.rrule === null)
@@ -103,7 +108,10 @@ export function seriesStarts(event: CalendarEvent, from: number, to: number): nu
     if (actual === null || actual < event.start_at) return true;
     if (until !== undefined && actual > until) return false;
     validCount++;
-    if (actual >= from && actual < to) result.push(actual);
+    if (actual >= from && actual < to) {
+      result.push(actual);
+      if (result.length >= limit) return false;
+    }
     return true;
   });
   return result;

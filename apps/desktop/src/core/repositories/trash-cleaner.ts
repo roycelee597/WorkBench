@@ -4,6 +4,7 @@ import { EventsRepository } from "./events";
 import { MemosRepository } from "./memos";
 import { RemindersRepository } from "./reminders";
 import { SettingsRepository } from "./settings";
+import { ReminderOccurrencesRepository } from "./reminder-occurrences";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const TRASH_RETENTION_MS = 30 * DAY_MS;
@@ -24,6 +25,11 @@ export class TrashCleaner {
       memo.purgeStatement("deleted_at < ?", [cutoff], now),
       events.purgeStatement("deleted_at < ?", [cutoff], now),
       reminders.purgeStatement("deleted_at < ?", [cutoff], now),
+      new ReminderOccurrencesRepository(this.db, this.context).purgeStatement(
+        "deleted_at < ?",
+        [cutoff],
+        now,
+      ),
       this.settings.valueStatement("last_trash_purge_at", now, now),
     ]);
     return { memos: results[0] ?? 0, events: results[1] ?? 0, reminders: results[2] ?? 0 };

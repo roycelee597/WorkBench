@@ -11,7 +11,7 @@ export { validateEvent } from "../calendar/event-validation";
 import type { SqlDatabase } from "../db/database";
 import { BaseRepository } from "./base-repository";
 import type { CalendarEvent, EventFields, NewEvent, RepositoryContext } from "./models";
-import { eventDefinition, reminderDefinition } from "./record-codecs";
+import { eventDefinition, reminderDefinition, reminderOccurrenceDefinition } from "./record-codecs";
 import { encodeFields, insertStatement, updateStatement } from "./sql-statements";
 import { eventReminderStatements } from "./event-reminder-sync";
 
@@ -172,6 +172,20 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
           [event.id],
         ),
       );
+    for (const event of deleted)
+      statements.push(
+        updateStatement(
+          "reminder_occurrences",
+          {
+            deleted_at: event.deleted_at,
+            deletion_group_id: event.deletion_group_id,
+            updated_at: now,
+            device_id: this.context.deviceId,
+          },
+          "reminder_id IN (SELECT id FROM reminders WHERE event_id = ? AND deletion_group_id = ?) AND deleted_at IS NULL",
+          [event.id, event.deletion_group_id],
+        ),
+      );
     const active = [...changes.created, ...changes.updated].filter(
       (event) => event.deleted_at === null,
     );
@@ -245,6 +259,12 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
         "event_id IN (SELECT id FROM events WHERE deletion_group_id = ?) AND deleted_at IS NULL",
         [group],
       ),
+      updateStatement(
+        "reminder_occurrences",
+        fields,
+        "reminder_id IN (SELECT id FROM reminders WHERE deletion_group_id = ?) AND deleted_at IS NULL",
+        [group],
+      ),
     ]);
     return (result[0] ?? 0) > 0;
   }
@@ -273,6 +293,12 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
         "event_id IN (SELECT id FROM events WHERE (id = ? OR recurrence_id = ?) AND deleted_at IS NULL AND purged_at IS NULL) AND deletion_group_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL",
         [id, id, record.deletion_group_id],
       ),
+      updateStatement(
+        "reminder_occurrences",
+        fields,
+        "reminder_id IN (SELECT id FROM reminders WHERE event_id IN (SELECT id FROM events WHERE id = ? OR recurrence_id = ?) AND deleted_at IS NULL AND purged_at IS NULL) AND deletion_group_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL",
+        [id, id, record.deletion_group_id],
+      ),
     ]);
     return (result[0] ?? 0) > 0;
   }
@@ -282,6 +308,17 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
     if (record.deleted_at === null) throw new Error("只能清空回收站中的记录");
     const now = this.context.now();
     const result = await this.db.batch([
+      updateStatement(
+        "reminder_occurrences",
+        {
+          ...reminderOccurrenceDefinition.cleared,
+          purged_at: now,
+          updated_at: now,
+          device_id: this.context.deviceId,
+        },
+        "reminder_id IN (SELECT id FROM reminders WHERE event_id IN (SELECT id FROM events WHERE id = ? OR recurrence_id = ?)) AND deleted_at IS NOT NULL AND purged_at IS NULL",
+        [id, id],
+      ),
       updateStatement(
         "reminders",
         {
@@ -295,6 +332,6 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
       ),
       this.purgeStatement("id = ? OR recurrence_id = ?", [id, id], now),
     ]);
-    return (result[1] ?? 0) > 0;
+    return (result[2] ?? 0) > 0;
   }
 }

@@ -1,6 +1,7 @@
 import type { SqlStatement, SqlValue } from "../db/database";
 import type { CalendarEvent, Reminder, RepositoryContext } from "./models";
 import { insertStatement, updateStatement } from "./sql-statements";
+import { retireReminder } from "./reminder-lifecycle";
 
 export function eventReminderStatements(
   event: CalendarEvent,
@@ -15,19 +16,8 @@ export function eventReminderStatements(
       row.deleted_at === null &&
       row.purged_at === null,
   );
-  const retire = (row: Reminder) =>
-    updateStatement(
-      "reminders",
-      {
-        deleted_at: now,
-        updated_at: now,
-        device_id: context.deviceId,
-        deletion_group_id: context.newId(),
-      },
-      "id = ? AND deleted_at IS NULL",
-      [row.id],
-    );
-  if (event.remind_before_minutes === null) return active.map(retire);
+  const retire = (row: Reminder) => retireReminder(row.id, context);
+  if (event.remind_before_minutes === null) return active.flatMap(retire);
   const fields: Record<string, SqlValue> = {
     title: event.title,
     notes: event.notes,
@@ -38,11 +28,23 @@ export function eventReminderStatements(
     source_workbench: event.source_workbench,
     updated_at: now,
     device_id: context.deviceId,
+    timezone: event.timezone,
+    recurrence_start_at: event.start_at - event.remind_before_minutes * 60_000,
   };
   if (active[0]) {
     const current = active[0];
-    if (current.due_at !== fields.due_at || current.rrule !== fields.rrule)
-      Object.assign(fields, { completed_at: null, notified_at: null, snooze_until: null });
+    const changed =
+      (current.recurrence_start_at ?? current.due_at) !== fields.recurrence_start_at ||
+      current.rrule !== fields.rrule ||
+      current.timezone !== event.timezone;
+    if (changed)
+      Object.assign(fields, {
+        completed_at: null,
+        notified_at: null,
+        snooze_until: null,
+        schedule_version: context.newId(),
+      });
+    else fields.due_at = current.due_at;
     return [
       {
         ...updateStatement(
@@ -53,7 +55,22 @@ export function eventReminderStatements(
         ),
         expectedRows: 1,
       },
-      ...active.slice(1).map(retire),
+      ...(changed
+        ? [
+            updateStatement(
+              "reminder_occurrences",
+              {
+                deleted_at: now,
+                updated_at: now,
+                device_id: context.deviceId,
+                deletion_group_id: context.newId(),
+              },
+              "reminder_id = ? AND deleted_at IS NULL AND completed_at IS NULL",
+              [current.id],
+            ),
+          ]
+        : []),
+      ...active.slice(1).flatMap(retire),
     ];
   }
   const statement = insertStatement("reminders", {
@@ -66,6 +83,7 @@ export function eventReminderStatements(
     completed_at: null,
     notified_at: null,
     snooze_until: null,
+    schedule_version: context.newId(),
     ...fields,
   });
   // 同一事务中检查，避免多个窗口在缺少关联提醒时重复创建；不改已发布迁移。
