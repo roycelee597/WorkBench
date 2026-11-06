@@ -9,6 +9,7 @@ import {
   type CalendarEvent,
   type Reminder,
   type ReminderTarget,
+  type EventOccurrence,
 } from "./api";
 import { MemoAutosave, type SaveStatus } from "./memo-autosave";
 
@@ -24,11 +25,14 @@ interface WorkspaceState {
   deletedEvents: CalendarEvent[];
   deletedReminders: Reminder[];
   reminderTarget: ReminderTarget | null;
+  calendarTarget: EventOccurrence | null;
+  calendarNavigationVersion: number;
   reminderCreate: boolean;
   reminderNavigationVersion: number;
   missedCount: number;
   autostartOffer: boolean;
   desktopError: string | null;
+  shortcutError: string | null;
   selectedId: string | null;
   query: string;
   tag: string;
@@ -46,6 +50,8 @@ interface WorkspaceState {
   purgeEvent: (id: string) => Promise<void>;
   restoreReminder: (id: string) => Promise<void>;
   purgeReminder: (id: string) => Promise<void>;
+  openCalendar: (target: EventOccurrence) => Promise<void>;
+  openMemo: (id: string) => Promise<void>;
   openReminder: (target: ReminderTarget) => Promise<void>;
   newReminder: () => Promise<void>;
   openMissed: (count: number) => Promise<void>;
@@ -103,11 +109,14 @@ export function createWorkspace(api: GeneralApi) {
       deletedEvents: [],
       deletedReminders: [],
       reminderTarget: null,
+      calendarTarget: null,
+      calendarNavigationVersion: 0,
       reminderCreate: false,
       reminderNavigationVersion: 0,
       missedCount: 0,
       autostartOffer: false,
       desktopError: null,
+      shortcutError: null,
       selectedId: null,
       query: "",
       tag: "",
@@ -139,7 +148,7 @@ export function createWorkspace(api: GeneralApi) {
             ]);
             set({ deleted, deletedEvents, deletedReminders });
           }
-          set({ page, reminderTarget: null, reminderCreate: false });
+          set({ page, calendarTarget: null, reminderTarget: null, reminderCreate: false });
         }),
       selectMemo: (id) =>
         action(async () => {
@@ -222,6 +231,22 @@ export function createWorkspace(api: GeneralApi) {
           await api.purgeReminder(id);
           set({ deletedReminders: await api.listDeletedReminders() });
         }),
+      openMemo: (id) =>
+        action(async () => {
+          await queue.flush();
+          const result = await api.load();
+          if (!result.memos.some((memo) => memo.id === id)) throw new Error("备忘录已删除");
+          set({ memos: result.memos, page: "memos", selectedId: id, query: "", tag: "" });
+        }),
+      openCalendar: (target) =>
+        action(async () => {
+          await queue.flush();
+          set((state) => ({
+            page: "calendar",
+            calendarTarget: target,
+            calendarNavigationVersion: state.calendarNavigationVersion + 1,
+          }));
+        }),
       openReminder: (target) =>
         action(async () => {
           await queue.flush();
@@ -271,6 +296,13 @@ export function createWorkspace(api: GeneralApi) {
       if (error) console.error("保存备忘录失败", error);
     },
   });
-  return { useWorkspace, flush: () => queue.flush() };
+  return {
+    useWorkspace,
+    flush: () => queue.flush(),
+    acceptCreatedMemo: (memo: Memo) =>
+      useWorkspace.setState((state) => ({
+        memos: filterMemos([...state.memos.filter((row) => row.id !== memo.id), memo]),
+      })),
+  };
 }
 export const workspace = createWorkspace(generalApi);

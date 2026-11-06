@@ -1,6 +1,9 @@
+import type { ShortcutStatus } from "../../../apps/desktop/src/core/shortcut-controller";
 export interface HostServices {
   getAutostart: () => Promise<boolean>;
   setAutostart: (enabled: boolean) => Promise<void>;
+  getShortcut?: () => Promise<ShortcutStatus>;
+  setShortcut?: (value: string) => Promise<ShortcutStatus>;
 }
 let services: HostServices = {
   getAutostart: async () => false,
@@ -16,6 +19,14 @@ export function configureHostServices(value: HostServices) {
 export const hostServices = {
   getAutostart: () => services.getAutostart(),
   setAutostart: (enabled: boolean) => services.setAutostart(enabled),
+  getShortcut: async () => {
+    if (!services.getShortcut) throw new Error("请在桌面应用中设置全局快捷键");
+    return services.getShortcut();
+  },
+  setShortcut: async (value: string) => {
+    if (!services.setShortcut) throw new Error("请在桌面应用中设置全局快捷键");
+    return services.setShortcut(value);
+  },
 };
 export function offerAutostart() {
   pendingOffer = true;

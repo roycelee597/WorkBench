@@ -10,6 +10,8 @@ import {
 export interface ReminderTarget {
   reminderId: string;
   occurrenceId?: string;
+  dueAt?: number | null;
+  scheduleVersion?: string;
 }
 export interface ReminderItem {
   key: string;
@@ -98,9 +100,23 @@ async function targetOccurrence(data: ReminderData, target: ReminderTarget) {
   const due = currentReminderDue(parent, events);
   if (parent.due_at !== null && due === null && !target.occurrenceId)
     throw new Error("此日程已经没有可用的提醒实例");
+  if (target.scheduleVersion !== undefined && target.scheduleVersion !== parent.schedule_version)
+    throw new Error("此提醒的时间已改变，请刷新后重新操作");
+  const expectedDue = target.dueAt !== undefined ? target.dueAt : due;
+  const prior =
+    target.dueAt !== undefined && expectedDue !== due
+      ? (await data.occurrences.list()).find(
+          (row) =>
+            row.reminder_id === parent.id &&
+            row.schedule_key === parent.schedule_version &&
+            row.due_at === expectedDue,
+        )
+      : undefined;
+  if (!target.occurrenceId && expectedDue !== due && !prior)
+    throw new Error("此提醒的时间已改变，请刷新后重新操作");
   const row = target.occurrenceId
     ? await data.occurrences.get(target.occurrenceId)
-    : await data.occurrences.ensure(parent, due);
+    : (prior ?? (await data.occurrences.ensure(parent, expectedDue)));
   if (!row || row.reminder_id !== parent.id || !validOccurrence(row, parent, events))
     throw new Error("此提醒的时间已改变，请刷新后重新操作");
   return { parent, events, row };

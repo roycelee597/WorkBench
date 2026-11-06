@@ -27,6 +27,15 @@ import {
   type ReminderTarget,
 } from "../../../apps/desktop/src/core/scheduler/reminder-service";
 import { hostServices, offerAutostart } from "./host-services";
+import { localDayRange, sortTodayEvents, todayReminders, type TodayData } from "./today-model";
+import {
+  quickInputSchema,
+  type QuickPreferences,
+} from "../../../apps/desktop/src/core/quick-create-contract";
+import {
+  DEFAULT_SHORTCUT,
+  normalizeShortcut,
+} from "../../../apps/desktop/src/core/shortcut-controller";
 
 export type {
   Memo,
@@ -116,6 +125,107 @@ export function createGeneralApi(
     }
   }
   return {
+    async quickPreferences(): Promise<QuickPreferences> {
+      const settings = (await getData()).settings;
+      const [theme, reminder] = await Promise.all([
+        settings.getValue("theme"),
+        settings.getValue("default_event_remind"),
+      ]);
+      return {
+        theme: theme === "light" || theme === "dark" ? theme : "system",
+        defaultReminder:
+          typeof reminder === "number" &&
+          reminderChoices.some((choice) => choice.value === reminder)
+            ? reminder
+            : null,
+      };
+    },
+    async quickCreate(input: unknown) {
+      const parsed = quickInputSchema.safeParse(input);
+      if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "快速新建参数无效");
+      const value = parsed.data;
+      const data = await getData();
+      if (value.type === "memo") {
+        const record = await data.memos.create({ title: value.title, content: value.content });
+        return { type: "memo" as const, record };
+      }
+      if (value.type === "event") {
+        const preference = await data.settings.getValue("default_event_remind");
+        const remind =
+          typeof preference === "number" &&
+          reminderChoices.some((choice) => choice.value === preference)
+            ? preference
+            : null;
+        const record = await data.events.create({
+          title: value.title,
+          notes: value.notes,
+          start_at: value.start_at,
+          end_at: value.end_at,
+          timezone: value.timezone,
+          all_day: value.all_day,
+          remind_before_minutes: remind,
+        });
+        await prompt(record.remind_before_minutes !== null);
+        return { type: "event" as const, record };
+      }
+      const record = await data.reminders.create({
+        title: value.title,
+        notes: value.notes,
+        due_at: value.due_at,
+        timezone: value.timezone,
+      });
+      await prompt(record.due_at !== null);
+      return { type: "reminder" as const, record };
+    },
+    async getStoredShortcut() {
+      const value = await (await getData()).settings.getValue("global_shortcut");
+      return value === undefined
+        ? DEFAULT_SHORTCUT
+        : normalizeShortcut(typeof value === "string" ? value : "");
+    },
+    async setStoredShortcut(value: string) {
+      await (await getData()).settings.setValue("global_shortcut", normalizeShortcut(value));
+    },
+    async getGlobalShortcut() {
+      return hostServices.getShortcut();
+    },
+    async setGlobalShortcut(value: string) {
+      return hostServices.setShortcut(value);
+    },
+    async loadToday(now = (options.now ?? Date.now)()): Promise<TodayData> {
+      const data = await getData();
+      const [events, reminders, memos] = await Promise.all([
+        data.events.list(),
+        loadReminderItems(data),
+        data.memos.list(),
+      ]);
+      return {
+        events: sortTodayEvents(expandEvents(events, localDayRange(now))),
+        reminders: todayReminders(reminders, now),
+        memos: filterMemos(memos)
+          .filter((memo) => memo.pinned)
+          .map((memo) => ({
+            ...memo,
+            preview: markdownSummary(memo.content)
+              .split(/\r?\n/)
+              .filter((line) => line.trim())
+              .slice(0, 2)
+              .join("\n"),
+          })),
+      };
+    },
+    async completeReminderItem(item: ReminderItem) {
+      await completeReminder(
+        await getData(),
+        {
+          reminderId: item.reminder.id,
+          ...(item.occurrenceId ? { occurrenceId: item.occurrenceId } : {}),
+          dueAt: item.due_at,
+          scheduleVersion: item.reminder.schedule_version,
+        },
+        (options.now ?? Date.now)(),
+      );
+    },
     async load() {
       const data = await getData();
       const [memos, deleted, preference] = await Promise.all([
