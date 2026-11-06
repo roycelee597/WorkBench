@@ -9,6 +9,8 @@ import {
 } from "../core/scheduler/notification-port";
 import { useReminderNotices } from "./reminder-notices";
 import { ReminderNotices } from "./ReminderNotices";
+import { initializeQuickHost } from "./quick-bridge";
+import { shortcutController } from "./shortcut-runtime";
 import type { ReminderScheduler } from "../core/scheduler/scheduler";
 import {
   GeneralWorkbench,
@@ -87,11 +89,20 @@ export function AppShell() {
     if (!isTauri()) return;
     configureHostServices({
       getAutostart: isEnabled,
+      getShortcut: async () => {
+        await shortcutController.start();
+        return shortcutController.getStatus();
+      },
+      setShortcut: (value) => shortcutController.configure(value),
       setAutostart: async (enabled) => {
         if (enabled) await enable();
         else await disable();
       },
     });
+    void initializeQuickHost().catch(() =>
+      workspace.useWorkspace.setState({ shortcutError: "快速新建服务未能启动，请重启应用。" }),
+    );
+    void shortcutController.start();
     const offOffer = onAutostartOffer(() =>
       workspace.useWorkspace.setState({ autostartOffer: true }),
     );
@@ -236,6 +247,14 @@ export function AppShell() {
         </div>
       </aside>
       <main className="app-main">
+        {state.shortcutError && (
+          <div className="desktop-error" role="alert">
+            {state.shortcutError}
+            <Button size="sm" variant="outline" onClick={() => void state.navigate("settings")}>
+              快捷键设置
+            </Button>
+          </div>
+        )}
         {state.desktopError && (
           <div className="desktop-error" role="alert">
             {state.desktopError}

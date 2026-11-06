@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quick-create",
+  "description": "快速新建窗口仅能监听自己的响应、提交请求和隐藏自身，不能访问数据库或主窗口控制。",
+  "windows": ["quick-create"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "allow-quick-client"]
+}

@@ -69,7 +69,8 @@ const errorMessage = (error: unknown) =>
       ? "内容已发生变化，请取消后重新打开日程。"
       : "操作失败，请重试。";
 
-export function CalendarPage() {
+export function CalendarPage({ focus }: { focus?: EventOccurrence | null }) {
+  const [focusDismissed, setFocusDismissed] = useState(false);
   const calendar = useRef<FullCalendar>(null);
   const [range, setRange] = useState<TimeRange | null>(null);
   const [view, setView] = useState<View>("timeGridWeek");
@@ -82,7 +83,20 @@ export function CalendarPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editor, setEditor] = useState<Editor | null>(null);
+  const [editorOverride, setEditor] = useState<Editor | null>(null);
+  const focused =
+    !focusDismissed && focus ? data.occurrences.find((row) => row.key === focus.key) : undefined;
+  const series = focused ? data.events.find((row) => row.id === focused.series_id) : undefined;
+  const editor =
+    editorOverride ??
+    (focused && series
+      ? {
+          initial: occurrenceDraft(focused, series),
+          draft: occurrenceDraft(focused, series),
+          occurrence: focused,
+          series,
+        }
+      : null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [scope, setScope] = useState<SeriesScope>("this");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -117,6 +131,26 @@ export function CalendarPage() {
       current = false;
     };
   }, [range]);
+  useEffect(() => {
+    if (!range) return;
+    let current = true;
+    let off: (() => void) | undefined;
+    void generalApi
+      .subscribeChanges(() => {
+        if (current) void reload(range).catch((error: unknown) => setError(errorMessage(error)));
+      })
+      .then((unsubscribe) => {
+        if (current) off = unsubscribe;
+        else unsubscribe();
+      })
+      .catch(() => {
+        if (current) setError("日程更新监听暂不可用，请重新打开日历。");
+      });
+    return () => {
+      current = false;
+      off?.();
+    };
+  }, [range, reload]);
   async function run(write: () => Promise<unknown>) {
     if (writing.current) return;
     writing.current = true;
@@ -124,6 +158,7 @@ export function CalendarPage() {
     setError(null);
     try {
       await write();
+      setFocusDismissed(true);
       setEditor(null);
       setPending(null);
       setConfirmDelete(false);
@@ -137,6 +172,7 @@ export function CalendarPage() {
   }
   function closeEditor() {
     if (busy) return;
+    setFocusDismissed(true);
     setEditor(null);
     setPending(null);
     setConfirmDelete(false);
@@ -147,6 +183,7 @@ export function CalendarPage() {
     if (busy || loading) return;
     const draft = newEventDraft(start, end, allDay, data.defaultReminder);
     setError(null);
+    setFocusDismissed(true);
     setEditor({ draft, initial: draft });
   }
   function openOccurrence(occurrence: EventOccurrence) {
@@ -154,6 +191,7 @@ export function CalendarPage() {
     if (!series) return;
     const draft = occurrenceDraft(occurrence, series);
     setError(null);
+    setFocusDismissed(true);
     setEditor({ draft, initial: draft, occurrence, series });
   }
   function chooseScope(change: Pending) {
@@ -340,12 +378,16 @@ export function CalendarPage() {
         点击空白格新建，拖动日程调整时间，拖动边缘调整时长。
         {loading && <span role="status">正在读取…</span>}
       </p>
+      {focus && !focusDismissed && !loading && !focused && (
+        <p className="calendar-hint">所选日程已改变或删除，请查看当前日历。</p>
+      )}
       <div className="calendar-surface" aria-label="日程日历" aria-busy={loading || busy}>
         <FullCalendar
           ref={calendar}
           plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
           locale={zhCnLocale}
           initialView="timeGridWeek"
+          {...(focus ? { initialDate: new Date(focus.start_at) } : {})}
           firstDay={1}
           timeZone="local"
           headerToolbar={false}

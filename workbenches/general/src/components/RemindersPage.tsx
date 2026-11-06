@@ -64,6 +64,8 @@ function ReminderEditor({
   function target(): ReminderTarget {
     return {
       reminderId: item!.reminder.id,
+      dueAt: item!.due_at,
+      scheduleVersion: item!.reminder.schedule_version,
       ...(item?.occurrenceId ? { occurrenceId: item.occurrenceId } : {}),
     };
   }
@@ -403,7 +405,11 @@ export function RemindersPage({
       ? items.find((item) =>
           focus.occurrenceId
             ? item.occurrenceId === focus.occurrenceId
-            : item.reminder.id === focus.reminderId && item.isCurrent,
+            : item.reminder.id === focus.reminderId &&
+              (focus.dueAt !== undefined
+                ? item.due_at === focus.dueAt &&
+                  item.reminder.schedule_version === focus.scheduleVersion
+                : item.isCurrent),
         )
       : undefined;
   function close() {
@@ -418,6 +424,8 @@ export function RemindersPage({
     try {
       await generalApi.completeReminder({
         reminderId: item.reminder.id,
+        dueAt: item.due_at,
+        scheduleVersion: item.reminder.schedule_version,
         ...(item.occurrenceId ? { occurrenceId: item.occurrenceId } : {}),
       });
       await reload();
