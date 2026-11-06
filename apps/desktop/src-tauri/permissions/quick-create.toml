@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-quick-client"
+description = "允许快速新建窗口提交经主窗口校验的请求并隐藏自身。"
+commands.allow = ["quick_request", "hide_quick_create"]
+
+[[permission]]
+identifier = "allow-quick-host"
+description = "允许主窗口打开快速新建窗口，并处理、响应其请求。"
+commands.allow = ["open_quick_create", "take_quick_requests", "finish_quick_request"]

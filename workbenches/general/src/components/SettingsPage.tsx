@@ -5,6 +5,11 @@ import type { Theme } from "../api";
 import { generalApi } from "../api";
 import { reminderChoices } from "../calendar-model";
 import { useEffect, useState } from "react";
+import { Button } from "@workbench/ui";
+import {
+  DEFAULT_SHORTCUT,
+  type ShortcutStatus,
+} from "../../../../apps/desktop/src/core/shortcut-controller";
 const choices = [
   { value: "system", label: "跟随系统", Icon: Monitor },
   { value: "light", label: "浅色", Icon: Sun },
@@ -18,8 +23,26 @@ export function SettingsPage() {
   const [autostart, setAutostart] = useState(false);
   const [autoBusy, setAutoBusy] = useState(true);
   const [autoError, setAutoError] = useState<string | null>(null);
+  const [shortcut, setShortcut] = useState(DEFAULT_SHORTCUT);
+  const [shortcutState, setShortcutState] = useState<ShortcutStatus | null>(null);
+  const [shortcutBusy, setShortcutBusy] = useState(true);
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
   useEffect(() => {
     let current = true;
+    void generalApi
+      .getGlobalShortcut()
+      .then((value) => {
+        if (current) {
+          setShortcut(value.configured);
+          setShortcutState(value);
+        }
+      })
+      .catch((error: unknown) => {
+        if (current) setShortcutError(error instanceof Error ? error.message : "读取快捷键失败");
+      })
+      .finally(() => {
+        if (current) setShortcutBusy(false);
+      });
     void generalApi
       .getDefaultEventReminder()
       .then((value) => {
@@ -172,6 +195,52 @@ export function SettingsPage() {
         </button>
         {autoError && <p role="alert">{autoError}</p>}
       </div>
+      <form
+        className="settings-section shortcut-setting"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (shortcutBusy) return;
+          setShortcutBusy(true);
+          setShortcutError(null);
+          try {
+            const value = await generalApi.setGlobalShortcut(shortcut);
+            setShortcut(value.configured);
+            setShortcutState(value);
+          } catch (error) {
+            setShortcutError(error instanceof Error ? error.message : "快捷键保存失败，请重试");
+          } finally {
+            setShortcutBusy(false);
+          }
+        }}
+      >
+        <div>
+          <h2>全局快速新建</h2>
+          <p>应用隐藏在托盘时也能呼出。支持 Ctrl / Alt / Shift 加字母、数字或 F1–F12。</p>
+        </div>
+        <label className="event-field">
+          快捷键
+          <input
+            aria-label="全局快捷键"
+            value={shortcut}
+            disabled={shortcutBusy}
+            onChange={(event) => setShortcut(event.target.value)}
+            placeholder="Ctrl+Alt+N"
+          />
+        </label>
+        <div className="shortcut-actions">
+          <span>
+            {shortcutState?.active ? `当前生效：${shortcutState.active}` : "尚未注册成功"}
+          </span>
+          <Button type="submit" disabled={shortcutBusy}>
+            {shortcutBusy ? "正在注册…" : "保存 / 重试"}
+          </Button>
+        </div>
+        {(shortcutError || shortcutState?.error) && (
+          <p className="event-form-error" role="alert">
+            {shortcutError ?? shortcutState?.error}
+          </p>
+        )}
+      </form>
     </section>
   );
 }

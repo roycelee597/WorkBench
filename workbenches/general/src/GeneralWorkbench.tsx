@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from "react";
-import { Sun, FileText, CalendarDays, Bell, ArrowUpRight, CircleAlert, Leaf } from "lucide-react";
+import { lazy, Suspense, useEffect } from "react";
+import { Sun, FileText, CalendarDays, Bell, CircleAlert } from "lucide-react";
 import { Button, cn } from "@workbench/ui";
-import { workspace, type Page } from "./workspace-store";
+import { workspace } from "./workspace-store";
+import { TodayPage } from "./components/TodayPage";
 import { MemosPage } from "./components/MemosPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { TrashPage } from "./components/TrashPage";
@@ -18,49 +19,6 @@ const tabs = [
   { page: "calendar", label: "日程", Icon: CalendarDays },
   { page: "reminders", label: "提醒事项", Icon: Bell },
 ] as const;
-function Placeholder({ page }: { page: Page }) {
-  const state = workspace.useWorkspace();
-  const [today] = useState(() => Date.now());
-  const tab = tabs.find((tab) => tab.page === page) ?? tabs[0];
-  return (
-    <section className="placeholder-page">
-      <div className="placeholder-date">
-        {new Intl.DateTimeFormat("zh-CN", {
-          month: "long",
-          day: "numeric",
-          weekday: "long",
-        }).format(today)}
-      </div>
-      <div className="placeholder-surface">
-        <div className="empty-icon">
-          <tab.Icon size={30} strokeWidth={1.3} />
-        </div>
-        <span className="coming-soon">准备中</span>
-        <h1>
-          {page === "today"
-            ? "把今天的想法，先记下来。"
-            : page === "calendar"
-              ? "为重要的事，留出时间。"
-              : "让每一件小事，都有着落。"}
-        </h1>
-        <p>
-          {page === "today"
-            ? "每日概览将在这里汇集。现在，先用备忘录整理思绪。"
-            : `${tab.label}功能正在准备中，先记录你想记住的事吧。`}
-        </p>
-        <Button className="mt-6" onClick={() => void state.navigate("memos")}>
-          打开备忘录
-          <ArrowUpRight />
-        </Button>
-        <div className="placeholder-bottom">
-          <Leaf size={14} />
-          一处安静的空间，装下你的日常。
-        </div>
-      </div>
-    </section>
-  );
-}
-
 export function GeneralWorkbench() {
   const state = workspace.useWorkspace();
   const initialize = state.initialize;
@@ -195,7 +153,7 @@ export function GeneralWorkbench() {
               </p>
             }
           >
-            <CalendarPage />
+            <CalendarPage key={state.calendarNavigationVersion} focus={state.calendarTarget} />
           </Suspense>
         ) : state.page === "reminders" ? (
           <Suspense
@@ -212,7 +170,7 @@ export function GeneralWorkbench() {
             />
           </Suspense>
         ) : (
-          <Placeholder page={state.page} />
+          <TodayPage />
         )}
       </div>
     </div>

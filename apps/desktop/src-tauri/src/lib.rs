@@ -1,16 +1,19 @@
 mod database;
 mod desktop;
+mod quick_create;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(desktop::ShellState::default())
+        .manage(quick_create::QuickState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|argument| argument == "--background") {
                 desktop::request(app, "open");
             }
         }))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .args(["--background"])
@@ -39,9 +42,16 @@ pub fn run() {
         )
         .setup(|app| {
             desktop::setup(app)?;
+            quick_create::setup(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "quick-create" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
@@ -54,7 +64,12 @@ pub fn run() {
             desktop::take_shell_requests,
             desktop::hide_main,
             desktop::show_main,
-            desktop::exit_app
+            desktop::exit_app,
+            quick_create::open_quick_create,
+            quick_create::hide_quick_create,
+            quick_create::quick_request,
+            quick_create::take_quick_requests,
+            quick_create::finish_quick_request
         ])
         .run(tauri::generate_context!())
         .expect("启动 WorkBench 失败");
