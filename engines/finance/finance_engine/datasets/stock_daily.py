@@ -6,6 +6,7 @@ from ..db import Database
 from ..errors import EngineError, redact
 from ..sources.tushare import TushareClient
 from . import adj_factor
+from .security_codes import canonical_code, historical_code
 
 FIELDS = ["ts_code", "trade_date", "close", "amount"]
 
@@ -17,7 +18,7 @@ def fetch(client: TushareClient, day: int, codes: list[str] | None = None) -> li
 def refresh(db: Database, client: TushareClient, day: int, today: int) -> bool:
     securities = {row["ts_code"]: row for row in db.conn.execute("SELECT * FROM securities")}
     codes = [
-        code
+        historical_code(code, day)
         for code, row in securities.items()
         if (row["list_date"] or day) <= day
         and (row["delist_date"] is None or row["delist_date"] >= day)
@@ -38,11 +39,11 @@ def refresh(db: Database, client: TushareClient, day: int, today: int) -> bool:
     factor_map = {row["ts_code"]: row["adj_factor"] for row in factors}
     if any(int(row["trade_date"]) != day for row in factors) or len(factor_map) != len(factors):
         raise EngineError("UPSTREAM_SCHEMA", "复权因子日期或分页唯一性校验失败")
-    if any(row["ts_code"] not in securities for row in daily):
+    if any(canonical_code(row["ts_code"], day) not in securities for row in daily):
         raise EngineError("UPSTREAM_SCHEMA", "日线出现证券目录未收录的代码，等待下次刷新目录")
     if len({row["ts_code"] for row in daily}) != len(daily):
         raise EngineError("UPSTREAM_SCHEMA", "日线分页出现重复证券，拒绝不完整数据")
-    records = []
+    records_by_sid = {}
     missing = False
     for row in daily:
         if int(row["trade_date"]) != day:
@@ -56,7 +57,14 @@ def refresh(db: Database, client: TushareClient, day: int, today: int) -> bool:
             factor = None
         if amount > 0 and row["ts_code"].endswith((".SH", ".SZ")) and factor is None:
             missing = True
-        records.append((day, securities[row["ts_code"]]["sid"], close, amount, factor, "tushare"))
+        sid = securities[canonical_code(row["ts_code"], day)]["sid"]
+        record = (day, sid, close, amount, factor, "tushare")
+        previous = records_by_sid.get(sid)
+        if previous is not None and previous != record:
+            raise EngineError("UPSTREAM_SCHEMA", f"{day} 历史代码别名数据冲突，拒绝合并")
+        # 上游可能同时返回旧代码和回写的新代码；同一证券的相同数值只计一次。
+        records_by_sid[sid] = record
+    records = list(records_by_sid.values())
     with db.conn:
         # 删除的只是该日可重建缓存；与新行、完成标记一起提交或回滚。
         db.conn.execute("DELETE FROM stock_daily WHERE trade_date=?", (day,))

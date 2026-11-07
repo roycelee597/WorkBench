@@ -65,6 +65,7 @@ def test_pagination_falls_back_to_each_security(client):
     [
         (40101, "token 无效", "TOKEN_INVALID"),
         (-2002, "积分不足，您没有权限", "PERMISSION_DENIED"),
+        (40203, "接口拒绝访问", "PERMISSION_DENIED"),
         (-2002, "每分钟最多访问200次", "RATE_LIMITED"),
         (999, "格式变化", "UPSTREAM_SCHEMA"),
     ],

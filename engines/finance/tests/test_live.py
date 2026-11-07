@@ -26,7 +26,8 @@ def test_20261105_reference():
             ["ts_code", "trade_date", "pe_ttm", "pb"],
             limit=3000,
         )
-        assert float(rows[0]["pe_ttm"]) == pytest.approx(13.59)
-        assert float(rows[0]["pb"]) == pytest.approx(1.34)
+        # 规格参考值保留两位小数，上游实际返回四位；缓存仍保留原始精度。
+        assert round(float(rows[0]["pe_ttm"]), 2) == 13.59
+        assert round(float(rows[0]["pb"]), 2) == 1.34
     finally:
         client.close()

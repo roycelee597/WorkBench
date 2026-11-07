@@ -14,6 +14,7 @@ import numpy as np
 from finance_engine.db import Database, timestamp
 from finance_engine.engine import update
 from finance_engine.errors import EngineError, redact
+from finance_engine.indicators.top5_turnover import top5_turnover
 from finance_engine.planner import SHANGHAI
 from finance_engine.protocol import Protocol
 from finance_engine.sources.tushare import URL, TushareClient
@@ -51,6 +52,21 @@ def probes(token: str, include_rate_limit: bool) -> dict:
             "offset_matches_full": first == all_rows[:3] and second == all_rows[3:6],
             "full_rows": len(all_rows),
         }
+        fields = full["data"]["fields"]
+        point = top5_turnover(20261105, [dict(zip(fields, row, strict=True)) for row in all_rows])
+        results["top5_reference"] = {"date": 20261105, "value": point.value, **point.extra}
+        results["valuation_reference"] = {}
+        for code in ("000300.SH", "399006.SZ", "000001.SH"):
+            valuation = request(
+                "index_dailybasic",
+                {"ts_code": code, "trade_date": "20261105"},
+                "ts_code,trade_date,pe_ttm,pb",
+            )
+            if valuation.get("code") != 0 or not valuation["data"]["items"]:
+                raise EngineError("UPSTREAM_SCHEMA", "估值参考日请求失败")
+            results["valuation_reference"][code] = dict(
+                zip(valuation["data"]["fields"], valuation["data"]["items"][0], strict=True)
+            )
         # 官方权限页：kpl_list 至少 5000 积分；只请求 1 行用于观察权限错误。
         permission = request("kpl_list", {"trade_date": "20261105", "limit": 1}, "ts_code")
         results["permission"] = {

@@ -62,7 +62,9 @@ class TushareClient:
                         raise EngineError("TOKEN_INVALID", "Tushare token 无效", upstream=raw)
                     if any(word in message for word in ("每分钟", "频次", "频率", "限流")):
                         raise EngineError("RATE_LIMITED", message, retryable=True, upstream=raw)
-                    if any(word in message for word in ("权限", "积分", "无权")):
+                    if str(code) == "40203" or any(
+                        word in message for word in ("权限", "积分", "无权")
+                    ):
                         raise EngineError(
                             "PERMISSION_DENIED",
                             f"{api} 权限不足（通常需要 2000 积分）：{message}",

@@ -20,6 +20,18 @@ def test_probe_compares_real_page_slices_and_redacts_permission_response():
         body = request_body(request)
         if body["api_name"] == "kpl_list":
             return httpx.Response(200, json={"code": -2002, "msg": "无权限 " + TOKEN})
+        if body["api_name"] == "index_dailybasic":
+            return response(
+                body["fields"].split(","),
+                [
+                    {
+                        "ts_code": body["params"]["ts_code"],
+                        "trade_date": "20261105",
+                        "pe_ttm": 13.5949,
+                        "pb": 1.34,
+                    }
+                ],
+            )
         params = body["params"]
         offset, limit = params["offset"], params["limit"]
         return response(body["fields"].split(","), rows[offset : offset + limit])
@@ -32,4 +44,6 @@ def test_probe_compares_real_page_slices_and_redacts_permission_response():
         "full_rows": 9,
     }
     assert result["permission"]["code"] == -2002
+    assert result["top5_reference"]["n"] == 0
+    assert result["valuation_reference"]["000300.SH"]["pe_ttm"] == 13.5949
     assert TOKEN not in str(result)
