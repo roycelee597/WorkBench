@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import random
 import time
 import uuid
 from datetime import datetime
@@ -78,13 +79,18 @@ def probes(token: str, include_rate_limit: bool) -> dict:
             # 仅实测工具执行一次有界负例；生产客户端始终使用 45 次/分钟限制。
             start = time.monotonic()
             results["rate_limit"] = {"observed": False, "requests": 0}
-            for count in range(1, 52):
-                body = request("stock_basic", {"list_status": "L", "limit": 1}, "ts_code")
+            for count in range(1, 102):
+                # 改变 offset，避免仅测试同一请求的缓存；最多 101 次后停止。
+                body = request(
+                    "stock_basic", {"list_status": "L", "limit": 1, "offset": count - 1}, "ts_code"
+                )
+                message = redact(body.get("msg", ""), token)
                 results["rate_limit"] = {
-                    "observed": body.get("code") != 0,
+                    "observed": body.get("code") != 0
+                    and any(word in message for word in ("每分钟", "频次", "频率", "限流")),
                     "requests": count,
                     "code": body.get("code"),
-                    "msg": redact(body.get("msg", ""), token),
+                    "msg": message,
                     "elapsed_seconds": time.monotonic() - start,
                 }
                 if body.get("code") != 0:
@@ -131,10 +137,9 @@ def report(path: Path) -> dict:
                 "AND value IS NOT NULL ORDER BY trade_date"
             )
         ]
-        selected = (
-            [candidates[index] for index in (0, len(candidates) // 2, len(candidates) - 1)]
-            if candidates
-            else []
+        result["manual_sample_seed"] = 20261108
+        selected = sorted(
+            random.Random(result["manual_sample_seed"]).sample(candidates, min(3, len(candidates)))
         )
         for day in selected:
             window = [

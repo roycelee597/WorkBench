@@ -371,4 +371,5 @@ def test_output_events_match_json_schema(client, tmp_path):
     summary = tools["report"](tmp_path / "finance.db")
     assert summary["new_high_distribution"] == {"P5": 100, "P50": 100, "P95": 100}
     assert len(summary["manual_new_high_checks"]) == 3
+    assert summary["manual_sample_seed"] == 20261108
     assert all(row["manual"] == row["stored"] for row in summary["manual_new_high_checks"])
