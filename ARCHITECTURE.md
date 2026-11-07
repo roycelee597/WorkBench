@@ -113,8 +113,9 @@ flowchart TB
 
 **关键原则**
 - 工作台**永远拿不到** Tauri API，也不能直接碰数据库；一切都经过 Bridge，Bridge 每次都检查权限。
-- **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问；Phase 2 只替换该入口为 SDK。其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
+- **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问；Phase 2 只替换该入口为 SDK。内置金融指标工作台在 Phase 2 前采用同样的例外，所有数据调用集中到 `workbenches/finance/src/api.ts`；其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
 - 业务逻辑尽量写在 TypeScript（④），Rust（⑤）只做系统能力。
+- 金融指标工作台以 `docs/specs/finance-indicators.md` 为具体依据：取数与指标计算由 `engines/finance/` 的独立 Python 引擎完成，作为 Tauri sidecar 分发；Rust 仅管理系统凭据、子进程和事件。App 通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，界面不直接访问 SQL；阈值、提醒和设置仍经 `core/repositories/` 访问 `workbench.db`。Phase 2 再将金融工作台入口迁移到 SDK。
 
 ---
 
@@ -264,6 +265,7 @@ CREATE TABLE settings (
 - 数据库使用 SQL 插件预加载和版本迁移；Windows 路径为 `%APPDATA%/com.royce.workbench/workbench.db`。联动写入通过插件连接池的通用事务适配执行，业务逻辑仍在 TypeScript。
 - 改表结构只能**新增迁移文件**（`0002_xxx.sql`），不能改已发布的旧迁移。
 - 所有读写都通过 `core/repositories/*`，界面和工作台不直接写 SQL。
+- 上条的金融缓存例外：`finance.db` 是可整库重建、不参与同步的行情缓存，保留全部原始日线，不要求 UUID 与墓碑同步字段，由 Python 自行迁移并开启 WAL；App 仅通过 `core/finance/finance-reader.ts` 读取。用户阈值、金融提醒及评估状态保存在 `workbench.db`，继续遵循仓库、同步元数据和软删除规则。
 - 单个工作台的 kv 设上限（如 10 MB），防止滥用。
 
 ---

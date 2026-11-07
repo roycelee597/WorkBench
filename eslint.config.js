@@ -7,7 +7,17 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
-  globalIgnores(["**/node_modules/**", "**/dist/**", "**/target/**", "**/src-tauri/gen/**"]),
+  globalIgnores([
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/target/**",
+    "**/src-tauri/gen/**",
+    "**/.venv/**",
+    "**/.pytest_cache/**",
+    "**/.ruff_cache/**",
+    "**/__pycache__/**",
+    ".uv-cache/**",
+  ]),
   {
     files: ["**/*.{js,mjs,cjs}"],
     extends: [js.configs.recommended],
