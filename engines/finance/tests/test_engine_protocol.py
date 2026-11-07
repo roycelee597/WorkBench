@@ -280,6 +280,49 @@ def test_missing_factor_is_pending_and_retried_without_shrinking_denominator(tmp
     db.close()
 
 
+@respx.mock
+def test_registering_an_indicator_is_enough_to_compute_and_publish_it(
+    tmp_path, client, monkeypatch
+):
+    import finance_engine.engine as engine
+    from finance_engine.indicators.base import SeriesPoint
+
+    class ExtraIndicator:
+        id = "test_registered_indicator"
+        depends_on = ["stock_daily"]
+        lookback_days = 0
+
+        def meta(self):
+            return {"id": self.id, "series": [{"key": self.id}], "default_thresholds": []}
+
+        def compute(self, ctx, dates):
+            return [SeriesPoint(self.id, day, 7) for day in dates]
+
+    monkeypatch.setattr(engine, "INDICATORS", [*engine.INDICATORS, ExtraIndicator()])
+    days, _, handler = fixture_handler()
+    respx.post(URL).mock(side_effect=handler)
+    path = tmp_path / "finance.db"
+    output = io.StringIO()
+    assert (
+        update(
+            path,
+            client,
+            Protocol(output, TOKEN),
+            datetime.fromisoformat("2015-05-01T20:00:00+08:00"),
+        )
+        == 0
+    )
+    db = Database(path)
+    assert db.through()[ExtraIndicator.id] == str(days[-1])
+    assert (
+        db.conn.execute(
+            "SELECT count(*) FROM indicator_meta WHERE indicator_id=?", (ExtraIndicator.id,)
+        ).fetchone()[0]
+        == 1
+    )
+    db.close()
+
+
 def validate_schema(value, schema):
     # 标准库检查本协议 JSON Schema 使用的关键字，不增加规格外依赖。
     if "oneOf" in schema:

@@ -153,19 +153,19 @@ Remove-Item Env:TUSHARE_TOKEN
 
 工具随后正常更新，并报告实际数据库大小、耗时、各接口调用次数、指数覆盖起点、60 日新高 P5/P50/P95 和独立手算的三个交易日。`--probe-only` 可以只测接口而不回补历史。
 
-| 项目                              | 结果                                   |
-| --------------------------------- | -------------------------------------- |
-| daily limit/offset 是否生效       | 待联网实测                             |
-| 积分不足 code/msg                 | 待联网实测                             |
-| 限流 code/msg                     | 待联网实测                             |
-| 2026-11-05 前5%占比、N、k         | 待实测；规格对照 44.2%、5217、261      |
-| 2026-11-05 沪深300 PE-TTM / PB    | 待实测；规格对照 13.59 / 1.34          |
-| 三指数估值实际起点与首次调用次数  | 待联网实测                             |
-| 首次完整回补耗时、finance.db 体积 | 待联网实测                             |
-| 新高占比 P5 / P50 / P95           | 待首次完整回补，不据此擅自调整默认阈值 |
-| 三个交易日独立手算新高占比        | 待完整回补                             |
-| Windows CI 时长增加不超过5分钟    | 待远程 CI                              |
+| 项目                              | 结果                                                                                           |
+| --------------------------------- | ---------------------------------------------------------------------------------------------- |
+| daily limit/offset 是否生效       | 待联网实测                                                                                     |
+| 积分不足 code/msg                 | 待联网实测                                                                                     |
+| 限流 code/msg                     | 待联网实测                                                                                     |
+| 2026-11-05 前5%占比、N、k         | 待实测；规格对照 44.2%、5217、261                                                              |
+| 2026-11-05 沪深300 PE-TTM / PB    | 待实测；规格对照 13.59 / 1.34                                                                  |
+| 三指数估值实际起点与首次调用次数  | 待联网实测                                                                                     |
+| 首次完整回补耗时、finance.db 体积 | 待联网实测                                                                                     |
+| 新高占比 P5 / P50 / P95           | 待首次完整回补，不据此擅自调整默认阈值                                                         |
+| 三个交易日独立手算新高占比        | 待完整回补                                                                                     |
+| Python CI 时长预算                | 首次通过的独立 job 用时 46 秒，低于 5 分钟；同轮 Windows CI（含桌面编译）用时 5 分 27 秒并通过 |
 
-本地记录（2026-11-07）：Python 自动测试 27 项通过，1 项 live 默认排除；现有 Vitest 143 项通过；pnpm lint、typecheck、Prettier、ruff check 和 ruff format --check 通过。联网结果和远程 CI 在实际执行完成后补记。
+本地记录（2026-11-07）：Python 自动测试 28 项通过，1 项 live 默认排除；现有 Vitest 143 项通过；pnpm lint、typecheck、Prettier、ruff check 和 ruff format --check 通过。[首次完整通过的 CI](https://github.com/roycelee597/WorkBench/actions/runs/42314768673) 已验证 Windows 桌面编译；后续注册表扩展测试随最终提交再次运行 CI。联网结果仍等待本机 token，不记为通过。
 
 参考：[uv 官方 GitHub Actions 指南](https://docs.astral.sh/uv/guides/integration/github/)、[Tushare 日线接口](https://tushare.pro/document/2?doc_id=27)、[权限负例接口 kpl_list](https://tushare.pro/document/2?doc_id=347)。官方日线页没有列出 offset/limit，因此以实际分页探针结果为准。

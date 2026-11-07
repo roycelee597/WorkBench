@@ -32,6 +32,12 @@ class Update:
         self.days: list[int] = []
         self.partial = False
         self.fresh: dict[str, set[str]] = {}
+        self.stock_indicators = [
+            indicator for indicator in INDICATORS if "stock_daily" in indicator.depends_on
+        ]
+        self.index_indicators = [
+            indicator for indicator in INDICATORS if "stock_daily" not in indicator.depends_on
+        ]
 
     def warn(self, error: EngineError, **fields: object) -> None:
         self.partial = True
@@ -114,7 +120,8 @@ class Update:
             if error.code == "TOKEN_INVALID":
                 raise
             self.warn(error, dataset="index_daily")
-        self.publish(INDICATORS[2], available)
+        for indicator in self.index_indicators:
+            self.publish(indicator, available)
 
     def stocks(self, stage: str, dates: list[int]) -> None:
         self.stage(stage)
@@ -175,7 +182,7 @@ class Update:
             self.warn(EngineError("DATA_NOT_READY", "今日个股日线尚未发布", retryable=True))
         self.stocks("recent", plan.recent)
         if available:
-            for indicator in INDICATORS[:2]:
+            for indicator in self.stock_indicators:
                 self.publish(indicator, available[-1:])
         self.stocks("backfill", plan.backfill)
         self.stage("compute")
@@ -185,7 +192,7 @@ class Update:
             if day in changed:
                 affected.update(available[index : index + 60])
         # 中断发生在原始数据提交之后、计算之前时，也必须补算尚未写入的点。
-        for indicator in INDICATORS[:2]:
+        for indicator in self.stock_indicators:
             written = {
                 row[0]
                 for row in self.db.conn.execute(
