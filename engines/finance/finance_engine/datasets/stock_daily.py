@@ -39,15 +39,23 @@ def refresh(db: Database, client: TushareClient, day: int, today: int) -> bool:
     factor_map = {row["ts_code"]: row["adj_factor"] for row in factors}
     if any(int(row["trade_date"]) != day for row in factors) or len(factor_map) != len(factors):
         raise EngineError("UPSTREAM_SCHEMA", "复权因子日期或分页唯一性校验失败")
+    if any(int(row["trade_date"]) != day for row in daily):
+        raise EngineError("UPSTREAM_SCHEMA", "日线返回了请求日期之外的数据")
     if any(canonical_code(row["ts_code"], day) not in securities for row in daily):
         raise EngineError("UPSTREAM_SCHEMA", "日线出现证券目录未收录的代码，等待下次刷新目录")
     if len({row["ts_code"] for row in daily}) != len(daily):
         raise EngineError("UPSTREAM_SCHEMA", "日线分页出现重复证券，拒绝不完整数据")
+    identities = {canonical_code(row["ts_code"], day) for row in daily}
+    active_daily = [
+        row
+        for row in daily
+        if row["ts_code"] == historical_code(canonical_code(row["ts_code"], day), day)
+    ]
+    if identities != {canonical_code(row["ts_code"], day) for row in active_daily}:
+        raise EngineError("UPSTREAM_SCHEMA", f"{day} 缺少当日正式有效代码的数据，拒绝替代")
     records_by_sid = {}
     missing = False
-    for row in daily:
-        if int(row["trade_date"]) != day:
-            raise EngineError("UPSTREAM_SCHEMA", "日线返回了请求日期之外的数据")
+    for row in active_daily:
         close, amount = float(row["close"]), float(row["amount"])
         if not math.isfinite(close) or not math.isfinite(amount):
             raise EngineError("UPSTREAM_SCHEMA", "日线包含无效数值")
@@ -62,7 +70,7 @@ def refresh(db: Database, client: TushareClient, day: int, today: int) -> bool:
         previous = records_by_sid.get(sid)
         if previous is not None and previous != record:
             raise EngineError("UPSTREAM_SCHEMA", f"{day} 历史代码别名数据冲突，拒绝合并")
-        # 上游可能同时返回旧代码和回写的新代码；同一证券的相同数值只计一次。
+        # Royce 已确认只取当日正式有效代码，未生效/失效代码的回写不参与计算。
         records_by_sid[sid] = record
     records = list(records_by_sid.values())
     with db.conn:

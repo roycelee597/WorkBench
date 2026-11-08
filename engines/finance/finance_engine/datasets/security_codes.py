@@ -21,9 +21,10 @@ CODE_CHANGES = {
 }
 
 
-def canonical_code(code: str, day: int) -> str:
+def canonical_code(code: str, _day: int) -> str:
+    # 证券身份不随换代码而改变；当日有效交易代码由 historical_code 单独判断。
     change = CODE_CHANGES.get(code)
-    return change[0] if change and day < change[1] else code
+    return change[0] if change else code
 
 
 def historical_code(code: str, day: int) -> str:
