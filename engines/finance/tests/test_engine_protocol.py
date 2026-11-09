@@ -6,7 +6,7 @@ import json
 import runpy
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 import respx
 
+from finance_engine.datasets import stock_daily
 from finance_engine.db import Database
 from finance_engine.engine import update
 from finance_engine.protocol import Protocol
@@ -24,6 +25,18 @@ from .conftest import TOKEN, request_body, response
 
 def events(output):
     return [json.loads(line) for line in output.getvalue().splitlines()]
+
+
+def assert_retry_state(path, dataset, days, status, attempts):
+    db = Database(path)
+    try:
+        for day in days:
+            assert db.conn.execute(
+                "SELECT status,attempts FROM dataset_status WHERE dataset=? AND trade_date=?",
+                (dataset, day),
+            ).fetchone()[:] == (status, attempts)
+    finally:
+        db.close()
 
 
 def snapshot(db):
@@ -344,7 +357,7 @@ def test_unknown_code_and_possible_change_are_warnings_and_other_dates_continue(
 
 @respx.mock
 def test_unknown_bj_and_nonpositive_turnover_do_not_block_hs_indicators(tmp_path, client):
-    days, _, handler = fixture_handler()
+    days, calls, handler = fixture_handler()
     latest = str(days[-1])
     only_unknown_bj = False
 
@@ -375,12 +388,21 @@ def test_unknown_bj_and_nonpositive_turnover_do_not_block_hs_indicators(tmp_path
     assert messages[-1]["through"]["new_high_60d_share"] == latest
 
     only_unknown_bj = True
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    calls.clear()
+    output = io.StringIO()
+    assert update(path, client, Protocol(output, TOKEN), now) == 0
+    messages = events(output)
+    assert messages[-1]["status"] == "partial"
+    assert [(e["code"], e["trade_date"]) for e in messages if e["type"] == "warning"] == [
+        ("UNKNOWN_BJ_CODE", latest),
+        ("DATA_NOT_READY", latest),
+    ]
+    assert not any(api == "adj_factor" and params["trade_date"] == latest for api, params in calls)
     db = Database(path)
     assert db.conn.execute(
-        "SELECT status,rows FROM dataset_status WHERE dataset='stock_daily' AND trade_date=?",
+        "SELECT status,last_error FROM dataset_status WHERE dataset='stock_daily' AND trade_date=?",
         (latest,),
-    ).fetchone()[:] == ("ok", 21)
+    ).fetchone()[:] == ("pending", "日线尚未发布")
     assert (
         db.conn.execute(
             "SELECT count(*) FROM stock_daily WHERE trade_date=?", (latest,)
@@ -391,7 +413,7 @@ def test_unknown_bj_and_nonpositive_turnover_do_not_block_hs_indicators(tmp_path
 
 
 @respx.mock
-def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, client):
+def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, client, monkeypatch):
     days, calls, handler = fixture_handler()
     historical = str(days[4])
     missing_days = {historical, str(days[-1])}
@@ -413,21 +435,35 @@ def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, clien
 
     path = tmp_path / "finance.db"
     now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
+    first_check = datetime.fromisoformat("2015-05-02T00:05:00+08:00")
+    checked_at = first_check
+    monkeypatch.setattr(stock_daily, "timestamp", lambda: int(checked_at.timestamp() * 1000))
+    db = Database(path)
+    with db.conn:
+        db.mark(
+            "stock_daily",
+            int(historical),
+            "error",
+            error="证券目录仍未收录 1 个代码（999999.SH），已停止自动补取",
+            attempts=3,
+        )
+    db.close()
     respx.post(URL).mock(side_effect=with_unlisted_code)
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    # 同一北京时间日期内跨过 UTC 午夜，仍只累计一次。
+    for hours in (0, 9, 23):
+        checked_at = first_check + timedelta(hours=hours)
+        assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+        assert_retry_state(path, "stock_daily", missing_days, "pending", 1)
+
+    checked_at = first_check + timedelta(days=1)
     temporarily_unavailable = True
     assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
     temporarily_unavailable = False
-    db = Database(path)
-    for day in missing_days:
-        assert db.conn.execute(
-            "SELECT status,attempts FROM dataset_status "
-            "WHERE dataset='stock_daily' AND trade_date=?",
-            (day,),
-        ).fetchone()[:] == ("pending", 1)
-    db.close()
+    assert_retry_state(path, "stock_daily", missing_days, "pending", 1)
 
     assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert_retry_state(path, "stock_daily", missing_days, "pending", 2)
+    checked_at = first_check + timedelta(days=2)
     output = io.StringIO()
     assert update(path, client, Protocol(output, TOKEN), now) == 0
     assert {
@@ -444,14 +480,7 @@ def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, clien
     assert events(output)[-1]["status"] == "partial"
     assert events(output)[-1]["through"]["top5_turnover_share"] == str(days[-2])
     assert not any(params.get("trade_date") in missing_days for _, params in calls)
-    db = Database(path)
-    for day in missing_days:
-        assert db.conn.execute(
-            "SELECT status,attempts FROM dataset_status "
-            "WHERE dataset='stock_daily' AND trade_date=?",
-            (day,),
-        ).fetchone()[:] == ("error", 3)
-    db.close()
+    assert_retry_state(path, "stock_daily", missing_days, "error", 3)
 
 
 @respx.mock
@@ -487,7 +516,7 @@ def test_ineligible_missing_factor_does_not_block_latest_new_high(tmp_path, clie
 
 
 @respx.mock
-def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client):
+def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client, monkeypatch):
     days, calls, handler = fixture_handler()
     historical, latest = str(days[-20]), str(days[-1])
     factor_network_failure = False
@@ -508,17 +537,42 @@ def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client):
 
     path = tmp_path / "finance.db"
     now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
+    first_check = datetime.fromisoformat("2015-05-02T00:05:00+08:00")
+    checked_at = first_check
+    monkeypatch.setattr(stock_daily, "timestamp", lambda: int(checked_at.timestamp() * 1000))
+    db = Database(path)
+    with db.conn:
+        db.mark(
+            "adj_factor",
+            int(historical),
+            "error",
+            error="复权因子连续三次缺失，已停止自动补取",
+            attempts=3,
+        )
+        db.mark(
+            "adj_factor",
+            int(latest),
+            "pending",
+            error="复权因子持续缺失，等待下次取数",
+            attempts=2,
+        )
+    db.close()
     respx.post(URL).mock(side_effect=missing_factors)
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    for hours in (0, 9, 23):
+        checked_at = first_check + timedelta(hours=hours)
+        assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+        assert_retry_state(path, "adj_factor", (historical, latest), "pending", 1)
+
+    checked_at = first_check + timedelta(days=1)
     factor_network_failure = True
     assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
     factor_network_failure = False
-    for _ in range(2):
-        assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
-    for day in (historical, latest):
-        assert (
-            sum(api == "adj_factor" and params["trade_date"] == day for api, params in calls) == 7
-        )
+    assert_retry_state(path, "adj_factor", (historical, latest), "pending", 1)
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert_retry_state(path, "adj_factor", (historical, latest), "pending", 2)
+    checked_at = first_check + timedelta(days=2)
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert_retry_state(path, "adj_factor", (historical, latest), "error", 3)
 
     calls.clear()
     output = io.StringIO()

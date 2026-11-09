@@ -1,26 +1,37 @@
 """日线和因子按同一交易日事务提交；失败不留下半天数据。"""
 
 import math
+import sqlite3
 from collections.abc import Callable
+from datetime import datetime
 
-from ..db import Database
+from ..db import Database, timestamp
 from ..errors import EngineError, redact
+from ..planner import SHANGHAI
 from ..sources.tushare import TushareClient
 from . import adj_factor
 from .security_codes import canonical_code, historical_code
 
 FIELDS = ["ts_code", "trade_date", "close", "amount"]
-CATALOG_GAP = "证券目录仍未收录"
+# 旧版按运行次数计数，不能沿用其 attempts 或停止补取标记。
+CATALOG_GAP = "证券目录按日重试仍未收录"
 CATALOG_MISSING_LIMIT = 3
 
 
-def _catalog_gap(db: Database, day: int) -> tuple[str, int] | None:
-    row = db.conn.execute(
-        "SELECT status,attempts FROM dataset_status "
+def _catalog_gap(db: Database, day: int) -> sqlite3.Row | None:
+    return db.conn.execute(
+        "SELECT status,attempts,fetched_at FROM dataset_status "
         "WHERE dataset='stock_daily' AND trade_date=? AND last_error LIKE ?",
         (day, CATALOG_GAP + "%"),
     ).fetchone()
-    return (row["status"], row["attempts"]) if row is not None else None
+
+
+def _missing_attempts(previous: sqlite3.Row | None, fetched_at: int) -> int:
+    if previous is None:
+        return 1
+    previous_day = datetime.fromtimestamp(previous["fetched_at"] / 1000, SHANGHAI).date()
+    current_day = datetime.fromtimestamp(fetched_at / 1000, SHANGHAI).date()
+    return previous["attempts"] + int(current_day != previous_day)
 
 
 def exhausted_days(db: Database) -> set[int]:
@@ -54,7 +65,7 @@ def refresh(
     warn: Callable[[EngineError], None] | None = None,
 ) -> bool:
     catalog_gap = _catalog_gap(db, day)
-    if catalog_gap is not None and catalog_gap[0] == "error":
+    if catalog_gap is not None and catalog_gap["status"] == "error":
         return False
     securities = {row["ts_code"]: row for row in db.conn.execute("SELECT * FROM securities")}
     codes = [
@@ -64,9 +75,6 @@ def refresh(
         and (row["delist_date"] is None or row["delist_date"] >= day)
     ]
     daily = fetch(client, day, codes)
-    if not daily:
-        mark_fetch_failure(db, day, "pending", "日线尚未发布")
-        return False
     unknown_bj = {
         row["ts_code"]
         for row in daily
@@ -82,9 +90,9 @@ def refresh(
                 )
             )
         daily = [row for row in daily if row["ts_code"] not in unknown_bj]
-        # 响应只有被跳过的北交所行时，保留缓存和完成标记。
-        if not daily:
-            return True
+    if not daily:
+        mark_fetch_failure(db, day, "pending", "日线尚未发布")
+        return False
     if any(int(row["trade_date"]) != day for row in daily):
         raise EngineError("UPSTREAM_SCHEMA", "日线返回了请求日期之外的数据")
     if len({row["ts_code"] for row in daily}) != len(daily):
@@ -113,7 +121,8 @@ def refresh(
     )
     if unknown:
         examples = "、".join(unknown[:5])
-        attempts = (catalog_gap[1] if catalog_gap is not None else 0) + 1
+        fetched_at = timestamp()
+        attempts = _missing_attempts(catalog_gap, fetched_at)
         limit_reached = attempts >= CATALOG_MISSING_LIMIT
         next_step = "已停止自动补取" if limit_reached else "等待刷新目录"
         with db.conn:
@@ -126,6 +135,7 @@ def refresh(
                     client.token,
                 ),
                 attempts=attempts,
+                fetched_at=fetched_at,
             )
         return False
     identities = {canonical_code(row["ts_code"], day) for row in daily}
@@ -137,15 +147,15 @@ def refresh(
     if identities != {canonical_code(row["ts_code"], day) for row in active_daily}:
         raise EngineError("UPSTREAM_SCHEMA", f"{day} 缺少当日正式有效代码的数据，拒绝替代")
     factor_state = db.conn.execute(
-        "SELECT attempts,last_error FROM dataset_status "
+        "SELECT attempts,last_error,fetched_at FROM dataset_status "
         "WHERE dataset='adj_factor' AND trade_date=?",
         (day,),
     ).fetchone()
     exhausted = factor_state is not None and factor_state["last_error"] == adj_factor.EXHAUSTED
-    missing_attempts = (
-        factor_state["attempts"]
+    previous_factor_gap = (
+        factor_state
         if factor_state is not None and factor_state["last_error"] == adj_factor.MISSING
-        else 0
+        else None
     )
     factor_error = None
     factors = []
@@ -194,10 +204,11 @@ def refresh(
         if not exhausted:
             if factor_error:
                 # 请求失败不计入成功取数后发现缺失的次数。
-                if not missing_attempts:
+                if previous_factor_gap is None:
                     db.mark("adj_factor", day, "pending", error=redact(factor_error, client.token))
             elif missing:
-                attempts = missing_attempts + 1
+                fetched_at = timestamp()
+                attempts = _missing_attempts(previous_factor_gap, fetched_at)
                 limit_reached = attempts >= adj_factor.MISSING_LIMIT
                 db.mark(
                     "adj_factor",
@@ -206,6 +217,7 @@ def refresh(
                     len(factors),
                     adj_factor.EXHAUSTED if limit_reached else adj_factor.MISSING,
                     attempts=attempts,
+                    fetched_at=fetched_at,
                 )
             else:
                 db.mark("adj_factor", day, "ok", len(factors))

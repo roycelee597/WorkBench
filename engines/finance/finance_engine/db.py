@@ -83,13 +83,16 @@ class Database:
         error: str | None = None,
         *,
         attempts: int | None = None,
+        fetched_at: int | None = None,
     ) -> None:
+        if fetched_at is None:
+            fetched_at = timestamp()
         self.conn.execute(
             """INSERT INTO dataset_status VALUES (?,?,?,?,?,COALESCE(?,1),?,?)
                ON CONFLICT(dataset,trade_date) DO UPDATE SET status=excluded.status,
                rows=excluded.rows, source=excluded.source, attempts=COALESCE(?,attempts+1),
                last_error=excluded.last_error, fetched_at=excluded.fetched_at""",
-            (dataset, day, status, rows, "tushare", attempts, error, timestamp(), attempts),
+            (dataset, day, status, rows, "tushare", attempts, error, fetched_at, attempts),
         )
 
     def points(self, points: list) -> dict[str, list[str]]:
