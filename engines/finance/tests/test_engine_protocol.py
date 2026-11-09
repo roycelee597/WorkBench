@@ -281,6 +281,162 @@ def test_missing_factor_is_pending_and_retried_without_shrinking_denominator(tmp
 
 
 @respx.mock
+def test_unknown_code_and_possible_change_are_warnings_and_other_dates_continue(tmp_path, client):
+    days, _, handler = fixture_handler()
+    unknown_day, match_day = map(str, days[-3:-1])
+
+    def with_code_changes(request):
+        body = request_body(request)
+        result = handler(request)
+        if body["api_name"] != "daily":
+            return result
+        day = body["params"]["trade_date"]
+        if day not in (unknown_day, match_day):
+            return result
+        payload = result.json()
+        first, second = payload["data"]["items"][:2]
+        if day == unknown_day:
+            payload["data"]["items"].append(["999999.SH", *first[1:]])
+        else:
+            second[2:] = first[2:]
+        return httpx.Response(200, json=payload)
+
+    path = tmp_path / "finance.db"
+    now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
+    respx.post(URL).mock(side_effect=with_code_changes)
+    output = io.StringIO()
+    assert update(path, client, Protocol(output, TOKEN), now) == 0
+    messages = events(output)
+    assert messages[-1]["status"] == "partial"
+    notices = [event for event in messages if event["type"] == "warning"]
+    assert {(event["code"], event["trade_date"]) for event in notices} == {
+        ("POSSIBLE_CODE_CHANGE", unknown_day),
+        ("POSSIBLE_CODE_CHANGE", match_day),
+        ("DATA_NOT_READY", unknown_day),
+    }
+    assert all(
+        not event["retryable"] for event in notices if event["code"] == "POSSIBLE_CODE_CHANGE"
+    )
+    db = Database(path)
+    assert (
+        db.conn.execute(
+            "SELECT status FROM dataset_status WHERE dataset='stock_daily' AND trade_date=?",
+            (unknown_day,),
+        ).fetchone()[0]
+        == "pending"
+    )
+    assert (
+        db.conn.execute(
+            "SELECT count(*) FROM stock_daily WHERE trade_date=?", (match_day,)
+        ).fetchone()[0]
+        == 21
+    )
+    assert db.through()["top5_turnover_share"] == str(days[-1])
+    assert db.through()["new_high_60d_share"] == str(days[-4])
+    db.close()
+
+    respx.post(URL).mock(side_effect=handler)
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    db = Database(path)
+    assert db.through()["new_high_60d_share"] == str(days[-1])
+    db.close()
+
+
+@respx.mock
+def test_ineligible_missing_factor_does_not_block_latest_new_high(tmp_path, client):
+    days, _, handler = fixture_handler()
+    list_date = str(days[-20])
+
+    def new_listing(request):
+        body = request_body(request)
+        result = handler(request)
+        payload = result.json()
+        items = payload["data"]["items"]
+        if body["api_name"] == "stock_basic" and items:
+            items[0][payload["data"]["fields"].index("list_date")] = list_date
+        if body["api_name"] in ("daily", "adj_factor"):
+            day = body["params"]["trade_date"]
+            if day < list_date or (day == list_date and body["api_name"] == "adj_factor"):
+                del items[0]
+        return httpx.Response(200, json=payload)
+
+    path = tmp_path / "finance.db"
+    now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
+    respx.post(URL).mock(side_effect=new_listing)
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    db = Database(path)
+    value, extra = db.conn.execute(
+        "SELECT value,extra_json FROM indicator_values WHERE series_key='new_high_60d_share' "
+        "AND trade_date=?",
+        (days[-1],),
+    ).fetchone()
+    assert value == 100 and json.loads(extra)["n"] == 20
+    db.close()
+
+
+@respx.mock
+def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client):
+    days, calls, handler = fixture_handler()
+    historical, latest = str(days[-20]), str(days[-1])
+    factor_network_failure = False
+
+    def missing_factors(request):
+        body = request_body(request)
+        result = handler(request)
+        if body["api_name"] == "adj_factor" and body["params"]["trade_date"] in (
+            historical,
+            latest,
+        ):
+            if factor_network_failure:
+                return httpx.Response(503)
+            payload = result.json()
+            del payload["data"]["items"][0]
+            return httpx.Response(200, json=payload)
+        return result
+
+    path = tmp_path / "finance.db"
+    now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
+    respx.post(URL).mock(side_effect=missing_factors)
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    factor_network_failure = True
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    factor_network_failure = False
+    for _ in range(2):
+        assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    for day in (historical, latest):
+        assert (
+            sum(api == "adj_factor" and params["trade_date"] == day for api, params in calls) == 7
+        )
+
+    calls.clear()
+    output = io.StringIO()
+    assert update(path, client, Protocol(output, TOKEN), now) == 0
+    assert events(output)[-1]["status"] == "partial"
+    assert ("daily", latest) in [(api, params.get("trade_date")) for api, params in calls]
+    assert not any(params.get("trade_date") == historical for _, params in calls)
+    assert not any(api == "adj_factor" and params["trade_date"] == latest for api, params in calls)
+    db = Database(path)
+    for day in (historical, latest):
+        assert db.conn.execute(
+            "SELECT status,attempts FROM dataset_status "
+            "WHERE dataset='adj_factor' AND trade_date=?",
+            (day,),
+        ).fetchone()[:] == ("error", 3)
+        assert db.conn.execute(
+            "SELECT count(*),count(adj_factor) FROM stock_daily WHERE trade_date=?", (day,)
+        ).fetchone()[:] == (21, 20)
+    assert (
+        db.conn.execute(
+            "SELECT value FROM indicator_values WHERE series_key='new_high_60d_share' "
+            "AND trade_date=?",
+            (latest,),
+        ).fetchone()[0]
+        is None
+    )
+    db.close()
+
+
+@respx.mock
 def test_registering_an_indicator_is_enough_to_compute_and_publish_it(
     tmp_path, client, monkeypatch
 ):

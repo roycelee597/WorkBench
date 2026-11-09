@@ -57,7 +57,14 @@ def test_new_high_window_remains_continuous_across_code_change(db, client):
 
 
 @respx.mock
-def test_unknown_history_is_rejected_instead_of_dropped(db, client):
+def test_unknown_history_marks_day_pending_and_preserves_cache(db, client):
+    with db.conn:
+        db.conn.execute(
+            "INSERT INTO securities VALUES (1,'000001.SZ','测试','SZSE','主板',19910403,NULL,'L',0)"
+        )
+        db.conn.execute("INSERT INTO stock_daily VALUES (20150105,1,9,90,1,'tushare')")
+        db.mark("stock_daily", 20150105, "ok", 1)
+
     def handler(request):
         body = request_body(request)
         return response(
@@ -73,10 +80,12 @@ def test_unknown_history_is_rejected_instead_of_dropped(db, client):
             ],
         )
 
-    respx.post(URL).mock(side_effect=handler)
-    with pytest.raises(EngineError, match="未收录"):
-        refresh(db, client, 20150105, 20150105)
-    assert db.conn.execute("SELECT count(*) FROM stock_daily").fetchone()[0] == 0
+    route = respx.post(URL).mock(side_effect=handler)
+    assert not refresh(db, client, 20150105, 20150105)
+    assert route.call_count == 1
+    status, error = db.conn.execute("SELECT status,last_error FROM dataset_status").fetchone()
+    assert status == "pending" and "999999.SZ" in error
+    assert db.conn.execute("SELECT close,amount FROM stock_daily").fetchone()[:] == (9, 90)
 
 
 @pytest.mark.parametrize("conflict", [False, True])
@@ -102,7 +111,9 @@ def test_alias_rows_count_once_and_inactive_backfill_does_not_override(db, clien
         return response(body["fields"].split(","), rows)
 
     respx.post(URL).mock(side_effect=handler)
-    assert refresh(db, client, 20150105, 20150105)
+    warnings = []
+    assert refresh(db, client, 20150105, 20150105, warn=warnings.append)
+    assert not warnings
     assert db.conn.execute("SELECT count(*),sum(amount) FROM stock_daily").fetchone()[:] == (1, 100)
 
 

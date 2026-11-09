@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .datasets import index_daily, index_valuation, stock_basic, stock_daily, trade_cal
+from .datasets import adj_factor, index_daily, index_valuation, stock_basic, stock_daily, trade_cal
 from .db import Database, database_lock, timestamp
 from .errors import EngineError, redact
 from .indicators import INDICATORS
@@ -64,11 +64,11 @@ class Update:
             for i, point in enumerate(points):
                 pos = positions[point.day]
                 if pos >= 59 and any(
-                    states.get((dataset, day)) != "ok"
-                    for day in market[pos - 59 : pos + 1]
-                    for dataset in ("stock_daily", "adj_factor")
+                    states.get(("stock_daily", day)) != "ok" for day in market[pos - 59 : pos + 1]
                 ):
                     points[i] = SeriesPoint(point.key, point.day, None, {"status": "pending"})
+                # 复权因子由计算函数按当日实际入选的股票检查。
+                if points[i].extra.get("status") == "pending":
                     self.partial = True
         fresh = self.db.points(points)
         for key, days in fresh.items():
@@ -128,10 +128,24 @@ class Update:
         started = time.monotonic()
         for done, day in enumerate(dates, 1):
             try:
-                if not stock_daily.refresh(self.db, self.client, day, day_number(self.now)):
+                if not stock_daily.refresh(
+                    self.db,
+                    self.client,
+                    day,
+                    day_number(self.now),
+                    warn=lambda notice, day=day: self.protocol.error(
+                        notice, warning=True, dataset="stock_daily", trade_date=str(day)
+                    ),
+                ):
+                    dataset, status, message = self.db.conn.execute(
+                        "SELECT dataset,status,last_error FROM dataset_status "
+                        "WHERE trade_date=? AND dataset IN ('stock_daily','adj_factor') "
+                        "AND status<>'ok' ORDER BY dataset='stock_daily' DESC LIMIT 1",
+                        (day,),
+                    ).fetchone()
                     self.warn(
-                        EngineError("DATA_NOT_READY", "日线或复权因子尚未完整发布", retryable=True),
-                        dataset="stock_daily",
+                        EngineError("DATA_NOT_READY", message, retryable=status == "pending"),
+                        dataset=dataset,
                         trade_date=str(day),
                     )
             except EngineError as error:
@@ -176,7 +190,9 @@ class Update:
                 "UPDATE meta SET value=? WHERE key='engine_version'", (__version__,)
             )
         self.indices()
-        plan = plan_stock(self.days, self.states(), self.now)
+        plan = plan_stock(
+            self.days, self.states(), self.now, exhausted_factors=adj_factor.exhausted_days(self.db)
+        )
         available = ready_days(self.days, self.now, 16, STOCK_START)
         if self.days[-1] == day_number(self.now) and self.now.astimezone(SHANGHAI).hour < 16:
             self.warn(EngineError("DATA_NOT_READY", "今日个股日线尚未发布", retryable=True))
@@ -191,12 +207,15 @@ class Update:
         for index, day in enumerate(available):
             if day in changed:
                 affected.update(available[index : index + 60])
-        # 中断发生在原始数据提交之后、计算之前时，也必须补算尚未写入的点。
+        # 原始数据提交后可能中断，缺少结果和仍未就绪的点都要重新检查。
         for indicator in self.stock_indicators:
             written = {
                 row[0]
                 for row in self.db.conn.execute(
-                    "SELECT trade_date FROM indicator_values WHERE series_key=?", (indicator.id,)
+                    "SELECT trade_date FROM indicator_values WHERE series_key=? "
+                    "AND (value IS NOT NULL "
+                    "OR json_extract(extra_json,'$.status') IS NOT 'pending')",
+                    (indicator.id,),
                 )
             }
             self.publish(indicator, sorted(affected | (set(available) - written)))

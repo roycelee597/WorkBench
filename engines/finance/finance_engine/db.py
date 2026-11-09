@@ -75,14 +75,21 @@ class Database:
         self.conn.close()
 
     def mark(
-        self, dataset: str, day: int, status: str, rows: int = 0, error: str | None = None
+        self,
+        dataset: str,
+        day: int,
+        status: str,
+        rows: int = 0,
+        error: str | None = None,
+        *,
+        attempts: int | None = None,
     ) -> None:
         self.conn.execute(
-            """INSERT INTO dataset_status VALUES (?,?,?,?,?,1,?,?)
+            """INSERT INTO dataset_status VALUES (?,?,?,?,?,COALESCE(?,1),?,?)
                ON CONFLICT(dataset,trade_date) DO UPDATE SET status=excluded.status,
-               rows=excluded.rows, source=excluded.source, attempts=attempts+1,
+               rows=excluded.rows, source=excluded.source, attempts=COALESCE(?,attempts+1),
                last_error=excluded.last_error, fetched_at=excluded.fetched_at""",
-            (dataset, day, status, rows, "tushare", error, timestamp()),
+            (dataset, day, status, rows, "tushare", attempts, error, timestamp(), attempts),
         )
 
     def points(self, points: list) -> dict[str, list[str]]:

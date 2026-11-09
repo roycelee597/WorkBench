@@ -1,5 +1,6 @@
 """纯函数规划：市场自然日历、就绪时间、最近三日修正与断点续传。"""
 
+from collections.abc import Set
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -24,14 +25,21 @@ class Plan:
     backfill: list[int]
 
 
-def plan_stock(days: list[int], states: dict[tuple[str, int], str], now: datetime) -> Plan:
+def plan_stock(
+    days: list[int],
+    states: dict[tuple[str, int], str],
+    now: datetime,
+    *,
+    exhausted_factors: Set[int] = frozenset(),
+) -> Plan:
     eligible = ready_days(days, now, 16, STOCK_START)
     refreshed = set(eligible[-3:])
     missing = [
         day
         for day in eligible
         if day in refreshed
-        or any(states.get((dataset, day)) != "ok" for dataset in ("stock_daily", "adj_factor"))
+        or states.get(("stock_daily", day)) != "ok"
+        or (day not in exhausted_factors and states.get(("adj_factor", day)) != "ok")
     ]
     recent = set(eligible[-65:])
     return Plan(
