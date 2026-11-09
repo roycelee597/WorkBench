@@ -87,11 +87,19 @@ class TushareClient:
                     data.get("has_more", body.get("has_more", False))
                 )
             except httpx.HTTPStatusError as error:
-                if error.response.status_code < 500:
+                status = error.response.status_code
+                if status == 401:
+                    raise EngineError("TOKEN_INVALID", "Tushare token 无效（HTTP 401）") from None
+                if status == 403:
+                    raise EngineError("PERMISSION_DENIED", f"{api} 权限不足（HTTP 403）") from None
+                if status == 408:
+                    failure = EngineError("NETWORK", "Tushare 请求超时（HTTP 408）", retryable=True)
+                elif status >= 500:
+                    failure = EngineError("NETWORK", "Tushare 服务暂不可用", retryable=True)
+                else:
                     raise EngineError(
-                        "NETWORK", f"HTTP {error.response.status_code}", retryable=True
+                        "UPSTREAM_SCHEMA", f"{api} 请求失败（HTTP {status}）"
                     ) from None
-                failure = EngineError("NETWORK", "Tushare 服务暂不可用", retryable=True)
             except httpx.RequestError:
                 failure = EngineError("NETWORK", "网络不可用或请求超时", retryable=True)
             except (ValueError, TypeError) as error:
