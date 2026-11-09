@@ -133,6 +133,7 @@ class Update:
                     self.client,
                     day,
                     day_number(self.now),
+                    now=self.now,
                     warn=lambda notice, day=day: self.protocol.error(
                         notice, warning=True, dataset="stock_daily", trade_date=str(day)
                     ),

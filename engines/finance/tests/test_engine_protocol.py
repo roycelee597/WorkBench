@@ -14,7 +14,6 @@ import pandas as pd
 import pytest
 import respx
 
-from finance_engine.datasets import stock_daily
 from finance_engine.db import Database
 from finance_engine.engine import update
 from finance_engine.protocol import Protocol
@@ -413,7 +412,7 @@ def test_unknown_bj_and_nonpositive_turnover_do_not_block_hs_indicators(tmp_path
 
 
 @respx.mock
-def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, client, monkeypatch):
+def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, client):
     days, calls, handler = fixture_handler()
     historical = str(days[4])
     missing_days = {historical, str(days[-1])}
@@ -434,10 +433,8 @@ def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, clien
         return httpx.Response(200, json=payload)
 
     path = tmp_path / "finance.db"
-    now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
     first_check = datetime.fromisoformat("2015-05-02T00:05:00+08:00")
     checked_at = first_check
-    monkeypatch.setattr(stock_daily, "timestamp", lambda: int(checked_at.timestamp() * 1000))
     db = Database(path)
     with db.conn:
         db.mark(
@@ -452,20 +449,20 @@ def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, clien
     # 同一北京时间日期内跨过 UTC 午夜，仍只累计一次。
     for hours in (0, 9, 23):
         checked_at = first_check + timedelta(hours=hours)
-        assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+        assert update(path, client, Protocol(io.StringIO(), TOKEN), checked_at) == 0
         assert_retry_state(path, "stock_daily", missing_days, "pending", 1)
 
     checked_at = first_check + timedelta(days=1)
     temporarily_unavailable = True
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), checked_at) == 0
     temporarily_unavailable = False
     assert_retry_state(path, "stock_daily", missing_days, "pending", 1)
 
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), checked_at) == 0
     assert_retry_state(path, "stock_daily", missing_days, "pending", 2)
     checked_at = first_check + timedelta(days=2)
     output = io.StringIO()
-    assert update(path, client, Protocol(output, TOKEN), now) == 0
+    assert update(path, client, Protocol(output, TOKEN), checked_at) == 0
     assert {
         event["trade_date"]
         for event in events(output)
@@ -476,7 +473,7 @@ def test_catalog_retry_cap_skips_both_historical_and_recent_days(tmp_path, clien
 
     calls.clear()
     output = io.StringIO()
-    assert update(path, client, Protocol(output, TOKEN), now) == 0
+    assert update(path, client, Protocol(output, TOKEN), checked_at) == 0
     assert events(output)[-1]["status"] == "partial"
     assert events(output)[-1]["through"]["top5_turnover_share"] == str(days[-2])
     assert not any(params.get("trade_date") in missing_days for _, params in calls)
@@ -516,7 +513,7 @@ def test_ineligible_missing_factor_does_not_block_latest_new_high(tmp_path, clie
 
 
 @respx.mock
-def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client, monkeypatch):
+def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client):
     days, calls, handler = fixture_handler()
     historical, latest = str(days[-20]), str(days[-1])
     factor_network_failure = False
@@ -536,10 +533,8 @@ def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client, mo
         return result
 
     path = tmp_path / "finance.db"
-    now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
     first_check = datetime.fromisoformat("2015-05-02T00:05:00+08:00")
     checked_at = first_check
-    monkeypatch.setattr(stock_daily, "timestamp", lambda: int(checked_at.timestamp() * 1000))
     db = Database(path)
     with db.conn:
         db.mark(
@@ -560,23 +555,23 @@ def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client, mo
     respx.post(URL).mock(side_effect=missing_factors)
     for hours in (0, 9, 23):
         checked_at = first_check + timedelta(hours=hours)
-        assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+        assert update(path, client, Protocol(io.StringIO(), TOKEN), checked_at) == 0
         assert_retry_state(path, "adj_factor", (historical, latest), "pending", 1)
 
     checked_at = first_check + timedelta(days=1)
     factor_network_failure = True
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), checked_at) == 0
     factor_network_failure = False
     assert_retry_state(path, "adj_factor", (historical, latest), "pending", 1)
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), checked_at) == 0
     assert_retry_state(path, "adj_factor", (historical, latest), "pending", 2)
     checked_at = first_check + timedelta(days=2)
-    assert update(path, client, Protocol(io.StringIO(), TOKEN), now) == 0
+    assert update(path, client, Protocol(io.StringIO(), TOKEN), checked_at) == 0
     assert_retry_state(path, "adj_factor", (historical, latest), "error", 3)
 
     calls.clear()
     output = io.StringIO()
-    assert update(path, client, Protocol(output, TOKEN), now) == 0
+    assert update(path, client, Protocol(output, TOKEN), checked_at) == 0
     assert events(output)[-1]["status"] == "partial"
     assert ("daily", latest) in [(api, params.get("trade_date")) for api, params in calls]
     assert not any(params.get("trade_date") == historical for _, params in calls)
@@ -600,6 +595,51 @@ def test_missing_factor_retry_limit_persists_across_updates(tmp_path, client, mo
         is None
     )
     db.close()
+
+
+@respx.mock
+def test_cli_update_restores_legacy_exhausted_dates(tmp_path, client, monkeypatch):
+    from finance_engine import __main__ as cli
+
+    days, calls, handler = fixture_handler()
+    old_daily, old_factor = days[4:6]
+    path = tmp_path / "legacy.db"
+    db = Database(path)
+    with db.conn:
+        db.mark(
+            "stock_daily",
+            old_daily,
+            "error",
+            error="证券目录仍未收录 1 个代码（999999.SH），已停止自动补取",
+            attempts=3,
+        )
+        db.mark(
+            "adj_factor",
+            old_factor,
+            "error",
+            error="复权因子连续三次缺失，已停止自动补取",
+            attempts=3,
+        )
+    db.close()
+
+    respx.post(URL).mock(side_effect=handler)
+    monkeypatch.setattr(cli, "TushareClient", lambda _token: client)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"tushare_token": TOKEN}) + "\n"))
+    assert cli.main(["update", "--db", str(path), "--now", "2015-05-02T00:05:00+08:00"]) == 0
+    assert any(api == "daily" and params["trade_date"] == str(old_daily) for api, params in calls)
+    assert any(
+        api == "adj_factor" and params["trade_date"] == str(old_factor) for api, params in calls
+    )
+    db = Database(path)
+    try:
+        for dataset, day in (("stock_daily", old_daily), ("adj_factor", old_factor)):
+            assert db.conn.execute(
+                "SELECT status,last_error FROM dataset_status WHERE dataset=? AND trade_date=?",
+                (dataset, day),
+            ).fetchone()[:] == ("ok", None)
+        assert db.through()["new_high_60d_share"] == str(days[-1])
+    finally:
+        db.close()
 
 
 @respx.mock
