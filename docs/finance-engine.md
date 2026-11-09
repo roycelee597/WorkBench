@@ -23,24 +23,31 @@ uv run --project engines/finance python -m finance_engine --version
 
 ## 运行与密钥
 
-先在你自己的 PowerShell 设置用户环境变量。下面的隐藏输入不会把 token 写入命令历史，也不会将它显示出来。**不要将 token 发送到对话。**
+先在仓库根目录打开 PowerShell，粘贴下面的函数。运行所需的命令块时会提示隐藏输入。`TUSHARE_TOKEN` 只在当前 PowerShell 会话中设置，每个命令块用 `finally` 清理。**不要将 token 发送到对话。**
 
 ```powershell
-$financeSecret = Read-Host '请输入 Tushare token' -AsSecureString
-$financeCredential = [System.Net.NetworkCredential]::new('', $financeSecret)
-[Environment]::SetEnvironmentVariable('TUSHARE_TOKEN', $financeCredential.Password, 'User')
-Remove-Variable financeCredential, financeSecret
+function Set-TushareSessionToken {
+  $financeSecret = Read-Host '请输入 Tushare token' -AsSecureString
+  try {
+    $env:TUSHARE_TOKEN = [System.Net.NetworkCredential]::new('', $financeSecret).Password
+  } finally {
+    $financeSecret.Dispose()
+  }
+}
 ```
 
 然后手动更新专用于金融数据的缓存。F1 使用仓库内被 Git 忽略的本地目录进行实测，正式应用目录在 F2 确认；不使用你的 `workbench.db`。
 
 ```powershell
 $financeDb = Join-Path $PWD 'engines\finance\.local\benchmark\finance.db'
-$financeToken = [Environment]::GetEnvironmentVariable('TUSHARE_TOKEN', 'User')
-@{ tushare_token = $financeToken; akshare_fallback = $false } |
-  ConvertTo-Json -Compress |
-  uv run --project engines/finance python -m finance_engine update --db $financeDb
-Remove-Variable financeToken
+try {
+  Set-TushareSessionToken
+  @{ tushare_token = $env:TUSHARE_TOKEN; akshare_fallback = $false } |
+    ConvertTo-Json -Compress |
+    uv run --project engines/finance python -m finance_engine update --db $financeDb
+} finally {
+  Remove-Item Env:TUSHARE_TOKEN -ErrorAction SilentlyContinue
+}
 ```
 
 token 只通过一行 stdin JSON 进入生产引擎，参数中没有 token。生产引擎不会读取环境变量；本地实测工具和 live 测试可以从本机环境取凭据。F1 接受备用源选项但不加载备用源。stdout 为 UTF-8 NDJSON；普通调试信息只能写 stderr。
@@ -52,10 +59,15 @@ token 只通过一行 stdin JSON 进入生产引擎，参数中没有 token。�
 ```powershell
 uv run --project engines/finance python -m finance_engine status --db $financeDb
 
-$financeToken = [Environment]::GetEnvironmentVariable('TUSHARE_TOKEN', 'User')
-@{ tushare_token = $financeToken } | ConvertTo-Json -Compress |
-  uv run --project engines/finance python -m finance_engine verify --db $financeDb
-Remove-Variable financeToken
+try {
+  Set-TushareSessionToken
+  @{ tushare_token = $env:TUSHARE_TOKEN } | ConvertTo-Json -Compress |
+    uv run --project engines/finance python -m finance_engine verify --db $financeDb
+} finally {
+  Remove-Item Env:TUSHARE_TOKEN -ErrorAction SilentlyContinue
+}
+
+Test-Path Env:TUSHARE_TOKEN # 应返回 False
 ```
 
 `status` 不读取 token、不创建数据库，已有数据库严格以只读连接打开。`verify` 只请求 `trade_cal`、`adj_factor` 各一行，不读写缓存。
@@ -66,12 +78,12 @@ Remove-Variable financeToken
 
 - 日历从 2005 年开始；个股日线和因子从 2015 年开始；三指数估值从 2005 年开始，实际覆盖以返回数据为准。
 - 最新交易日按北京时间判断，个股当日 16:00、指数当日 19:00 才尝试；可用时间之后返回空数据记 pending，历史起点之前的指数无数据记 empty。
-- 每次重拉最近三个交易日；行情和完成标记以每个交易日一个事务提交。Python 的 OS 文件锁同时保护命令行与 App 将来启动的引擎；异常退出自动释放锁，锁文件可以保留。
+- 每次重拉最近三个交易日，达到复权因子重试上限的日期只刷新日线。行情和完成标记以每个交易日一个事务提交。Python 的文件锁保护命令行和未来的 App 启动流程，异常退出会自动释放锁。
 - `index` 阶段发布估值，`recent` 阶段完成最近 65 个交易日后发布最新两个个股指标，之后才回补历史。结果按 `(series_key, trade_date)` 存储，查询最新值取最大有效日期；缺依赖的 pending 不覆盖已有有效值。
-- 60 日新高使用市场日历而非每只股票各自的 60 条行情。缺复权因子时保留日线并安排重试，受影响窗口不发布猜测值，不缩小分母。
+- 60 日新高使用市场日历。窗口需要完整日线，只检查符合当日统计条件的股票所需因子。入选股票缺因子时保留日线，受影响窗口待补，分母保持原口径。某交易日连续三次成功取数仍缺因子时记 `error`，停止自动补取该日因子。网络和限流失败不计入三次。最近三日仍刷新日线并保留缓存因子。全量重建可重新取数。
 - 估值的自然年窗口使用自然月偏移（5 年为 60 月，4.5 年为 54 月，10 年为 120 月，9 年为 108 月）；闰日截到目标月最后一天。分位包含当日，平值使用小于等于，原始 PE-TTM 无效时该日输出空值。
 - 原始日线全部保留。`finance.db` 开启 WAL，结构由 Python 的 `meta.schema_version` 管理；未来升级只能增加迁移步骤，不改变已经发布的版本结构。
-- 历史代码按有正式公告依据的证券身份关联，沿用 `stock_basic` 的原始上市日；同日返回旧、新代码时，按 Royce 于 2026-11-08 确认的决定，只用当日正式有效代码的日线和复权因子，忽略未生效或已失效代码的回写，数值不同也不混用。有效代码或其因子缺失时，不以回写数据替代；未知身份和同代码分页重复仍拒绝写入。
+- 历史代码按有正式公告依据的证券身份关联，沿用 `stock_basic` 的原始上市日。按当日正式有效代码取日线和因子。目录缺码时整日记 `pending`，保留已有行情，继续后续日期，下次刷新目录后再取。同日不同身份的证券若收盘价和成交额都相同，发 `POSSIBLE_CODE_CHANGE` 警告供人工核对。有效代码缺失或同代码分页重复仍报错。
 - 默认九条阈值只写入指标元数据，不在 F1 写 App 的阈值表或生成提醒。
 - `done.new_dates` 只列出本次从未有有效结果变为有效结果的日期；重复重算不重新加入。新日期和上游错误也保存在 `run_log.summary_json`，供后续状态读取。
 - 首次网络请求失败只记录 `run_log`，已有行情、指标、元数据及完成标记不变。
@@ -104,18 +116,19 @@ CI 增加独立 Windows Python job，使用 Python 3.12、锁定 uv 依赖、ruf
 
 ## 错误和退出码
 
-| code                          | 含义及处理                                                             |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| TOKEN_MISSING / TOKEN_INVALID | 缺少或无效 token，在本机重新设置；退出码 3                             |
-| PERMISSION_DENIED             | 接口权限或积分不足，报告接口和上游原始 code/msg（脱敏）；退出码 3      |
-| RATE_LIMITED                  | 等待 60 秒，最多重试三次；仍失败时退出码 4，或更新中的单日记失败后继续 |
-| NETWORK                       | 网络/超时/5xx 按 2、8、30 秒重试；首个请求仍失败退出码 4               |
-| DATA_NOT_READY                | 数据尚未发布或因子不完整，warning；整体 partial 退出码 0，下次再试     |
-| UPSTREAM_SCHEMA               | 字段、分页或数据结构变化，拒绝写入不可信数据                           |
-| DB_BUSY                       | 锁被另一更新进程持有，退出码 4                                         |
-| DB_ERROR                      | 无法访问、损坏或版本不兼容，退出码 1；检查路径或重建                   |
-| INTERNAL                      | 程序异常，退出码 1；提供脱敏后的错误和运行记录                         |
-| ARGUMENT                      | 命令、路径或参数格式错误，退出码 2                                     |
+| code                          | 含义及处理                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------------ |
+| TOKEN_MISSING / TOKEN_INVALID | 缺少或无效 token（包括 HTTP 401），在本机重新设置，退出码 3                    |
+| PERMISSION_DENIED             | 接口权限或积分不足（包括 HTTP 403），报告接口和脱敏后的上游错误，退出码 3      |
+| RATE_LIMITED                  | 等待 60 秒，最多重试三次；仍失败时退出码 4，或更新中的单日记失败后继续         |
+| NETWORK                       | 网络错误、HTTP 408 或 5xx，按 2、8、30 秒重试。首个请求仍失败时退出码 4        |
+| DATA_NOT_READY                | 单日数据未发布、目录缺码或因子缺失时发 warning。因子达到上限后标为不可自动重试 |
+| POSSIBLE_CODE_CHANGE          | 同日不同证券的收盘价和成交额完全相同，提示核对正式公告，按现有身份处理         |
+| UPSTREAM_SCHEMA               | 字段、分页或数据结构变化，或其他不可重试的 HTTP 4xx，退出码 3                  |
+| DB_BUSY                       | 锁被另一更新进程持有，退出码 4                                                 |
+| DB_ERROR                      | 无法访问、损坏或版本不兼容，退出码 1；检查路径或重建                           |
+| INTERNAL                      | 程序异常，退出码 1；提供脱敏后的错误和运行记录                                 |
+| ARGUMENT                      | 命令、路径或参数格式错误，退出码 2                                             |
 
 退出码 0 可能是 ok 或 partial，务必同时检查最后一条 `done.status`。所有上游 msg 写入运行记录前再次脱敏；真实密钥不会出现在参数或报告中。
 
@@ -132,6 +145,12 @@ CI 增加独立 Windows Python job，使用 Python 3.12、锁定 uv 依赖、ruf
 9. 同时启动两个 update，第二个应返回 DB_BUSY，不应并行写入。
 10. 在单独测试缓存运行 full-rebuild，结果应可再生，用户的 workbench.db 不受影响。
 
+复查修正可在仓库根目录执行以下命令。测试会模拟 HTTP 状态、目录缺码、相同报价以及连续缺因子，使用临时数据库，无需 token。另可运行上面的 `verify` 命令，在结束后确认 `Test-Path Env:TUSHARE_TOKEN` 返回 `False`。
+
+```powershell
+uv run --project engines/finance --locked pytest engines/finance/tests/test_tushare.py engines/finance/tests/test_security_codes.py engines/finance/tests/test_engine_protocol.py -q
+```
+
 ## 联网实测与记录
 
 **当前状态（2026-11-08）：完整历史回补和重复增量更新均成功，全部 26 条序列的最新有效日期为 2026-11-06。分页、权限错误及参考值已实测；三轮有界限流探针均未触发限流，因此真实限流 code/msg 仍未观察到。**
@@ -139,17 +158,23 @@ CI 增加独立 Windows Python job，使用 Python 3.12、锁定 uv 依赖、ruf
 联网对照测试（默认被 pytest 和 CI 排除）：
 
 ```powershell
-$env:TUSHARE_TOKEN = [Environment]::GetEnvironmentVariable('TUSHARE_TOKEN', 'User')
-uv run --project engines/finance --locked pytest engines/finance/tests -m live -q
-Remove-Item Env:TUSHARE_TOKEN
+try {
+  Set-TushareSessionToken
+  uv run --project engines/finance --locked pytest engines/finance/tests -m live -q
+} finally {
+  Remove-Item Env:TUSHARE_TOKEN -ErrorAction SilentlyContinue
+}
 ```
 
 完整测量工具：
 
 ```powershell
-$env:TUSHARE_TOKEN = [Environment]::GetEnvironmentVariable('TUSHARE_TOKEN', 'User')
-uv run --project engines/finance --locked python engines/finance/scripts/live_validation.py --db $financeDb --probe-rate-limit
-Remove-Item Env:TUSHARE_TOKEN
+try {
+  Set-TushareSessionToken
+  uv run --project engines/finance --locked python engines/finance/scripts/live_validation.py --db $financeDb --probe-rate-limit
+} finally {
+  Remove-Item Env:TUSHARE_TOKEN -ErrorAction SilentlyContinue
+}
 ```
 
 工具检查 limit/offset 与完整响应的切片是否一致，以一行受限接口请求观察权限错误；`--probe-rate-limit` 仅在实测工具中最多发出 101 次、不同 offset 的 stock_basic 单行小请求，以排除相同请求缓存及分钟窗口边界的干扰，随后等待 65 秒释放配额。其他错误不会被误判为限流。生产客户端始终按全局 180 次/分钟、stock_basic 45 次/分钟限速。上游原始 code/msg 写进 probe 的 run_log；没有实际观察到的错误不会编造错误码。
