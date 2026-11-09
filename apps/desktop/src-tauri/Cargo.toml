@@ -24,6 +24,8 @@ serde_json = "1"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
+keyring = { version = "3", features = ["windows-native"] }
+tauri-plugin-shell = "2"
 
 [profile.release]
 codegen-units = 1

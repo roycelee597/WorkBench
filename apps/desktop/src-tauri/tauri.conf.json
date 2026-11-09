@@ -29,6 +29,7 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": ["binaries/finance-engine"],
     "targets": "all",
     "icon": [
       "icons/32x32.png",

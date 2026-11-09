@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-finance"
+description = "允许主窗口管理金融凭据、更新进程与本地缓存路径。"
+commands.allow = ["finance_token_set", "finance_token_status", "finance_token_clear", "finance_update_start", "finance_update_cancel", "finance_verify", "finance_db_path", "finance_db_size", "finance_open_directory"]
