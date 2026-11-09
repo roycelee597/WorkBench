@@ -98,6 +98,30 @@ def test_retries_backoff_and_rate_limit(client, clock):
     assert clock.waits.count(60) == 3
 
 
+@pytest.mark.parametrize(
+    ("status", "code", "waits"),
+    [
+        (400, "UPSTREAM_SCHEMA", []),
+        (401, "TOKEN_INVALID", []),
+        (403, "PERMISSION_DENIED", []),
+        (404, "UPSTREAM_SCHEMA", []),
+        (408, "NETWORK", [2, 8, 30]),
+        (429, "RATE_LIMITED", [60, 60, 60]),
+        (503, "NETWORK", [2, 8, 30]),
+    ],
+)
+@respx.mock
+def test_http_status_matches_retry_behavior(client, clock, status, code, waits):
+    route = respx.post(URL).mock(return_value=httpx.Response(status))
+    with pytest.raises(EngineError) as error:
+        client.fetch("daily", {}, ["x"])
+    assert error.value.code == code
+    assert error.value.retryable is bool(waits)
+    assert error.value.exit_code == (4 if waits else 3)
+    assert route.call_count == 1 + len(waits)
+    assert [delay for delay in clock.waits if delay >= 2] == waits
+
+
 @respx.mock
 def test_schema_and_5xx(client):
     route = respx.post(URL).mock(return_value=response(["wrong"], []))
