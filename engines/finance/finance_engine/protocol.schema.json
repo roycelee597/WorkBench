@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkBench 金融引擎 NDJSON 事件",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "engine_version", "schema_version"],
+      "properties": {
+        "type": { "const": "hello" },
+        "engine_version": { "type": "string" },
+        "schema_version": { "type": "integer" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "stage"],
+      "properties": {
+        "type": { "const": "stage" },
+        "stage": { "enum": ["calendar", "stock_basic", "index", "recent", "backfill", "compute"] }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "stage", "done", "total", "current", "eta_seconds"],
+      "properties": {
+        "type": { "const": "progress" },
+        "stage": { "type": "string" },
+        "done": { "type": "integer" },
+        "total": { "type": "integer" },
+        "current": { "type": "string" },
+        "eta_seconds": { "type": "integer" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "indicator", "through"],
+      "properties": {
+        "type": { "const": "indicator_updated" },
+        "indicator": { "type": "string" },
+        "through": { "type": "string" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "code", "message", "retryable"],
+      "properties": {
+        "type": { "const": "warning" },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "code", "message", "retryable"],
+      "properties": {
+        "type": { "const": "error" },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "status", "new_dates", "through"],
+      "properties": {
+        "type": { "const": "done" },
+        "status": { "enum": ["ok", "partial", "failed"] },
+        "new_dates": { "type": "object" },
+        "through": { "type": "object" }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["type", "datasets", "through"],
+      "properties": {
+        "type": { "const": "status" },
+        "datasets": { "type": "array" },
+        "through": { "type": "object" }
+      }
+    }
+  ]
+}
