@@ -151,10 +151,9 @@ class Update:
             except EngineError as error:
                 if error.code in ("TOKEN_INVALID", "PERMISSION_DENIED", "UPSTREAM_SCHEMA"):
                     raise
-                with self.db.conn:
-                    self.db.mark(
-                        "stock_daily", day, "error", error=redact(error, self.client.token)
-                    )
+                stock_daily.mark_fetch_failure(
+                    self.db, day, "error", redact(error, self.client.token)
+                )
                 self.warn(error, dataset="stock_daily", trade_date=str(day))
             elapsed = time.monotonic() - started
             self.protocol.emit(
@@ -190,10 +189,17 @@ class Update:
                 "UPDATE meta SET value=? WHERE key='engine_version'", (__version__,)
             )
         self.indices()
-        plan = plan_stock(
-            self.days, self.states(), self.now, exhausted_factors=adj_factor.exhausted_days(self.db)
-        )
         available = ready_days(self.days, self.now, 16, STOCK_START)
+        exhausted_daily = stock_daily.exhausted_days(self.db)
+        plan = plan_stock(
+            self.days,
+            self.states(),
+            self.now,
+            exhausted_daily=exhausted_daily,
+            exhausted_factors=adj_factor.exhausted_days(self.db),
+        )
+        if exhausted_daily.intersection(available):
+            self.partial = True
         if self.days[-1] == day_number(self.now) and self.now.astimezone(SHANGHAI).hour < 16:
             self.warn(EngineError("DATA_NOT_READY", "今日个股日线尚未发布", retryable=True))
         self.stocks("recent", plan.recent)

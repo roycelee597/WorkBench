@@ -10,6 +10,35 @@ from . import adj_factor
 from .security_codes import canonical_code, historical_code
 
 FIELDS = ["ts_code", "trade_date", "close", "amount"]
+CATALOG_GAP = "证券目录仍未收录"
+CATALOG_MISSING_LIMIT = 3
+
+
+def _catalog_gap(db: Database, day: int) -> tuple[str, int] | None:
+    row = db.conn.execute(
+        "SELECT status,attempts FROM dataset_status "
+        "WHERE dataset='stock_daily' AND trade_date=? AND last_error LIKE ?",
+        (day, CATALOG_GAP + "%"),
+    ).fetchone()
+    return (row["status"], row["attempts"]) if row is not None else None
+
+
+def exhausted_days(db: Database) -> set[int]:
+    return {
+        row[0]
+        for row in db.conn.execute(
+            "SELECT trade_date FROM dataset_status "
+            "WHERE dataset='stock_daily' AND status='error' AND last_error LIKE ?",
+            (CATALOG_GAP + "%",),
+        )
+    }
+
+
+def mark_fetch_failure(db: Database, day: int, status: str, error: str) -> None:
+    with db.conn:
+        # 请求失败或空响应无法核对目录，保留上次有效响应确认的缺码次数。
+        if _catalog_gap(db, day) is None:
+            db.mark("stock_daily", day, status, error=error)
 
 
 def fetch(client: TushareClient, day: int, codes: list[str] | None = None) -> list[dict]:
@@ -24,6 +53,9 @@ def refresh(
     *,
     warn: Callable[[EngineError], None] | None = None,
 ) -> bool:
+    catalog_gap = _catalog_gap(db, day)
+    if catalog_gap is not None and catalog_gap[0] == "error":
+        return False
     securities = {row["ts_code"]: row for row in db.conn.execute("SELECT * FROM securities")}
     codes = [
         historical_code(code, day)
@@ -33,9 +65,26 @@ def refresh(
     ]
     daily = fetch(client, day, codes)
     if not daily:
-        with db.conn:
-            db.mark("stock_daily", day, "pending", error="日线尚未发布")
+        mark_fetch_failure(db, day, "pending", "日线尚未发布")
         return False
+    unknown_bj = {
+        row["ts_code"]
+        for row in daily
+        if row["ts_code"].endswith(".BJ") and row["ts_code"] not in securities
+    }
+    if unknown_bj:
+        if warn is not None:
+            examples = "、".join(sorted(unknown_bj)[:5])
+            warn(
+                EngineError(
+                    "UNKNOWN_BJ_CODE",
+                    f"{day} 跳过证券目录未收录的 {len(unknown_bj)} 个北交所代码（{examples}）",
+                )
+            )
+        daily = [row for row in daily if row["ts_code"] not in unknown_bj]
+        # 响应只有被跳过的北交所行时，保留缓存和完成标记。
+        if not daily:
+            return True
     if any(int(row["trade_date"]) != day for row in daily):
         raise EngineError("UPSTREAM_SCHEMA", "日线返回了请求日期之外的数据")
     if len({row["ts_code"] for row in daily}) != len(daily):
@@ -43,8 +92,11 @@ def refresh(
     if warn is not None:
         by_quote: dict[tuple[float, float], dict[str, str]] = {}
         for row in daily:
+            amount = float(row["amount"])
+            if amount <= 0:
+                continue
             code = row["ts_code"]
-            quote = (float(row["close"]), float(row["amount"]))
+            quote = (float(row["close"]), amount)
             by_quote.setdefault(quote, {}).setdefault(canonical_code(code, day), code)
         matches = [group for group in by_quote.values() if len(group) > 1]
         if matches:
@@ -61,15 +113,19 @@ def refresh(
     )
     if unknown:
         examples = "、".join(unknown[:5])
+        attempts = (catalog_gap[1] if catalog_gap is not None else 0) + 1
+        limit_reached = attempts >= CATALOG_MISSING_LIMIT
+        next_step = "已停止自动补取" if limit_reached else "等待刷新目录"
         with db.conn:
             db.mark(
                 "stock_daily",
                 day,
-                "pending",
+                "error" if limit_reached else "pending",
                 error=redact(
-                    f"证券目录未收录 {len(unknown)} 个代码（{examples}），等待刷新目录",
+                    f"{CATALOG_GAP} {len(unknown)} 个代码（{examples}），{next_step}",
                     client.token,
                 ),
+                attempts=attempts,
             )
         return False
     identities = {canonical_code(row["ts_code"], day) for row in daily}
