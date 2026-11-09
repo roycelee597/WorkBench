@@ -30,6 +30,7 @@ def plan_stock(
     states: dict[tuple[str, int], str],
     now: datetime,
     *,
+    exhausted_daily: Set[int] = frozenset(),
     exhausted_factors: Set[int] = frozenset(),
 ) -> Plan:
     eligible = ready_days(days, now, 16, STOCK_START)
@@ -37,9 +38,12 @@ def plan_stock(
     missing = [
         day
         for day in eligible
-        if day in refreshed
-        or states.get(("stock_daily", day)) != "ok"
-        or (day not in exhausted_factors and states.get(("adj_factor", day)) != "ok")
+        if day not in exhausted_daily
+        and (
+            day in refreshed
+            or states.get(("stock_daily", day)) != "ok"
+            or (day not in exhausted_factors and states.get(("adj_factor", day)) != "ok")
+        )
     ]
     recent = set(eligible[-65:])
     return Plan(
