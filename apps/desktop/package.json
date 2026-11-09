@@ -15,6 +15,7 @@
     "@tauri-apps/plugin-autostart": "^2.7.0",
     "@tauri-apps/plugin-global-shortcut": "^2.4.1",
     "@tauri-apps/plugin-sql": "^2.6.0",
+    "@workbench/finance": "workspace:*",
     "@workbench/general": "workspace:*",
     "@workbench/ui": "workspace:*",
     "dayjs": "^1.11.23",

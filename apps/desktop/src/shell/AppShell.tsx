@@ -20,6 +20,12 @@ import {
   onAutostartOffer,
 } from "@workbench/general";
 import { cn, Button, Dialog } from "@workbench/ui";
+import {
+  FinanceBackfillDialog,
+  FinanceSettings,
+  FinanceWorkbench,
+  financeApi,
+} from "@workbench/finance";
 
 async function handleNotification(action: NotificationAction) {
   if (workspace.useWorkspace.getState().busy) {
@@ -83,8 +89,10 @@ function NavIcon({ type }: { type: "workspace" | "settings" | "trash" }) {
 }
 export function AppShell() {
   const state = workspace.useWorkspace();
+  const [financeOpen, setFinanceOpen] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
+  useEffect(() => financeApi.startRuntime(), []);
   useEffect(() => {
     if (!isTauri()) return;
     configureHostServices({
@@ -140,8 +148,10 @@ export function AppShell() {
       const requests = await invoke<string[]>("take_shell_requests");
       for (const request of requests)
         await queue(async () => {
-          if (request === "new-reminder") await workspace.useWorkspace.getState().newReminder();
-          else if (request === "hide") {
+          if (request === "new-reminder") {
+            setFinanceOpen(false);
+            await workspace.useWorkspace.getState().newReminder();
+          } else if (request === "hide") {
             await workspace.flush();
             await invoke("hide_main");
           } else if (request === "exit") {
@@ -189,6 +199,10 @@ export function AppShell() {
       offOffer();
     };
   }, []);
+  function openGeneral(page: "today" | "settings" | "trash") {
+    setFinanceOpen(false);
+    void state.navigate(page);
+  }
   return (
     <div className="app-shell">
       <aside className="app-sidebar" aria-label="工作台切换栏">
@@ -205,31 +219,46 @@ export function AppShell() {
             type="button"
             className={cn(
               "sidebar-link",
-              state.page !== "settings" && state.page !== "trash" && "selected",
+              !financeOpen && state.page !== "settings" && state.page !== "trash" && "selected",
             )}
             disabled={!state.ready || state.busy}
-            onClick={() => void state.navigate("today")}
+            onClick={() => openGeneral("today")}
           >
             <NavIcon type="workspace" />
             <span>综合工作台</span>
+            <span className="sidebar-active-dot" />
+          </button>
+          <button
+            type="button"
+            className={cn("sidebar-link", financeOpen && "selected")}
+            disabled={!state.ready || state.busy}
+            onClick={() =>
+              void workspace
+                .flush()
+                .then(() => setFinanceOpen(true))
+                .catch(() => undefined)
+            }
+          >
+            <NavIcon type="workspace" />
+            <span>金融指标</span>
             <span className="sidebar-active-dot" />
           </button>
         </nav>
         <div className="sidebar-bottom">
           <button
             type="button"
-            className={cn("sidebar-link", state.page === "settings" && "selected")}
+            className={cn("sidebar-link", !financeOpen && state.page === "settings" && "selected")}
             disabled={!state.ready || state.busy}
-            onClick={() => void state.navigate("settings")}
+            onClick={() => openGeneral("settings")}
           >
             <NavIcon type="settings" />
             设置
           </button>
           <button
             type="button"
-            className={cn("sidebar-link", state.page === "trash" && "selected")}
+            className={cn("sidebar-link", !financeOpen && state.page === "trash" && "selected")}
             disabled={!state.ready || state.busy}
-            onClick={() => void state.navigate("trash")}
+            onClick={() => openGeneral("trash")}
           >
             <NavIcon type="trash" />
             回收站
@@ -250,7 +279,7 @@ export function AppShell() {
         {state.shortcutError && (
           <div className="desktop-error" role="alert">
             {state.shortcutError}
-            <Button size="sm" variant="outline" onClick={() => void state.navigate("settings")}>
+            <Button size="sm" variant="outline" onClick={() => openGeneral("settings")}>
               快捷键设置
             </Button>
           </div>
@@ -260,9 +289,18 @@ export function AppShell() {
             {state.desktopError}
           </div>
         )}
-        <GeneralWorkbench />
+        <div className={financeOpen ? "hidden" : "contents"}>
+          <GeneralWorkbench settingsExtra={<FinanceSettings />} />
+        </div>
+        {financeOpen && <FinanceWorkbench openSettings={() => openGeneral("settings")} />}
       </main>
-      <ReminderNotices onAction={handleNotification} />
+      <ReminderNotices
+        onAction={(action) => {
+          if (action.kind !== "complete" && action.kind !== "snooze") setFinanceOpen(false);
+          return handleNotification(action);
+        }}
+      />
+      <FinanceBackfillDialog />
       <Dialog
         open={state.autostartOffer}
         onOpenChange={(open) => {

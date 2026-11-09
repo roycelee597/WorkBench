@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @source "../../../packages/ui/src";
 @source "../../../workbenches/general/src";
+@source "../../../workbenches/finance/src";
 @custom-variant dark (&:is(.dark *));
 @theme inline {
   --color-background: var(--background);
