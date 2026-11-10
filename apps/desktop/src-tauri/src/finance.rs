@@ -14,7 +14,6 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_shell::ShellExt;
 
-const SERVICE: &str = "com.royce.workbench.finance";
 const EVENT: &str = "finance://event";
 const ENGINE_LOG: &str = "finance-engine.log";
 const ENGINE_LOG_LIMIT: usize = 1024 * 1024;
@@ -145,8 +144,10 @@ fn main_only(window: &WebviewWindow) -> Result<()> {
     }
 }
 
-fn credential() -> Result<keyring::Entry> {
-    keyring::Entry::new(SERVICE, "tushare").map_err(|_| credential_error())
+fn credential(app: &AppHandle) -> Result<keyring::Entry> {
+    // 隔离构建与正式版使用各自的凭据，正式版服务名仍为 com.royce.workbench.finance。
+    let service = format!("{}.finance", app.config().identifier);
+    keyring::Entry::new(&service, "tushare").map_err(|_| credential_error())
 }
 
 fn credential_error() -> FinanceError {
@@ -156,8 +157,8 @@ fn credential_error() -> FinanceError {
     )
 }
 
-fn stored_token() -> Result<Option<String>> {
-    match credential()?.get_password() {
+fn stored_token(app: &AppHandle) -> Result<Option<String>> {
+    match credential(app)?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(_) => Err(credential_error()),
@@ -194,7 +195,7 @@ pub fn finance_token_set(window: WebviewWindow, token: String) -> Result<TokenSt
             "请输入有效格式的 Tushare token",
         ));
     }
-    credential()?
+    credential(window.app_handle())?
         .set_password(token)
         .map_err(|_| credential_error())?;
     Ok(token_status(Some(token)))
@@ -203,13 +204,13 @@ pub fn finance_token_set(window: WebviewWindow, token: String) -> Result<TokenSt
 #[tauri::command]
 pub fn finance_token_status(window: WebviewWindow) -> Result<TokenStatus> {
     main_only(&window)?;
-    Ok(token_status(stored_token()?.as_deref()))
+    Ok(token_status(stored_token(window.app_handle())?.as_deref()))
 }
 
 #[tauri::command]
 pub fn finance_token_clear(window: WebviewWindow) -> Result<()> {
     main_only(&window)?;
-    match credential()?.delete_credential() {
+    match credential(window.app_handle())?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(_) => Err(credential_error()),
     }
@@ -425,7 +426,7 @@ fn start(
         }
         return Ok(None);
     }
-    let token = stored_token()?
+    let token = stored_token(app)?
         .ok_or_else(|| FinanceError::new("TOKEN_MISSING", "请先在设置中保存 Tushare token"))?;
     let input = format!(
         "{}\n",
