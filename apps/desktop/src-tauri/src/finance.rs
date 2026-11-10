@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Write},
+    fs::{self, OpenOptions},
+    io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdout, Command, Stdio},
     sync::{
@@ -15,6 +16,8 @@ use tauri_plugin_shell::ShellExt;
 
 const SERVICE: &str = "com.royce.workbench.finance";
 const EVENT: &str = "finance://event";
+const ENGINE_LOG: &str = "finance-engine.log";
+const ENGINE_LOG_LIMIT: usize = 1024 * 1024;
 
 #[derive(Serialize)]
 pub struct FinanceError {
@@ -42,11 +45,12 @@ struct Active {
 
 struct RunControl {
     scratch: PathBuf,
+    log_dir: Option<PathBuf>,
     stop_at: Mutex<Option<Instant>>,
 }
 
 impl RunControl {
-    fn new(parent: &Path) -> std::io::Result<Self> {
+    fn new(parent: &Path, log_dir: Option<PathBuf>) -> io::Result<Self> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         std::fs::create_dir_all(parent)?;
         let time = SystemTime::now()
@@ -61,6 +65,7 @@ impl RunControl {
         std::fs::create_dir(&scratch)?;
         Ok(Self {
             scratch,
+            log_dir,
             stop_at: Mutex::new(None),
         })
     }
@@ -92,7 +97,21 @@ impl RunControl {
 impl Drop for RunControl {
     fn drop(&mut self) {
         // 只清理由本次运行创建的专属目录，其他进程的 _MEI 目录不在此范围内。
-        let _ = std::fs::remove_dir_all(&self.scratch);
+        if let Err(error) = fs::remove_dir_all(&self.scratch)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            let warning = format!(
+                "[WARN] 无法清理金融引擎临时目录 {}：{error}\n",
+                self.scratch.display()
+            );
+            if !self
+                .log_dir
+                .as_ref()
+                .is_some_and(|dir| append_engine_log(dir, &warning, ENGINE_LOG_LIMIT).is_ok())
+            {
+                let _ = io::stderr().lock().write_all(warning.as_bytes());
+            }
+        }
     }
 }
 
@@ -418,7 +437,7 @@ fn start(
         .map_err(|_| FinanceError::new("ENGINE_START_FAILED", "无法定位金融引擎临时目录"))?
         .join("finance-runs");
     let control = Arc::new(
-        RunControl::new(&scratch_parent)
+        RunControl::new(&scratch_parent, app.path().app_log_dir().ok())
             .map_err(|_| FinanceError::new("ENGINE_START_FAILED", "无法创建金融引擎临时目录"))?,
     );
     let mut child = command(app, mode, &control)?
@@ -483,32 +502,56 @@ fn read_stdout(
 
 fn redact_stderr(
     mut input: impl BufRead,
-    mut output: impl Write,
     token: &str,
-) -> std::io::Result<()> {
+    mut write_line: impl FnMut(&str) -> io::Result<()>,
+) -> io::Result<()> {
     let mut line = Vec::new();
     while input.read_until(b'\n', &mut line)? > 0 {
         let safe = String::from_utf8_lossy(&line).replace(token, "[已隐藏]");
-        output.write_all(safe.as_bytes())?;
+        write_line(&safe)?;
         line.clear();
     }
     Ok(())
 }
 
-fn append_stderr(app: &AppHandle, stderr: ChildStderr, token: &str) {
-    let file = app.path().app_log_dir().ok().and_then(|folder| {
-        std::fs::create_dir_all(&folder).ok()?;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(folder.join("finance-engine.log"))
-            .ok()
-    });
-    let mut reader = BufReader::new(stderr);
-    if let Some(file) = file {
-        let _ = redact_stderr(&mut reader, file, token);
+fn append_engine_log(folder: &Path, line: &str, limit: usize) -> io::Result<()> {
+    let shortened;
+    let line = if line.len() > limit {
+        let mut end = limit - 1;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        shortened = format!("{}\n", &line[..end]);
+        &shortened
+    } else {
+        line
+    };
+
+    let path = folder.join(ENGINE_LOG);
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.len().saturating_add(line.len() as u64) > limit as u64 => {
+            // 在 Windows 上先关闭上一次写入的句柄，再替换旧的归档。
+            fs::rename(&path, path.with_extension("log.1"))?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::create_dir_all(folder)?,
+        Err(error) => return Err(error),
     }
-    let _ = std::io::copy(&mut reader, &mut std::io::sink());
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(line.as_bytes())
+}
+
+fn append_stderr(app: &AppHandle, stderr: ChildStderr, token: &str) {
+    let mut reader = BufReader::new(stderr);
+    if let Ok(folder) = app.path().app_log_dir() {
+        let _ = redact_stderr(&mut reader, token, |line| {
+            append_engine_log(&folder, line, ENGINE_LOG_LIMIT)
+        });
+    }
+    let _ = io::copy(&mut reader, &mut io::sink());
 }
 
 fn wait_for_child(
@@ -686,8 +729,8 @@ mod tests {
         let mut log = Vec::new();
         redact_stderr(
             &b"token=private-test\r\nreceived private-test"[..],
-            &mut log,
             "private-test",
+            |line| log.write_all(line.as_bytes()),
         )
         .unwrap();
         assert_eq!(
@@ -697,9 +740,47 @@ mod tests {
     }
 
     #[test]
+    fn log_rotation_keeps_only_latest_archive_and_redacts_before_writing() {
+        let owner =
+            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests"), None).unwrap();
+        let folder = &owner.scratch;
+        let input = "first private-test\nsecond private-test\nthird private-test\n";
+        redact_stderr(input.as_bytes(), "private-test", |line| {
+            append_engine_log(folder, line, 32)
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(folder.join(ENGINE_LOG)).unwrap(),
+            "third [已隐藏]\n"
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join("finance-engine.log.1")).unwrap(),
+            "second [已隐藏]\n"
+        );
+        append_engine_log(folder, &"警告".repeat(30), 32).unwrap();
+        let truncated = fs::read_to_string(folder.join(ENGINE_LOG)).unwrap();
+        assert!(truncated.len() <= 32 && truncated.ends_with('\n'));
+    }
+
+    #[test]
+    fn scratch_cleanup_failure_writes_a_warning() {
+        let owner =
+            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests"), None).unwrap();
+        let logs = owner.scratch.join("logs");
+        let run = RunControl::new(&owner.scratch, Some(logs.clone())).unwrap();
+        let scratch = run.scratch.clone();
+        fs::remove_dir(&scratch).unwrap();
+        fs::write(&scratch, "占位").unwrap();
+        drop(run);
+        let log = fs::read_to_string(logs.join(ENGINE_LOG)).unwrap();
+        assert!(log.contains("[WARN] 无法清理金融引擎临时目录"));
+        assert!(log.contains(scratch.to_str().unwrap()));
+    }
+
+    #[test]
     fn fixed_cache_connection_is_read_only_and_does_not_create_files() {
         let control =
-            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests")).unwrap();
+            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests"), None).unwrap();
         let path = control.scratch.join("finance # test.db");
         tauri::async_runtime::block_on(async {
             assert!(open_cache(&path).await.is_err());
@@ -743,7 +824,7 @@ mod tests {
     #[test]
     fn verify_deadline_requests_graceful_stop_and_removes_owned_scratch() {
         let control =
-            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests")).unwrap();
+            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests"), None).unwrap();
         let scratch = control.scratch.clone();
         let mut command = Command::new("powershell.exe");
         hide_console(&mut command);
