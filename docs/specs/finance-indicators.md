@@ -346,7 +346,7 @@ finance-engine --version
 - finance.db 和 workbench.db 是**两个独立文件**：
   - `workbench.db`：用户数据（备忘录、阈值、提醒），带同步字段，以后要同步。
   - `finance.db`：市场数据和指标结果，是**可再生的缓存**，由 Python 独占写入，**不参与同步**，所以不带 5 个同步字段。这也是为了以后切换到服务器数据源时，App 端只换「读哪里」。
-- 位置：和 `workbench.db` 放在同一个应用数据目录。finance.db 预计有几百 MB（见 §10.1），放在 Roaming（`%APPDATA%`）不太合适。🔬 实现时实测（PR-F2）：确认 `tauri-plugin-sql` 能不能用绝对路径加载 `%LOCALAPPDATA%\com.royce.workbench\finance.db`，能的话就放在那里。
+- 位置：`%LOCALAPPDATA%\com.royce.workbench\finance.db`。F2 在 Windows 的隔离 Tauri 实例中确认 `tauri-plugin-sql` 支持绝对路径。`workbench.db` 继续使用 Roaming 应用数据目录。
 - 前端用 `tauri-plugin-sql` 的 `select` 只读访问（`Database.load("sqlite:…finance.db")`）。约定 App **只读不写** finance.db，由 `core/finance/finance-reader.ts` 统一封装，其它地方不直接写 SQL。
 - Python 开启 WAL 模式，所以 App 读的同时 Python 也能写。
 

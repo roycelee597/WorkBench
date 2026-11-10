@@ -77,3 +77,4 @@ __pycache__/
 *.egg-info/
 .uv-cache/
 finance.db.lock
+apps/desktop/src-tauri/binaries/finance-engine-*.exe

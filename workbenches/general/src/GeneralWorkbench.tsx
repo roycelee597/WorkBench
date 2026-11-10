@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import { Sun, FileText, CalendarDays, Bell, CircleAlert } from "lucide-react";
 import { Button, cn } from "@workbench/ui";
 import { workspace } from "./workspace-store";
@@ -19,7 +19,7 @@ const tabs = [
   { page: "calendar", label: "日程", Icon: CalendarDays },
   { page: "reminders", label: "提醒事项", Icon: Bell },
 ] as const;
-export function GeneralWorkbench() {
+export function GeneralWorkbench({ settingsExtra }: { settingsExtra?: ReactNode } = {}) {
   const state = workspace.useWorkspace();
   const initialize = state.initialize;
   useEffect(() => {
@@ -142,7 +142,7 @@ export function GeneralWorkbench() {
         {state.page === "memos" ? (
           <MemosPage />
         ) : state.page === "settings" ? (
-          <SettingsPage />
+          <SettingsPage extra={settingsExtra} />
         ) : state.page === "trash" ? (
           <TrashPage />
         ) : state.page === "calendar" ? (

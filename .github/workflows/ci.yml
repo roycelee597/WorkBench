@@ -86,5 +86,20 @@ jobs:
       - name: 运行单元测试
         run: pnpm test
 
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.12.17"
+          enable-cache: true
+          cache-dependency-glob: engines/finance/uv.lock
+
+      - name: 打包并运行金融 sidecar 冒烟测试
+        run: pnpm finance:engine
+
       - name: 编译 Windows 桌面应用
         run: pnpm --filter desktop tauri build --no-bundle

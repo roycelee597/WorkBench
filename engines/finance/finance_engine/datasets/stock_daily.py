@@ -63,6 +63,7 @@ def refresh(
     today: int,
     *,
     warn: Callable[[EngineError], None] | None = None,
+    now: datetime | None = None,
 ) -> bool:
     catalog_gap = _catalog_gap(db, day)
     if catalog_gap is not None and catalog_gap["status"] == "error":
@@ -121,7 +122,7 @@ def refresh(
     )
     if unknown:
         examples = "、".join(unknown[:5])
-        fetched_at = timestamp()
+        fetched_at = int(now.timestamp() * 1000) if now is not None else timestamp()
         attempts = _missing_attempts(catalog_gap, fetched_at)
         limit_reached = attempts >= CATALOG_MISSING_LIMIT
         next_step = "已停止自动补取" if limit_reached else "等待刷新目录"
@@ -207,7 +208,7 @@ def refresh(
                 if previous_factor_gap is None:
                     db.mark("adj_factor", day, "pending", error=redact(factor_error, client.token))
             elif missing:
-                fetched_at = timestamp()
+                fetched_at = int(now.timestamp() * 1000) if now is not None else timestamp()
                 attempts = _missing_attempts(previous_factor_gap, fetched_at)
                 limit_reached = attempts >= adj_factor.MISSING_LIMIT
                 db.mark(

@@ -1,5 +1,6 @@
 mod database;
 mod desktop;
+mod finance;
 mod quick_create;
 use tauri::Manager;
 
@@ -8,6 +9,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(desktop::ShellState::default())
         .manage(quick_create::QuickState::default())
+        .manage(finance::FinanceState::default())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|argument| argument == "--background") {
                 desktop::request(app, "open");
@@ -65,12 +68,26 @@ pub fn run() {
             desktop::hide_main,
             desktop::show_main,
             desktop::exit_app,
+            finance::finance_token_set,
+            finance::finance_token_status,
+            finance::finance_token_clear,
+            finance::finance_update_start,
+            finance::finance_update_cancel,
+            finance::finance_verify,
+            finance::finance_db_path,
+            finance::finance_db_size,
+            finance::finance_open_directory,
             quick_create::open_quick_create,
             quick_create::hide_quick_create,
             quick_create::quick_request,
             quick_create::take_quick_requests,
             quick_create::finish_quick_request
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 WorkBench 失败");
+        .build(tauri::generate_context!())
+        .expect("启动 WorkBench 失败")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                let _ = finance::stop(app);
+            }
+        });
 }

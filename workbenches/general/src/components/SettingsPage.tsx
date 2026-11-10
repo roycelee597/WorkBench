@@ -4,7 +4,7 @@ import { workspace } from "../workspace-store";
 import type { Theme } from "../api";
 import { generalApi } from "../api";
 import { reminderChoices } from "../calendar-model";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "@workbench/ui";
 import {
   DEFAULT_SHORTCUT,
@@ -15,7 +15,7 @@ const choices = [
   { value: "light", label: "浅色", Icon: Sun },
   { value: "dark", label: "深色", Icon: Moon },
 ] as const;
-export function SettingsPage() {
+export function SettingsPage({ extra }: { extra?: ReactNode } = {}) {
   const state = workspace.useWorkspace();
   const [reminder, setReminder] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -241,6 +241,7 @@ export function SettingsPage() {
           </p>
         )}
       </form>
+      {extra}
     </section>
   );
 }

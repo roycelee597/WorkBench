@@ -11,8 +11,9 @@
     "pnpm": "11.25.0"
   },
   "scripts": {
+    "finance:engine": "uv run --project engines/finance --locked --group build python engines/finance/scripts/build_sidecar.py",
     "dev": "pnpm --filter desktop tauri dev",
-    "build": "pnpm --filter desktop tauri build",
+    "build": "pnpm finance:engine && pnpm --filter desktop tauri build",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run --passWithNoTests",
