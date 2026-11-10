@@ -313,7 +313,7 @@ finance-engine --version
 - 🔬 实现时实测：Tushare 的「积分不足」和「限流」错误码没有公开文档。实现时根据返回的 `code` 和 `msg` 关键词判断，并把原始 `code` 和 `msg` 写进 `run_log`，不要瞎猜。
 - **离线**：断网时第一个请求就失败 → 状态 `NETWORK`，只允许写 `run_log` 记录失败，行情、指标和完成标记保持不变；图表照常显示已有数据，状态栏显示「离线，数据截至 X 日」。
 - **单实例**：Rust 保证同时只有一个 sidecar 进程。Python 端另外对数据库目录加锁文件（`finance.db.lock`），防止开发时手动运行冲突。
-- **取消**：退出 App 时，Rust 结束子进程。因为每天的数据是一个独立事务，不会留下写了一半的数据。
+- **取消**：取消或退出 App 时，Rust 先通过本次运行专属的控制文件通知引擎退出，等待最多 5 秒，再对仍在运行的进程树执行强制结束。每天的数据独立提交。引擎的临时文件留在本次运行专属目录，进程结束后由 Rust 清理。测试连接约 60 秒时发出停止信号，并使用同一套收尾规则。Rust 将 stderr 打码后写入应用日志目录的 `finance-engine.log`。
 
 ### 8.4 `full-rebuild`
 
@@ -347,7 +347,7 @@ finance-engine --version
   - `workbench.db`：用户数据（备忘录、阈值、提醒），带同步字段，以后要同步。
   - `finance.db`：市场数据和指标结果，是**可再生的缓存**，由 Python 独占写入，**不参与同步**，所以不带 5 个同步字段。这也是为了以后切换到服务器数据源时，App 端只换「读哪里」。
 - 位置：`%LOCALAPPDATA%\com.royce.workbench\finance.db`。F2 在 Windows 的隔离 Tauri 实例中确认 `tauri-plugin-sql` 支持绝对路径。`workbench.db` 继续使用 Roaming 应用数据目录。
-- 前端用 `tauri-plugin-sql` 的 `select` 只读访问（`Database.load("sqlite:…finance.db")`）。约定 App **只读不写** finance.db，由 `core/finance/finance-reader.ts` 统一封装，其它地方不直接写 SQL。
+- Rust 只读打开固定路径的 `finance.db` 并向 `tauri-plugin-sql` 注册连接，前端用 `select` 查询。`core/finance/finance-reader.ts` 统一封装。主窗口通过专用命令打开和关闭金融连接，通用的 `sql:allow-load` 和 `sql:allow-close` 不授予 WebView。
 - Python 开启 WAL 模式，所以 App 读的同时 Python 也能写。
 
 ### 9.3 扩展：以后加一个新指标要做什么
@@ -513,7 +513,7 @@ CREATE UNIQUE INDEX idx_finance_alert_state_threshold ON finance_alert_states(th
 
 - 在 `src-tauri/src/lib.rs` 登记 version 3。
 - 阈值走软删除，但**不进回收站界面**（v1，已确认 2026-11-07）。
-- settings（kv）新增键：`finance.akshare_fallback`（默认 true）、`finance.overlay_hs300`（默认 true）、`finance.default_range`（`3y`）、`finance.valuation_window`（`10y`）、`finance.valuation_metric`（`pe_ttm`）、`finance.top5_view`（`daily`）、`finance.initial_backfill_confirmed`、`finance.last_selected_indicator`。
+- settings（kv）新增键：`finance.akshare_fallback`（默认 true）、`finance.overlay_hs300`（默认 true）、`finance.default_range`（`3y`）、`finance.valuation_window`（`10y`）、`finance.valuation_metric`（`pe_ttm`）、`finance.valuation_index`（默认元数据的第一个指数）、`finance.valuation_view`（`percentile`）、`finance.top5_view`（`daily`）、`finance.initial_backfill_confirmed`、`finance.last_selected_indicator`。
 - `reminders` **不改表**（理由见 §7.3）。
 
 ## 11. 失败场景
