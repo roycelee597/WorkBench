@@ -94,7 +94,7 @@ Tushare 各接口入库时间不同（官方文档写法略有出入，取较晚
 
 2026-11-08 F1 复测补充：上述两位小数是展示精度，接口原始值为沪深300 PE-TTM 13.5949、PB 1.3393，创业板指 PE-TTM 29.0995、上证指数 PE-TTM 16.1253。缓存保留原始精度，参考值按两位小数核对，详见 `docs/finance-engine.md`。
 
-历史证券代码变更须按正式公告和原始上市日关联同一证券。上游同日同时返回旧、新代码时，**按该交易日正式有效代码取日线和复权因子**。实际有效代码缺失或同一有效代码重复时仍报错。目录未收录的 `.BJ` 行发出 `UNKNOWN_BJ_CODE` 警告后跳过，其余日线照常处理。过滤后为空时按空响应标记 `pending` 并保留缓存。其他缺码使该日标记为 `pending`，下次刷新目录后重试。在三个不同的北京时间自然日收到有效日线响应仍缺码时标记 `error`，停止自动补取。同一自然日最多计一次，网络失败和空响应不计。重建缓存可重新取数。疑似代码变更检查只比较同日成交额为正的行。不同证券的收盘价和成交额完全相同时，发出 `POSSIBLE_CODE_CHANGE` 警告供人工核对。已核实的对应关系与来源记录在 F1 验证文档中。
+历史证券代码变更须按正式公告和原始上市日关联同一证券。上游同日同时返回旧、新代码时，**按该交易日正式有效代码取日线和复权因子**。实际有效代码缺失或同一有效代码重复时仍报错。目录未收录的 `.BJ` 行发出 `UNKNOWN_BJ_CODE` 警告后跳过，其余日线照常处理。过滤后为空时按空响应标记 `pending` 并保留缓存。其他缺码使该日标记为 `pending`，下次刷新目录后重试。在三个不同的北京时间自然日收到有效日线响应仍缺码时标记 `error`，停止自动补取。同一自然日最多计一次，网络失败和空响应不计。重建缓存可重新取数。疑似代码变更检查只比较同日成交额为正的行。不同证券的收盘价和成交额完全相同时，参与指标的证券发出 `POSSIBLE_CODE_CHANGE` 警告供人工核对，涉及北交所的匹配单独记入引擎日志。已核实的对应关系与来源记录在 F1 验证文档中。
 
 **`daily` 的 6000 行上限**：今天全市场已有 5571 行，北交所还在扩容，迟早会超过 6000。`finance-engine` 必须这样处理：返回行数 = 6000 时，用 `offset` 参数继续翻页，直到不足 6000 行为止。🔬 实现时实测：`daily` 是否支持 `offset`/`limit`。如果不支持，就改为按交易所拆分请求，或者按 `ts_code` 列表分批请求。
 
@@ -177,7 +177,7 @@ Tushare 各接口入库时间不同（官方文档写法略有出入，取较晚
   - 原生支持双纵轴（指标和沪深300）、阈值虚线（`markLine`）、范围缩放条（`dataZoom`）、悬停提示、深色主题，以及 1 万点以上的大数据量。
   - 直接用 `echarts/core` 按需引入（只引 LineChart、Grid、Tooltip、DataZoom、MarkLine、Legend），React 中自己写一个约 50 行的 `<Chart option={…}/>` 包装，不引入 `echarts-for-react`，少一个依赖。
   - 金融工作台整体用 `React.lazy` 动态加载，不让主包继续变大（已有 Vite 包体积警告）。
-- 指标日线序列在各自已有记录的首尾之间，按交易日历给缺行的开市日补空值，保留已有空值。折线在空值处断开。占比图纵轴随可见数据缩放并包含阈值，估值分位轴固定为 0–100%。
+- 指标日线与沪深300 叠加线各自在已有记录的首尾之间，按交易日历给缺行的开市日补空值，保留已有空值。折线在空值处断开。切换到月均时，沪深300 仍按原交易日期叠加。占比图纵轴随可见数据缩放并包含阈值，估值分位轴固定为 0–100%。
 - 对比过：TradingView `lightweight-charts`（Apache-2.0，但要求保留 TradingView 署名，而且偏向 K 线，双轴和阈值线不如 ECharts 方便）；Recharts（MIT，大数据量时卡顿，缩放要自己做）。
 - 图表配置由纯函数 `buildChartOption(series, overlay, thresholds, view)` 生成，方便单测。
 - 沪深300 叠加：副轴，灰色细线，图例可以点击隐藏，状态记入设置（`finance.overlay_hs300`）。
@@ -336,7 +336,7 @@ finance-engine --version
 | `finance_verify()`           | 运行 `finance-engine verify`，返回结果                                                                                         |
 | `finance_db_path()`          | 返回 finance.db 路径，用于显示和「打开文件夹」                                                                                 |
 
-- **token 加密保存**：用 Rust 的 `keyring` crate（v3，MIT/Apache-2.0），在 Windows 上存进**凭据管理器**（Credential Manager，由系统用当前用户的登录凭据加密），服务名 `com.royce.workbench.finance`，账户名 `tushare`。token 不写进 SQLite、设置 JSON 或日志。
+- **token 加密保存**：用 Rust 的 `keyring` crate（v3，MIT/Apache-2.0），在 Windows 上存进**凭据管理器**（Credential Manager，由系统用当前用户的登录凭据加密）。服务名为应用标识加 `.finance`，正式版为 `com.royce.workbench.finance`，账户名 `tushare`。token 不写进 SQLite、设置 JSON 或日志。
   - 没选 `tauri-plugin-stronghold`：它需要额外的密码或盐管理，对新手偏复杂，而且官方计划弃用。
   - 换电脑或以后同步时，token **不同步**，需要在新设备上重新填。
 - **启动 sidecar**：用 `tauri-plugin-shell`，**只在 Rust 端调用**（`app.shell().sidecar("finance-engine")`）。**不给前端任何 shell 权限**，`capabilities/default.json` 不加 `shell:*`。
