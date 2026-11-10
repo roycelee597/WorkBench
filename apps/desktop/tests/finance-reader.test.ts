@@ -94,6 +94,23 @@ it("查询范围只有缺失交易日时仍返回空点", async () => {
   ]);
 });
 
+it("沪深300按自身覆盖区间补开市日，忽略休市日和其他指数", async () => {
+  setCache(`CREATE TABLE index_daily (
+      ts_code TEXT, trade_date INTEGER, close REAL, PRIMARY KEY (ts_code, trade_date)
+    ) WITHOUT ROWID;
+    INSERT INTO trade_calendar VALUES (20261105,1), (20261106,1), (20261107,0),
+      (20261108,0), (20261109,1), (20261110,1), (20261111,1);
+    INSERT INTO index_daily VALUES
+      ('000300.SH',20261106,4500), ('000300.SH',20261110,4550),
+      ('000001.SH',20261105,3800), ('000001.SH',20261109,3900), ('000001.SH',20261111,4000);`);
+
+  expect(await new FinanceReader().getOverlay()).toEqual([
+    { trade_date: 20261106, value: 4500, extra_json: null },
+    { trade_date: 20261109, value: null, extra_json: null },
+    { trade_date: 20261110, value: 4550, extra_json: null },
+  ]);
+});
+
 it("使用原生固定路径连接，不向 SQL 插件提交文件路径", async () => {
   const key = "sqlite:finance-read-only";
   vi.mocked(invoke).mockResolvedValueOnce({ key, bytes: 4096 });

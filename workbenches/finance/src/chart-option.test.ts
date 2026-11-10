@@ -10,6 +10,7 @@ import {
 } from "echarts/components";
 import { SVGRenderer } from "echarts/renderers";
 import { buildChartOption } from "./chart-option";
+import { monthlyAverage } from "./monthly";
 import { dayTime, rangeStart } from "./series-view";
 
 use([
@@ -88,6 +89,44 @@ it("占比纵轴随缩放范围收紧，仍包含高于当前数据的阈值", (
     expect(inView(40)).toBe(true);
     expect(inView(50)).toBe(true);
     expect(inView(90)).toBe(false);
+  } finally {
+    chart.dispose();
+  }
+});
+
+it.each(["日线", "月均"])("%s模式下叠加线按日期定位并在缺口断开", (mode) => {
+  const overlay = [
+    { trade_date: 20261029, value: 4400 },
+    { trade_date: 20261030, value: 4420 },
+    { trade_date: 20261102, value: null },
+    { trade_date: 20261103, value: 4470 },
+    { trade_date: 20261104, value: 4500 },
+  ].map((point) => ({ ...point, extra_json: null }));
+  const daily = [{ trade_date: 20261030, value: 41, extra_json: null }, ...points];
+  const series = mode === "月均" ? monthlyAverage(daily, 20261201) : daily;
+  const chart = init(null, undefined, { renderer: "svg", ssr: true, width: 500, height: 350 });
+  try {
+    const option = buildChartOption(series, overlay, [], {
+      name: mode,
+      percent: true,
+      decimals: 1,
+      dark: false,
+      range: "all",
+      first: 20261029,
+      last: 20261106,
+    });
+    expect(option.series).toMatchObject([
+      {},
+      {
+        yAxisIndex: 1,
+        connectNulls: false,
+        data: overlay.map(({ trade_date, value }) => [dayTime(trade_date), value]),
+      },
+    ]);
+    chart.setOption(option);
+    const svg = chart.renderToSVGString();
+    const overlayPath = svg.match(/<path d="([^"]+)"[^>]*stroke="#75867f"[^>]*>/g);
+    expect(overlayPath?.some((path) => (path.match(/M-?\d/g) ?? []).length === 2)).toBe(true);
   } finally {
     chart.dispose();
   }

@@ -193,7 +193,20 @@ export class FinanceReader {
   getOverlay(): Promise<FinancePoint[]> {
     return this.read<FinancePoint[]>([], (db) =>
       db.select<FinancePoint[]>(
-        "SELECT trade_date,close AS value,NULL AS extra_json FROM index_daily WHERE ts_code='000300.SH' ORDER BY trade_date",
+        `WITH quotes AS (
+          SELECT trade_date,close FROM index_daily WHERE ts_code='000300.SH'
+        ), bounds AS (
+          SELECT min(trade_date) AS first_date,max(trade_date) AS last_date FROM quotes
+        ), days AS (
+          SELECT trade_date FROM quotes
+          UNION
+          SELECT c.cal_date FROM bounds AS b JOIN trade_calendar AS c
+            ON c.cal_date BETWEEN b.first_date AND b.last_date
+          WHERE c.is_open=1
+        )
+        SELECT d.trade_date,q.close AS value,NULL AS extra_json
+        FROM days AS d LEFT JOIN quotes AS q USING (trade_date)
+        ORDER BY d.trade_date`,
       ),
     );
   }
