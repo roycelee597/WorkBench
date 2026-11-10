@@ -11,8 +11,6 @@
     "autostart:default",
     "allow-desktop-lifecycle",
     "sql:allow-select",
-    "sql:allow-load",
-    "sql:allow-close",
     "allow-finance",
     "allow-execute-batch"
   ]

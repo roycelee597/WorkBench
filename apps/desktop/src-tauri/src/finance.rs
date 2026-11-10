@@ -3,8 +3,12 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdout, Command, Stdio},
-    sync::{Arc, Mutex},
+    process::{Child, ChildStderr, ChildStdout, Command, Stdio},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_shell::ShellExt;
@@ -30,10 +34,70 @@ impl FinanceError {
 type Result<T> = std::result::Result<T, FinanceError>;
 
 struct Active {
-    child: Child,
-    cancelled: bool,
+    child: Option<Child>,
+    control: Arc<RunControl>,
     updating: bool,
+    exit_code: Option<i32>,
 }
+
+struct RunControl {
+    scratch: PathBuf,
+    stop_at: Mutex<Option<Instant>>,
+}
+
+impl RunControl {
+    fn new(parent: &Path) -> std::io::Result<Self> {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        std::fs::create_dir_all(parent)?;
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let scratch = parent.join(format!(
+            "{}-{time}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&scratch)?;
+        Ok(Self {
+            scratch,
+            stop_at: Mutex::new(None),
+        })
+    }
+
+    fn cancel_file(&self) -> PathBuf {
+        self.scratch.join("cancel")
+    }
+
+    fn requested_at(&self) -> Option<Instant> {
+        *self
+            .stop_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn request_stop(&self) -> std::io::Result<()> {
+        let mut stop_at = self
+            .stop_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if stop_at.is_some() {
+            return Ok(());
+        }
+        *stop_at = Some(Instant::now());
+        std::fs::write(self.cancel_file(), [])
+    }
+}
+
+impl Drop for RunControl {
+    fn drop(&mut self) {
+        // 只清理由本次运行创建的专属目录，其他进程的 _MEI 目录不在此范围内。
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct FinanceState(Arc<Mutex<Option<Active>>>);
@@ -139,6 +203,65 @@ fn database_path(app: &AppHandle) -> Result<PathBuf> {
         .map_err(|_| FinanceError::new("DB_ERROR", "无法定位金融数据文件夹"))
 }
 
+const CACHE_POOL_KEY: &str = "sqlite:finance-read-only";
+
+#[derive(Serialize)]
+pub struct CacheConnection {
+    key: &'static str,
+    bytes: u64,
+}
+
+async fn open_cache(path: &Path) -> std::result::Result<sqlx::SqlitePool, sqlx::Error> {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(path)
+                .read_only(true),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn finance_reader_open(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<Option<CacheConnection>> {
+    main_only(&window)?;
+    let path = database_path(&app)?;
+    let bytes = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(FinanceError::new("DB_ERROR", "无法读取金融数据文件")),
+    };
+    let pools = app.state::<tauri_plugin_sql::DbInstances>();
+    let mut instances = pools.0.write().await;
+    if !instances.contains_key(CACHE_POOL_KEY) {
+        let pool = open_cache(&path).await.map_err(|_| {
+            FinanceError::new("DB_ERROR", "无法只读打开金融缓存，请检查文件或重建金融数据")
+        })?;
+        instances.insert(
+            CACHE_POOL_KEY.into(),
+            tauri_plugin_sql::DbPool::Sqlite(pool),
+        );
+    }
+    Ok(Some(CacheConnection {
+        key: CACHE_POOL_KEY,
+        bytes,
+    }))
+}
+
+#[tauri::command]
+pub async fn finance_reader_close(window: WebviewWindow, app: AppHandle) -> Result<()> {
+    main_only(&window)?;
+    let pools = app.state::<tauri_plugin_sql::DbInstances>();
+    let pool = pools.0.write().await.remove(CACHE_POOL_KEY);
+    if let Some(tauri_plugin_sql::DbPool::Sqlite(pool)) = pool {
+        pool.close().await;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn finance_db_path(window: WebviewWindow, app: AppHandle) -> Result<String> {
     main_only(&window)?;
@@ -192,7 +315,7 @@ fn engine_missing(app: &AppHandle) -> FinanceError {
     )
 }
 
-fn command(app: &AppHandle, mode: Option<UpdateMode>) -> Result<Command> {
+fn command(app: &AppHandle, mode: Option<UpdateMode>, control: &RunControl) -> Result<Command> {
     let mut command = if cfg!(debug_assertions)
         && std::env::var("WORKBENCH_FINANCE_ENGINE_DEV").as_deref() == Ok("1")
     {
@@ -214,7 +337,11 @@ fn command(app: &AppHandle, mode: Option<UpdateMode>) -> Result<Command> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
+        .arg("--cancel-file")
+        .arg(control.cancel_file())
+        .env("TEMP", &control.scratch)
+        .env("TMP", &control.scratch)
         .env_remove("TUSHARE_TOKEN");
     hide_console(&mut command);
     Ok(command)
@@ -254,12 +381,18 @@ fn kill_tree(child: &mut Child) -> std::io::Result<()> {
     child.kill()
 }
 
+struct ChildPipes {
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    token: String,
+}
+
 fn start(
     app: &AppHandle,
     state: &FinanceState,
     mode: Option<UpdateMode>,
     fallback: bool,
-) -> Result<Option<(ChildStdout, String)>> {
+) -> Result<Option<ChildPipes>> {
     let mut active = state
         .0
         .lock()
@@ -279,7 +412,16 @@ fn start(
         "{}\n",
         json!({"tushare_token": token, "akshare_fallback": fallback})
     );
-    let mut child = command(app, mode)?
+    let scratch_parent = app
+        .path()
+        .app_cache_dir()
+        .map_err(|_| FinanceError::new("ENGINE_START_FAILED", "无法定位金融引擎临时目录"))?
+        .join("finance-runs");
+    let control = Arc::new(
+        RunControl::new(&scratch_parent)
+            .map_err(|_| FinanceError::new("ENGINE_START_FAILED", "无法创建金融引擎临时目录"))?,
+    );
+    let mut child = command(app, mode, &control)?
         .spawn()
         .map_err(|_| engine_missing(app))?;
     let sent = child
@@ -295,28 +437,33 @@ fn start(
         ));
     }
     let stdout = child.stdout.take().expect("金融引擎 stdout 已配置为管道");
+    let stderr = child.stderr.take().expect("金融引擎 stderr 已配置为管道");
     *active = Some(Active {
-        child,
-        cancelled: false,
+        child: Some(child),
+        control,
         updating: mode.is_some(),
+        exit_code: None,
     });
-    Ok(Some((stdout, token)))
+    Ok(Some(ChildPipes {
+        stdout,
+        stderr,
+        token,
+    }))
 }
 
-fn collect(
-    app: AppHandle,
-    state: FinanceState,
+fn read_stdout(
+    app: &AppHandle,
     stdout: ChildStdout,
-    token: String,
+    token: &str,
     updating: bool,
-) -> Result<()> {
+) -> (bool, Option<FinanceError>) {
     let mut failure = None;
     let mut verified = false;
     for line in BufReader::new(stdout)
         .lines()
         .map_while(std::result::Result::ok)
     {
-        let line = line.replace(&token, "[已隐藏]");
+        let line = line.replace(token, "[已隐藏]");
         if updating {
             let _ = app.emit_to("main", EVENT, &line);
         } else if let Ok(event) = serde_json::from_str::<Value>(&line) {
@@ -331,23 +478,126 @@ fn collect(
             }
         }
     }
-    let (code, cancelled) = {
+    (verified, failure)
+}
+
+fn redact_stderr(
+    mut input: impl BufRead,
+    mut output: impl Write,
+    token: &str,
+) -> std::io::Result<()> {
+    let mut line = Vec::new();
+    while input.read_until(b'\n', &mut line)? > 0 {
+        let safe = String::from_utf8_lossy(&line).replace(token, "[已隐藏]");
+        output.write_all(safe.as_bytes())?;
+        line.clear();
+    }
+    Ok(())
+}
+
+fn append_stderr(app: &AppHandle, stderr: ChildStderr, token: &str) {
+    let file = app.path().app_log_dir().ok().and_then(|folder| {
+        std::fs::create_dir_all(&folder).ok()?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(folder.join("finance-engine.log"))
+            .ok()
+    });
+    let mut reader = BufReader::new(stderr);
+    if let Some(file) = file {
+        let _ = redact_stderr(&mut reader, file, token);
+    }
+    let _ = std::io::copy(&mut reader, &mut std::io::sink());
+}
+
+fn wait_for_child(
+    child: &mut Child,
+    control: &RunControl,
+    timeout: Option<Duration>,
+    grace: Duration,
+) -> (Option<i32>, bool) {
+    let started = Instant::now();
+    let mut timed_out = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return (status.code(), timed_out),
+            Ok(None) => {}
+            Err(_) => break,
+        }
+        if !timed_out && timeout.is_some_and(|limit| started.elapsed() >= limit) {
+            timed_out = true;
+            let _ = control.request_stop();
+        }
+        if control
+            .requested_at()
+            .is_some_and(|instant| instant.elapsed() >= grace)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let _ = kill_tree(child);
+    (
+        child.wait().ok().and_then(|status| status.code()),
+        timed_out,
+    )
+}
+
+fn collect(app: AppHandle, state: FinanceState, pipes: ChildPipes, updating: bool) -> Result<()> {
+    let (mut child, control) = {
         let mut active = state
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut entry = active.take().expect("金融进程运行时占用槽位");
+        let entry = active.as_mut().expect("金融进程运行时占用槽位");
         (
-            entry.child.wait().ok().and_then(|status| status.code()),
-            entry.cancelled,
+            entry.child.take().expect("仅收集一次金融进程"),
+            Arc::clone(&entry.control),
         )
     };
+    // 槽位保持占用，但等待不持有全局锁，取消和退出仍能写停止信号。
+    let ChildPipes {
+        stdout,
+        stderr,
+        token,
+    } = pipes;
+    let (code, timed_out, verified, failure) = std::thread::scope(|scope| {
+        let out = scope.spawn(|| read_stdout(&app, stdout, &token, updating));
+        let err = scope.spawn(|| append_stderr(&app, stderr, &token));
+        let (code, timed_out) = wait_for_child(
+            &mut child,
+            &control,
+            (!updating).then_some(VERIFY_TIMEOUT),
+            CANCEL_GRACE,
+        );
+        let (verified, failure) = out.join().unwrap_or_default();
+        let _ = err.join();
+        (code, timed_out, verified, failure)
+    });
+    let mut active = state
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let exit_code = active.take().and_then(|entry| entry.exit_code);
+    let cancelled = control.requested_at().is_some();
+    drop(control);
     if updating {
         let _ = app.emit_to(
             "main",
             EVENT,
             json!({"type": "engine_exit", "code": code, "cancelled": cancelled}).to_string(),
         );
+    }
+    drop(active);
+    if let Some(code) = exit_code {
+        app.exit(code);
+    }
+    if timed_out {
+        return Err(FinanceError::new(
+            "VERIFY_TIMEOUT",
+            "测试连接超时（约 60 秒），请检查网络后重试",
+        ));
     }
     if code == Some(0) && (updating || verified) {
         return Ok(());
@@ -364,28 +614,44 @@ pub fn finance_update_start(
 ) -> Result<&'static str> {
     main_only(&window)?;
     let state = app.state::<FinanceState>().inner().clone();
-    let Some((stdout, token)) = start(&app, &state, Some(mode), akshare_fallback.unwrap_or(true))?
-    else {
+    let Some(pipes) = start(&app, &state, Some(mode), akshare_fallback.unwrap_or(true))? else {
         return Ok("already_running");
     };
     std::thread::spawn(move || {
-        let _ = collect(app, state, stdout, token, true);
+        let _ = collect(app, state, pipes, true);
     });
     Ok("started")
 }
 
-pub fn stop(app: &AppHandle) -> Result<()> {
+fn stop(app: &AppHandle) -> Result<()> {
+    let state = app.state::<FinanceState>();
+    let active = state
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(entry) = active.as_ref() {
+        entry.control.request_stop().map_err(|_| {
+            FinanceError::new(
+                "ENGINE_CANCEL_FAILED",
+                "无法写入停止信号，将尝试强制结束金融引擎",
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub fn defer_exit(app: &AppHandle, code: i32) -> bool {
     let state = app.state::<FinanceState>();
     let mut active = state
         .0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(entry) = active.as_mut() {
-        kill_tree(&mut entry.child)
-            .map_err(|_| FinanceError::new("ENGINE_CANCEL_FAILED", "未能停止金融引擎"))?;
-        entry.cancelled = true;
+        entry.exit_code = Some(code);
+        let _ = entry.control.request_stop();
+        return true;
     }
-    Ok(())
+    false
 }
 
 #[tauri::command]
@@ -399,13 +665,13 @@ pub async fn finance_verify(window: WebviewWindow, app: AppHandle) -> Result<()>
     main_only(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<FinanceState>().inner().clone();
-        let Some((stdout, token)) = start(&app, &state, None, false)? else {
+        let Some(pipes) = start(&app, &state, None, false)? else {
             return Err(FinanceError::new(
                 "ENGINE_BUSY",
                 "金融引擎正在运行，请稍后测试连接",
             ));
         };
-        collect(app, state, stdout, token, false)
+        collect(app, state, pipes, false)
     })
     .await
     .map_err(|_| FinanceError::new("ENGINE_EXIT", "测试连接未完成"))?
@@ -414,6 +680,89 @@ pub async fn finance_verify(window: WebviewWindow, app: AppHandle) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stderr_redacts_every_occurrence_before_writing() {
+        let mut log = Vec::new();
+        redact_stderr(
+            &b"token=private-test\r\nreceived private-test"[..],
+            &mut log,
+            "private-test",
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(log).unwrap(),
+            "token=[已隐藏]\r\nreceived [已隐藏]"
+        );
+    }
+
+    #[test]
+    fn fixed_cache_connection_is_read_only_and_does_not_create_files() {
+        let control =
+            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests")).unwrap();
+        let path = control.scratch.join("finance # test.db");
+        tauri::async_runtime::block_on(async {
+            assert!(open_cache(&path).await.is_err());
+            assert!(!path.exists());
+            let writer = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE marker (value INTEGER)")
+                .execute(&writer)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO marker VALUES (42)")
+                .execute(&writer)
+                .await
+                .unwrap();
+            writer.close().await;
+            let reader = open_cache(&path).await.unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>("SELECT value FROM marker")
+                    .fetch_one(&reader)
+                    .await
+                    .unwrap(),
+                42
+            );
+            assert!(
+                sqlx::query("DELETE FROM marker")
+                    .execute(&reader)
+                    .await
+                    .is_err()
+            );
+            reader.close().await;
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verify_deadline_requests_graceful_stop_and_removes_owned_scratch() {
+        let control =
+            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests")).unwrap();
+        let scratch = control.scratch.clone();
+        let mut command = Command::new("powershell.exe");
+        hide_console(&mut command);
+        let mut child = command.args(["-NoProfile", "-NonInteractive", "-Command",
+            "while (!(Test-Path -LiteralPath $env:WORKBENCH_TEST_CANCEL)) { Start-Sleep -Milliseconds 20 }; exit 0"])
+            .env("WORKBENCH_TEST_CANCEL", control.cancel_file())
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let (code, timed_out) = wait_for_child(
+            &mut child,
+            &control,
+            Some(Duration::from_millis(80)),
+            CANCEL_GRACE,
+        );
+        assert!(timed_out);
+        assert_eq!(code, Some(0));
+        assert!(control.cancel_file().exists());
+        drop(control);
+        assert!(!scratch.exists());
+    }
 
     #[test]
     fn engine_arguments_do_not_contain_token() {

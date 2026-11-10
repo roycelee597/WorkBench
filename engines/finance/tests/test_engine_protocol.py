@@ -643,6 +643,37 @@ def test_cli_update_restores_legacy_exhausted_dates(tmp_path, client, monkeypatc
 
 
 @respx.mock
+def test_cancel_during_network_backoff_keeps_cache_and_releases_lock(tmp_path, monkeypatch):
+    from finance_engine.cancellation import Cancellation
+    from finance_engine.db import database_lock
+    from finance_engine.sources.tushare import TushareClient
+
+    path = tmp_path / "cancelled.db"
+    db = Database(path)
+    before = snapshot(db)
+    db.close()
+    signal = tmp_path / "cancel"
+    cancellation = Cancellation(signal)
+    monkeypatch.setattr("finance_engine.cancellation.time.sleep", lambda _delay: signal.touch())
+    route = respx.post(URL).mock(side_effect=httpx.ConnectError("模拟离线"))
+    client = TushareClient(TOKEN, sleep=cancellation.sleep, check_cancelled=cancellation.check)
+    output = io.StringIO()
+    try:
+        now = datetime.fromisoformat("2026-11-06T20:00:00+08:00")
+        assert update(path, client, Protocol(output, TOKEN), now) == 130
+        assert route.call_count == 1
+        assert events(output)[-2]["code"] == "CANCELLED"
+        with database_lock(path):
+            db = Database(path)
+            try:
+                assert snapshot(db) == before
+            finally:
+                db.close()
+    finally:
+        client.close()
+
+
+@respx.mock
 def test_registering_an_indicator_is_enough_to_compute_and_publish_it(
     tmp_path, client, monkeypatch
 ):

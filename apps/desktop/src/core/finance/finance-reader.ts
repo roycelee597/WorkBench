@@ -2,20 +2,72 @@ import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
 import { z } from "zod";
 
+const metricSchema = z.enum(["pe_ttm", "pb"]);
+const windowSchema = z.enum(["5y", "10y", "all"]);
+const viewSchema = z.enum(["percentile", "raw"]);
+
 const indicatorSchema = z.looseObject({
   id: z.string(),
   name: z.string(),
   group: z.string(),
   order: z.number(),
-  series: z.array(z.looseObject({ key: z.string(), label: z.string() })),
+  unit: z.string().optional(),
+  decimals: z.int().min(0).max(6).optional(),
+  series: z.array(
+    z.looseObject({
+      key: z.string(),
+      label: z.string(),
+      primary: z.boolean().optional(),
+      index: z.string().optional(),
+      metric: metricSchema.optional(),
+      window: z.enum(["raw", "pct_5y", "pct_10y", "pct_all"]).optional(),
+    }),
+  ),
+  views: z
+    .object({ monthly_avg: z.boolean().optional(), overlay_hs300: z.boolean().optional() })
+    .optional(),
+  dimensions: z
+    .object({
+      indices: z.array(z.object({ value: z.string(), label: z.string() })).min(1),
+      metrics: z.array(metricSchema).min(1),
+      windows: z.array(windowSchema).min(1),
+      views: z.array(viewSchema).min(1),
+      default_metric: metricSchema.optional(),
+      default_window: windowSchema.optional(),
+      default_view: viewSchema.optional(),
+    })
+    .optional(),
+  default_thresholds: z
+    .array(
+      z.object({
+        series_key: z.string(),
+        level: z.number(),
+        label: z.string(),
+        direction: z.enum(["above", "below"]),
+      }),
+    )
+    .optional(),
+  description_md: z.string().optional(),
 });
 
 export type IndicatorMeta = z.infer<typeof indicatorSchema>;
+export type ValuationMetric = z.infer<typeof metricSchema>;
+export type ValuationWindow = z.infer<typeof windowSchema>;
+export type ValuationView = z.infer<typeof viewSchema>;
 export type DateRange = { from: number; to: number };
 export type SeriesData = {
   key: string;
   points: { trade_date: number; value: number | null; extra_json: string | null }[];
 };
+export type FinancePoint = SeriesData["points"][number];
+
+type SeriesRow = FinancePoint & { series_key: string };
+
+function groupSeries(keys: string[], rows: SeriesRow[]): SeriesData[] {
+  const points = new Map<string, FinancePoint[]>(keys.map((key) => [key, []]));
+  for (const { series_key, ...point } of rows) points.get(series_key)?.push(point);
+  return Array.from(points, ([key, points]) => ({ key, points }));
+}
 
 type DatasetStatus = {
   dataset: string;
@@ -55,20 +107,17 @@ export class FinanceReader {
   private read<T>(empty: T, query: (db: Database, bytes: number) => Promise<T>): Promise<T> {
     if (this.rebuilding) return Promise.resolve(empty);
     const operation = this.pending.then(async () => {
-      const bytes = await invoke<number | null>("finance_db_size");
-      if (bytes === null) return empty;
-      const path = await invoke<string>("finance_db_path");
-      const url = `sqlite:${path.replaceAll("%", "%25").replaceAll("\\", "/")}?mode=ro`;
-      const db = await Database.load(url, { autoCreate: false });
+      const cache = await invoke<{ key: string; bytes: number } | null>("finance_reader_open");
+      if (!cache) return empty;
+      const db = new Database(cache.key);
       try {
         const [schema] = await db.select<{ value: string }[]>(
           "SELECT value FROM meta WHERE key='schema_version'",
         );
         if (schema?.value !== "1") throw new Error("金融缓存版本不兼容，请重建金融数据");
-        return await query(db, bytes);
+        return await query(db, cache.bytes);
       } finally {
-        // 省略参数会关闭插件的所有连接池，包括综合工作台的 workbench.db。
-        await db.close(db.path);
+        await invoke("finance_reader_close");
       }
     });
     this.pending = operation.then(
@@ -94,16 +143,41 @@ export class FinanceReader {
       async (db) => {
         const params: (string | number)[] = [...keys];
         if (range) params.push(range.from, range.to);
-        const rows = await db.select<(SeriesData["points"][number] & { series_key: string })[]>(
+        const rows = await db.select<SeriesRow[]>(
           `SELECT series_key,trade_date,value,extra_json FROM indicator_values
          WHERE series_key IN (${keys.map(() => "?").join(",")})
          ${range ? "AND trade_date BETWEEN ? AND ?" : ""} ORDER BY trade_date`,
           params,
         );
-        const points = new Map<string, SeriesData["points"]>(keys.map((key) => [key, []]));
-        for (const { series_key, ...point } of rows) points.get(series_key)?.push(point);
-        return Array.from(points, ([key, points]) => ({ key, points }));
+        return groupSeries(keys, rows);
       },
+    );
+  }
+
+  getRecent(keys: string[]): Promise<SeriesData[]> {
+    if (!keys.length) return Promise.resolve([]);
+    return this.read<SeriesData[]>([], async (db) => {
+      const rows = await db.select<SeriesRow[]>(
+        `WITH selected AS (
+        SELECT key.value AS series_key, (
+          SELECT max(trade_date) FROM indicator_values WHERE series_key=key.value AND value IS NOT NULL
+        ) AS latest FROM json_each(?) AS key
+      ) SELECT v.series_key,v.trade_date,v.value,v.extra_json
+        FROM selected AS s JOIN indicator_values AS v ON v.series_key=s.series_key
+        AND v.trade_date IN (s.latest, (
+          SELECT max(cal_date) FROM trade_calendar WHERE is_open=1 AND cal_date<s.latest
+        )) ORDER BY v.trade_date`,
+        [JSON.stringify(keys)],
+      );
+      return groupSeries(keys, rows);
+    });
+  }
+
+  getOverlay(): Promise<FinancePoint[]> {
+    return this.read<FinancePoint[]>([], (db) =>
+      db.select<FinancePoint[]>(
+        "SELECT trade_date,close AS value,NULL AS extra_json FROM index_daily WHERE ts_code='000300.SH' ORDER BY trade_date",
+      ),
     );
   }
 

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import SCHEMA_VERSION, __version__
+from .cancellation import Cancellation
 from .db import Database
 from .engine import update, verify
 from .errors import EngineError
@@ -35,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("update", "verify", "status"):
         command = commands.add_parser(name)
         command.add_argument("--db", type=Path, required=True)
+        if name in ("update", "verify"):
+            command.add_argument("--cancel-file", type=Path)
         if name == "update":
             command.add_argument("--mode", choices=("auto", "full-rebuild"), default="auto")
             command.add_argument("--now")
@@ -68,7 +71,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         secrets = read_secrets(sys.stdin)
         protocol.token = secrets["tushare_token"]
-        client = TushareClient(protocol.token)
+        if args.cancel_file is not None:
+            if not args.cancel_file.is_absolute():
+                raise EngineError("ARGUMENT", "停止信号文件必须使用绝对路径")
+            cancellation = Cancellation(args.cancel_file)
+            cancellation.check()
+            client = TushareClient(
+                protocol.token, sleep=cancellation.sleep, check_cancelled=cancellation.check
+            )
+        else:
+            client = TushareClient(protocol.token)
         if args.command == "verify":
             verify(client)
             protocol.emit("done", status="ok", new_dates={}, through={})

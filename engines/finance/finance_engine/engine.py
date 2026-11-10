@@ -50,14 +50,17 @@ class Update:
         }
 
     def stage(self, name: str) -> None:
+        self.client.check_cancelled()
         self.protocol.emit("stage", stage=name)
 
     def publish(self, indicator, dates: list[int]) -> None:
+        self.client.check_cancelled()
         ctx = ComputeContext(self.db.conn, self.days)
         states = self.states()
         if indicator.id == "top5_turnover_share":
             dates = [day for day in dates if states.get(("stock_daily", day)) == "ok"]
         points = indicator.compute(ctx, dates)
+        self.client.check_cancelled()
         if indicator.id == "new_high_60d_share":
             market = [day for day in self.days if day >= STOCK_START]
             positions = {day: i for i, day in enumerate(market)}
@@ -104,7 +107,7 @@ class Update:
                         dataset="index_valuation." + code,
                     )
             except EngineError as error:
-                if error.code == "TOKEN_INVALID":
+                if error.code in ("TOKEN_INVALID", "CANCELLED"):
                     raise
                 self.warn(error, dataset="index_valuation." + code)
         overlay_days = [day for day in available if day >= STOCK_START]
@@ -117,7 +120,7 @@ class Update:
             if not index_daily.refresh(self.db, self.client, pending, today):
                 self.warn(EngineError("DATA_NOT_READY", "沪深300 收盘尚未发布", retryable=True))
         except EngineError as error:
-            if error.code == "TOKEN_INVALID":
+            if error.code in ("TOKEN_INVALID", "CANCELLED"):
                 raise
             self.warn(error, dataset="index_daily")
         for indicator in self.index_indicators:
@@ -150,7 +153,12 @@ class Update:
                         trade_date=str(day),
                     )
             except EngineError as error:
-                if error.code in ("TOKEN_INVALID", "PERMISSION_DENIED", "UPSTREAM_SCHEMA"):
+                if error.code in (
+                    "TOKEN_INVALID",
+                    "PERMISSION_DENIED",
+                    "UPSTREAM_SCHEMA",
+                    "CANCELLED",
+                ):
                     raise
                 stock_daily.mark_fetch_failure(
                     self.db, day, "error", redact(error, self.client.token)

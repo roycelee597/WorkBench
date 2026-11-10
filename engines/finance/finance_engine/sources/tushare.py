@@ -20,10 +20,12 @@ class TushareClient:
         http: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.monotonic,
+        check_cancelled: Callable[[], None] = lambda: None,
     ):
         self.token = token
         self.http = http or httpx.Client(timeout=30, follow_redirects=False)
         self.sleep = sleep
+        self.check_cancelled = check_cancelled
         self.global_bucket = TokenBucket(180, now=now, sleep=sleep)
         self.stock_bucket = TokenBucket(45, now=now, sleep=sleep)
         self.calls: Counter[str] = Counter()
@@ -34,6 +36,7 @@ class TushareClient:
 
     def request(self, api: str, params: dict, fields: list[str]) -> tuple[list[dict], bool]:
         for attempt in range(4):
+            self.check_cancelled()
             if api == "stock_basic":
                 self.stock_bucket.acquire()
             self.global_bucket.acquire()
@@ -48,6 +51,7 @@ class TushareClient:
                         "fields": ",".join(fields),
                     },
                 )
+                self.check_cancelled()
                 if response.status_code == 429:
                     raise EngineError("RATE_LIMITED", "HTTP 请求被限流", retryable=True)
                 response.raise_for_status()
