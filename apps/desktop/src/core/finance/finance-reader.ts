@@ -141,12 +141,29 @@ export class FinanceReader {
     return this.read<SeriesData[]>(
       keys.map((key) => ({ key, points: [] })),
       async (db) => {
-        const params: (string | number)[] = [...keys];
+        const params: (string | number)[] = [JSON.stringify(keys)];
         if (range) params.push(range.from, range.to);
+        // 以每条序列已写入的首尾记录为边界，即使请求的范围内全是缺行也要返回开市日。
         const rows = await db.select<SeriesRow[]>(
-          `SELECT series_key,trade_date,value,extra_json FROM indicator_values
-         WHERE series_key IN (${keys.map(() => "?").join(",")})
-         ${range ? "AND trade_date BETWEEN ? AND ?" : ""} ORDER BY trade_date`,
+          `WITH selected AS (
+            SELECT value AS series_key FROM json_each(?1)
+          ), bounds AS (
+            SELECT series_key,
+              (SELECT min(trade_date) FROM indicator_values WHERE series_key=s.series_key) AS first_date,
+              (SELECT max(trade_date) FROM indicator_values WHERE series_key=s.series_key) AS last_date
+            FROM selected AS s
+          ), days AS (
+            SELECT series_key,trade_date FROM indicator_values
+            WHERE series_key IN (SELECT series_key FROM selected)
+              ${range ? "AND trade_date BETWEEN ?2 AND ?3" : ""}
+            UNION
+            SELECT b.series_key,c.cal_date FROM bounds AS b JOIN trade_calendar AS c
+              ON c.cal_date BETWEEN b.first_date AND b.last_date
+            WHERE c.is_open=1 ${range ? "AND c.cal_date BETWEEN ?2 AND ?3" : ""}
+          )
+          SELECT d.series_key,d.trade_date,v.value,v.extra_json FROM days AS d
+          LEFT JOIN indicator_values AS v USING (series_key,trade_date)
+          ORDER BY d.trade_date`,
           params,
         );
         return groupSeries(keys, rows);

@@ -230,6 +230,7 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
   );
   const first = choice?.start ?? 20150101;
   const percent = choice?.percent ?? false;
+  const percentile = choice?.view === "percentile";
   const decimals = choice?.decimals ?? 1;
   const overlayPoints = overlayOn ? (overlay.value ?? emptyPoints) : emptyPoints;
   const option = useMemo(
@@ -238,6 +239,7 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
         ? buildChartOption(visible, overlayPoints, thresholds, {
             name: monthly ? "月均" : name,
             percent,
+            percentile,
             decimals,
             dark,
             range: prefs.range,
@@ -252,6 +254,7 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
       monthly,
       name,
       percent,
+      percentile,
       decimals,
       dark,
       prefs.range,

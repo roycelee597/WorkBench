@@ -6,7 +6,7 @@ exports[`保留缺值，叠加副轴并显示默认阈值与三年缩放范围 1
   "dataZoom": [
     {
       "endValue": 1793923200000,
-      "filterMode": "none",
+      "filterMode": "filter",
       "startValue": 1699228800000,
       "type": "inside",
       "xAxisIndex": 0,
@@ -16,7 +16,7 @@ exports[`保留缺值，叠加副轴并显示默认阈值与三年缩放范围 1
       "bottom": 12,
       "endValue": 1793923200000,
       "fillerColor": "#27785b26",
-      "filterMode": "none",
+      "filterMode": "filter",
       "height": 26,
       "startValue": 1699228800000,
       "textStyle": {
@@ -148,9 +148,13 @@ exports[`保留缺值，叠加副轴并显示默认阈值与三年缩放范围 1
         "color": "#34443a",
         "formatter": "{value}%",
       },
-      "max": 100,
-      "min": 0,
-      "scale": false,
+      "boundaryGap": [
+        0,
+        "8%",
+      ],
+      "dataMax": 45,
+      "dataMin": 45,
+      "scale": true,
       "splitLine": {
         "lineStyle": {
           "color": "#e2eae4",

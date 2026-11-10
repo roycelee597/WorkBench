@@ -24,6 +24,7 @@ type Threshold = { level: number; label: string; direction: "above" | "below" };
 type ChartView = {
   name: string;
   percent: boolean;
+  percentile?: boolean;
   decimals: number;
   dark: boolean;
   range: FinanceRange;
@@ -49,6 +50,9 @@ export function buildChartOption(
   const warning = view.dark ? "#ffad9f" : "#a84236";
   const startValue = rangeStart(view.range, view.first, view.last);
   const endValue = dayTime(view.last);
+  const share = view.percent && !view.percentile;
+  const thresholdLevels = thresholds.map(({ level }) => level);
+  const filterMode = share ? "filter" : "none";
   const pointData: LineSeriesOption["data"] = series.map((point) => {
     const value = [dayTime(point.trade_date), point.value];
     return "monthToDate" in point && point.monthToDate && point.value != null
@@ -87,8 +91,15 @@ export function buildChartOption(
     yAxis: [
       {
         type: "value",
-        ...(view.percent ? { min: 0, max: 100 } : {}),
-        scale: !view.percent,
+        ...(view.percentile ? { min: 0, max: 100 } : {}),
+        ...(share && thresholdLevels.length > 0
+          ? {
+              dataMin: Math.min(...thresholdLevels),
+              dataMax: Math.max(...thresholdLevels),
+              boundaryGap: [0, "8%"] as [number, string],
+            }
+          : {}),
+        scale: !view.percentile,
         axisLabel: { color: ink, formatter: view.percent ? "{value}%" : "{value}" },
         splitLine: { lineStyle: { color: grid } },
       },
@@ -105,13 +116,13 @@ export function buildChartOption(
         : []),
     ],
     dataZoom: [
-      { type: "inside", xAxisIndex: 0, startValue, endValue, filterMode: "none" },
+      { type: "inside", xAxisIndex: 0, startValue, endValue, filterMode },
       {
         type: "slider",
         xAxisIndex: 0,
         startValue,
         endValue,
-        filterMode: "none",
+        filterMode,
         bottom: 12,
         height: 26,
         borderColor: grid,
