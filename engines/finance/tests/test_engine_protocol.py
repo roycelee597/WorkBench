@@ -80,6 +80,24 @@ def test_cli_version_status_missing_token_arguments_and_verify_no_write(tmp_path
     assert not database.exists()
 
 
+def test_cli_keeps_redirected_stderr_in_utf8(monkeypatch):
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from finance_engine.__main__ import main; "
+            "main(['--version']); sys.stderr.write('中文诊断')",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf8",
+        check=True,
+        timeout=20,
+    )
+    assert result.stderr == "中文诊断"
+
+
 @respx.mock
 def test_first_request_network_failure_only_writes_run_log(tmp_path, client):
     path = tmp_path / "finance.db"
@@ -352,6 +370,33 @@ def test_unknown_code_and_possible_change_are_warnings_and_other_dates_continue(
     db = Database(path)
     assert db.through()["new_high_60d_share"] == str(days[-1])
     db.close()
+
+
+@respx.mock
+def test_known_bj_quote_match_is_logged_without_ndjson_warning(tmp_path, client, caplog):
+    days, _, handler = fixture_handler()
+    latest = str(days[-1])
+
+    def with_bj_match(request):
+        body = request_body(request)
+        result = handler(request)
+        payload = result.json()
+        rows = payload["data"]["items"]
+        if body["api_name"] == "stock_basic" and body["params"]["list_status"] == "L":
+            rows.append(["920001.BJ", *rows[0][1:]])
+        if body["api_name"] == "daily" and body["params"]["trade_date"] == latest:
+            rows.append(["920001.BJ", *rows[0][1:]])
+        return httpx.Response(200, json=payload)
+
+    respx.post(URL).mock(side_effect=with_bj_match)
+    output = io.StringIO()
+    now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
+    assert update(tmp_path / "finance.db", client, Protocol(output, TOKEN), now) == 0
+    messages = events(output)
+    assert not any(event["type"] == "warning" for event in messages)
+    assert messages[-1]["status"] == "ok"
+    assert "涉及北交所的疑似代码变更" in caplog.text
+    assert "920001.BJ" in caplog.text
 
 
 @respx.mock

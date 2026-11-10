@@ -1,5 +1,6 @@
 """日线和因子按同一交易日事务提交；失败不留下半天数据。"""
 
+import logging
 import math
 import sqlite3
 from collections.abc import Callable
@@ -12,6 +13,7 @@ from ..sources.tushare import TushareClient
 from . import adj_factor
 from .security_codes import canonical_code, historical_code
 
+logger = logging.getLogger(__name__)
 FIELDS = ["ts_code", "trade_date", "close", "amount"]
 # 旧版按运行次数计数，不能沿用其 attempts 或停止补取标记。
 CATALOG_GAP = "证券目录按日重试仍未收录"
@@ -107,9 +109,28 @@ def refresh(
             code = row["ts_code"]
             quote = (float(row["close"]), amount)
             by_quote.setdefault(quote, {}).setdefault(canonical_code(code, day), code)
-        matches = [group for group in by_quote.values() if len(group) > 1]
+        matches = []
+        bj_matches = []
+        for group in by_quote.values():
+            if len(group) < 2:
+                continue
+            group_codes = sorted(group.values())
+            mainland = [code for code in group_codes if not code.endswith(".BJ")]
+            if len(mainland) > 1:
+                matches.append(mainland)
+            if len(mainland) < len(group_codes):
+                bj_matches.append(group_codes)
+        if bj_matches:
+            examples = "、".join(" / ".join(group[:4]) for group in bj_matches[:5])
+            logger.warning(
+                "%s",
+                redact(
+                    f"{day} 有 {len(bj_matches)} 组涉及北交所的疑似代码变更（示例：{examples}）",
+                    client.token,
+                ),
+            )
         if matches:
-            examples = "、".join(" / ".join(sorted(group.values())[:4]) for group in matches[:5])
+            examples = "、".join(" / ".join(group[:4]) for group in matches[:5])
             warn(
                 EngineError(
                     "POSSIBLE_CODE_CHANGE",
