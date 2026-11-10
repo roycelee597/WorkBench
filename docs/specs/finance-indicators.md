@@ -177,6 +177,7 @@ Tushare 各接口入库时间不同（官方文档写法略有出入，取较晚
   - 原生支持双纵轴（指标和沪深300）、阈值虚线（`markLine`）、范围缩放条（`dataZoom`）、悬停提示、深色主题，以及 1 万点以上的大数据量。
   - 直接用 `echarts/core` 按需引入（只引 LineChart、Grid、Tooltip、DataZoom、MarkLine、Legend），React 中自己写一个约 50 行的 `<Chart option={…}/>` 包装，不引入 `echarts-for-react`，少一个依赖。
   - 金融工作台整体用 `React.lazy` 动态加载，不让主包继续变大（已有 Vite 包体积警告）。
+- 指标日线序列在各自已有记录的首尾之间，按交易日历给缺行的开市日补空值，保留已有空值。折线在空值处断开。占比图纵轴随可见数据缩放并包含阈值，估值分位轴固定为 0–100%。
 - 对比过：TradingView `lightweight-charts`（Apache-2.0，但要求保留 TradingView 署名，而且偏向 K 线，双轴和阈值线不如 ECharts 方便）；Recharts（MIT，大数据量时卡顿，缩放要自己做）。
 - 图表配置由纯函数 `buildChartOption(series, overlay, thresholds, view)` 生成，方便单测。
 - 沪深300 叠加：副轴，灰色细线，图例可以点击隐藏，状态记入设置（`finance.overlay_hs300`）。
@@ -313,7 +314,7 @@ finance-engine --version
 - 🔬 实现时实测：Tushare 的「积分不足」和「限流」错误码没有公开文档。实现时根据返回的 `code` 和 `msg` 关键词判断，并把原始 `code` 和 `msg` 写进 `run_log`，不要瞎猜。
 - **离线**：断网时第一个请求就失败 → 状态 `NETWORK`，只允许写 `run_log` 记录失败，行情、指标和完成标记保持不变；图表照常显示已有数据，状态栏显示「离线，数据截至 X 日」。
 - **单实例**：Rust 保证同时只有一个 sidecar 进程。Python 端另外对数据库目录加锁文件（`finance.db.lock`），防止开发时手动运行冲突。
-- **取消**：取消或退出 App 时，Rust 先通过本次运行专属的控制文件通知引擎退出，等待最多 5 秒，再对仍在运行的进程树执行强制结束。每天的数据独立提交。引擎的临时文件留在本次运行专属目录，进程结束后由 Rust 清理。测试连接约 60 秒时发出停止信号，并使用同一套收尾规则。Rust 将 stderr 打码后写入应用日志目录的 `finance-engine.log`。
+- **取消**：取消或退出 App 时，Rust 先通过本次运行专属的控制文件通知引擎退出，等待最多 5 秒，再对仍在运行的进程树执行强制结束。每天的数据独立提交。引擎的临时文件留在本次运行专属目录，进程结束后由 Rust 清理，失败时记录警告。测试连接约 60 秒时发出停止信号，并使用同一套收尾规则。Rust 将 stderr 打码后写入应用日志目录的 `finance-engine.log`，按 1 MiB 轮转并保留最近一份归档。
 
 ### 8.4 `full-rebuild`
 
