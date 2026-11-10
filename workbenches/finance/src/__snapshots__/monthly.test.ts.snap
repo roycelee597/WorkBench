@@ -1,0 +1,27 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`按自然月简单平均，保留全空月并标记北京时间的本月至今 1`] = `
+[
+  {
+    "extra_json": null,
+    "month": 202609,
+    "monthToDate": false,
+    "trade_date": 20260930,
+    "value": 48,
+  },
+  {
+    "extra_json": null,
+    "month": 202610,
+    "monthToDate": false,
+    "trade_date": 20261030,
+    "value": null,
+  },
+  {
+    "extra_json": null,
+    "month": 202611,
+    "monthToDate": true,
+    "trade_date": 20261109,
+    "value": 43.1,
+  },
+]
+`;
