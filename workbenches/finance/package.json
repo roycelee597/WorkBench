@@ -5,7 +5,8 @@
   "type": "module",
   "license": "MIT",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./page": "./src/FinanceWorkbench.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -13,6 +14,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@workbench/ui": "workspace:*",
+    "echarts": "^6.1.0",
     "zustand": "^5.0.16"
   },
   "peerDependencies": {

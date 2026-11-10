@@ -5,6 +5,7 @@ import {
   FinanceReader,
   type DateRange,
   type FinanceStatus,
+  type FinancePoint,
   type IndicatorMeta,
   type SeriesData,
 } from "./finance-reader";
@@ -13,6 +14,8 @@ export type UpdateMode = "auto" | "full-rebuild";
 export interface FinanceDataSource {
   listIndicators(): Promise<IndicatorMeta[]>;
   getSeries(keys: string[], range?: DateRange): Promise<SeriesData[]>;
+  getRecent(keys: string[]): Promise<SeriesData[]>;
+  getOverlay(): Promise<FinancePoint[]>;
   getStatus(): Promise<FinanceStatus>;
   requestUpdate(mode?: UpdateMode): Promise<void>;
   onEvent(callback: (event: EngineEvent) => void): () => void;
@@ -161,6 +164,12 @@ export class LocalSidecarSource implements FinanceDataSource {
   }
   getStatus() {
     return this.reader.getStatus();
+  }
+  getRecent(keys: string[]) {
+    return this.reader.getRecent(keys);
+  }
+  getOverlay() {
+    return this.reader.getOverlay();
   }
 
   async requestUpdate(mode: UpdateMode = "auto"): Promise<void> {

@@ -7,7 +7,7 @@ import {
   useFinanceState,
   useFinanceUpdate,
 } from "./api";
-import { financeDate } from "./FinanceWorkbench";
+import { financeDate } from "./series-view";
 
 export function FinanceSettings() {
   const [value, setValue] = useState("");

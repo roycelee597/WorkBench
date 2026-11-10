@@ -1,0 +1,301 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`保留缺值，叠加副轴并显示默认阈值与三年缩放范围 1`] = `
+{
+  "animation": false,
+  "dataZoom": [
+    {
+      "endValue": 1793923200000,
+      "filterMode": "filter",
+      "startValue": 1699228800000,
+      "type": "inside",
+      "xAxisIndex": 0,
+    },
+    {
+      "borderColor": "#e2eae4",
+      "bottom": 12,
+      "endValue": 1793923200000,
+      "fillerColor": "#27785b26",
+      "filterMode": "filter",
+      "height": 26,
+      "startValue": 1699228800000,
+      "textStyle": {
+        "color": "#34443a",
+      },
+      "type": "slider",
+      "xAxisIndex": 0,
+    },
+  ],
+  "grid": {
+    "bottom": 72,
+    "left": 56,
+    "right": 62,
+    "top": 46,
+  },
+  "legend": {
+    "data": [
+      "前 5% 个股成交额占比",
+      "沪深300 收盘",
+    ],
+    "textStyle": {
+      "color": "#34443a",
+    },
+    "top": 4,
+  },
+  "series": [
+    {
+      "connectNulls": false,
+      "data": [
+        [
+          1793750400000,
+          40,
+        ],
+        [
+          1793836800000,
+          null,
+        ],
+        [
+          1793923200000,
+          44.2,
+        ],
+      ],
+      "itemStyle": {
+        "color": "#27785b",
+      },
+      "lineStyle": {
+        "color": "#27785b",
+        "width": 2,
+      },
+      "markLine": {
+        "data": [
+          {
+            "name": "交易拥挤 > 45.0%",
+            "yAxis": 45,
+          },
+        ],
+        "label": {
+          "color": "#a84236",
+          "formatter": "{b}",
+          "position": "insideEndTop",
+        },
+        "lineStyle": {
+          "color": "#a84236",
+          "type": "dashed",
+        },
+        "silent": true,
+        "symbol": "none",
+      },
+      "name": "前 5% 个股成交额占比",
+      "showSymbol": true,
+      "symbol": "none",
+      "tooltip": {
+        "valueFormatter": [Function],
+      },
+      "type": "line",
+    },
+    {
+      "connectNulls": false,
+      "data": [
+        [
+          1793923200000,
+          4500,
+        ],
+      ],
+      "itemStyle": {
+        "color": "#75867f",
+      },
+      "lineStyle": {
+        "color": "#75867f",
+        "width": 1,
+      },
+      "name": "沪深300 收盘",
+      "showSymbol": false,
+      "tooltip": {
+        "valueFormatter": [Function],
+      },
+      "type": "line",
+      "yAxisIndex": 1,
+    },
+  ],
+  "tooltip": {
+    "backgroundColor": "#ffffff",
+    "borderColor": "#e2eae4",
+    "confine": true,
+    "renderMode": "richText",
+    "textStyle": {
+      "color": "#34443a",
+    },
+    "trigger": "axis",
+  },
+  "useUTC": true,
+  "xAxis": {
+    "axisLabel": {
+      "color": "#34443a",
+      "hideOverlap": true,
+    },
+    "axisLine": {
+      "lineStyle": {
+        "color": "#75867f",
+      },
+    },
+    "max": 1793923200000,
+    "min": 1420070400000,
+    "type": "time",
+  },
+  "yAxis": [
+    {
+      "axisLabel": {
+        "color": "#34443a",
+        "formatter": "{value}%",
+      },
+      "boundaryGap": [
+        0,
+        "8%",
+      ],
+      "dataMax": 45,
+      "dataMin": 45,
+      "scale": true,
+      "splitLine": {
+        "lineStyle": {
+          "color": "#e2eae4",
+        },
+      },
+      "type": "value",
+    },
+    {
+      "axisLabel": {
+        "color": "#75867f",
+      },
+      "position": "right",
+      "scale": true,
+      "splitLine": {
+        "show": false,
+      },
+      "type": "value",
+    },
+  ],
+}
+`;
+
+exports[`原始估值没有百分比轴，全部从 2005 年开始 1`] = `
+{
+  "animation": false,
+  "dataZoom": [
+    {
+      "endValue": 1793923200000,
+      "filterMode": "none",
+      "startValue": 1104537600000,
+      "type": "inside",
+      "xAxisIndex": 0,
+    },
+    {
+      "borderColor": "#334238",
+      "bottom": 12,
+      "endValue": 1793923200000,
+      "fillerColor": "#8bd5b240",
+      "filterMode": "none",
+      "height": 26,
+      "startValue": 1104537600000,
+      "textStyle": {
+        "color": "#d8e4dc",
+      },
+      "type": "slider",
+      "xAxisIndex": 0,
+    },
+  ],
+  "grid": {
+    "bottom": 72,
+    "left": 56,
+    "right": 24,
+    "top": 46,
+  },
+  "legend": {
+    "data": [
+      "沪深300 PE-TTM 原始值",
+    ],
+    "textStyle": {
+      "color": "#d8e4dc",
+    },
+    "top": 4,
+  },
+  "series": [
+    {
+      "connectNulls": false,
+      "data": [
+        [
+          1793923200000,
+          13.59,
+        ],
+      ],
+      "itemStyle": {
+        "color": "#8bd5b2",
+      },
+      "lineStyle": {
+        "color": "#8bd5b2",
+        "width": 2,
+      },
+      "markLine": {
+        "data": [],
+        "label": {
+          "color": "#ffad9f",
+          "formatter": "{b}",
+          "position": "insideEndTop",
+        },
+        "lineStyle": {
+          "color": "#ffad9f",
+          "type": "dashed",
+        },
+        "silent": true,
+        "symbol": "none",
+      },
+      "name": "沪深300 PE-TTM 原始值",
+      "showSymbol": true,
+      "symbol": "circle",
+      "tooltip": {
+        "valueFormatter": [Function],
+      },
+      "type": "line",
+    },
+  ],
+  "tooltip": {
+    "backgroundColor": "#233029",
+    "borderColor": "#334238",
+    "confine": true,
+    "renderMode": "richText",
+    "textStyle": {
+      "color": "#d8e4dc",
+    },
+    "trigger": "axis",
+  },
+  "useUTC": true,
+  "xAxis": {
+    "axisLabel": {
+      "color": "#d8e4dc",
+      "hideOverlap": true,
+    },
+    "axisLine": {
+      "lineStyle": {
+        "color": "#a1b1aa",
+      },
+    },
+    "max": 1793923200000,
+    "min": 1104537600000,
+    "type": "time",
+  },
+  "yAxis": [
+    {
+      "axisLabel": {
+        "color": "#d8e4dc",
+        "formatter": "{value}",
+      },
+      "scale": true,
+      "splitLine": {
+        "lineStyle": {
+          "color": "#334238",
+        },
+      },
+      "type": "value",
+    },
+  ],
+}
+`;

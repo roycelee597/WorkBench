@@ -76,6 +76,8 @@ pub fn run() {
             finance::finance_verify,
             finance::finance_db_path,
             finance::finance_db_size,
+            finance::finance_reader_open,
+            finance::finance_reader_close,
             finance::finance_open_directory,
             quick_create::open_quick_create,
             quick_create::hide_quick_create,
@@ -86,8 +88,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("启动 WorkBench 失败")
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                let _ = finance::stop(app);
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if finance::defer_exit(app, code.unwrap_or(0)) {
+                    api.prevent_exit();
+                }
             }
         });
 }

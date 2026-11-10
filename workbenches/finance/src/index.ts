@@ -1,3 +1,3 @@
-export { FinanceWorkbench, FinanceBackfillDialog } from "./FinanceWorkbench";
+export { FinanceBackfillDialog } from "./FinanceBackfillDialog";
 export { FinanceSettings } from "./FinanceSettings";
 export { financeApi } from "./api";

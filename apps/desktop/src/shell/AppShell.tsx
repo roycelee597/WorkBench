@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { isTauri, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -20,12 +20,11 @@ import {
   onAutostartOffer,
 } from "@workbench/general";
 import { cn, Button, Dialog } from "@workbench/ui";
-import {
-  FinanceBackfillDialog,
-  FinanceSettings,
-  FinanceWorkbench,
-  financeApi,
-} from "@workbench/finance";
+import { FinanceBackfillDialog, FinanceSettings, financeApi } from "@workbench/finance";
+
+const FinanceWorkbench = lazy(() =>
+  import("@workbench/finance/page").then((module) => ({ default: module.FinanceWorkbench })),
+);
 
 async function handleNotification(action: NotificationAction) {
   if (workspace.useWorkspace.getState().busy) {
@@ -292,7 +291,17 @@ export function AppShell() {
         <div className={financeOpen ? "hidden" : "contents"}>
           <GeneralWorkbench settingsExtra={<FinanceSettings />} />
         </div>
-        {financeOpen && <FinanceWorkbench openSettings={() => openGeneral("settings")} />}
+        {financeOpen && (
+          <Suspense
+            fallback={
+              <p className="p-6" role="status">
+                正在打开金融指标…
+              </p>
+            }
+          >
+            <FinanceWorkbench openSettings={() => openGeneral("settings")} />
+          </Suspense>
+        )}
       </main>
       <ReminderNotices
         onAction={(action) => {

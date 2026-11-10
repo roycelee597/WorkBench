@@ -25,6 +25,8 @@ class EngineError(Exception):
 
     @property
     def exit_code(self) -> int:
+        if self.code == "CANCELLED":
+            return 130
         if self.code == "ARGUMENT":
             return 2
         if self.code in ("INTERNAL", "DB_ERROR"):

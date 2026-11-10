@@ -8,10 +8,12 @@ import {
 } from "../../../apps/desktop/src/core/finance/local-sidecar-source";
 import type { FinanceStatus } from "../../../apps/desktop/src/core/finance/finance-reader";
 import { scheduleFinanceStartupUpdate } from "../../../apps/desktop/src/core/finance/startup-update";
+import { preferenceKeys, readPreferences, type FinancePreferences } from "./preferences";
 
 type TokenStatus = { configured: boolean; tail: string | null };
 const source = new LocalSidecarSource();
 const confirmedKey = "finance.initial_backfill_confirmed";
+let preferenceWrites = Promise.resolve();
 
 async function financeSettings() {
   const { initializeDataLayer } =
@@ -54,6 +56,31 @@ async function requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
 }
 
 export const financeApi = {
+  listIndicators: () => source.listIndicators(),
+  getRecent: (keys: string[]) => source.getRecent(keys),
+  getSeries: (keys: string[]) => source.getSeries(keys),
+  getOverlay: () => source.getOverlay(),
+  async loadPreferences(): Promise<FinancePreferences> {
+    await preferenceWrites;
+    const settings = await financeSettings();
+    const entries = await Promise.all(
+      Object.entries(preferenceKeys).map(async ([field, key]) => [
+        field,
+        await settings.getValue(key),
+      ]),
+    );
+    return readPreferences(Object.fromEntries(entries));
+  },
+  savePreference<K extends keyof FinancePreferences>(
+    field: K,
+    value: FinancePreferences[K],
+  ): Promise<void> {
+    const saved = preferenceWrites.then(async () =>
+      (await financeSettings()).setValue(preferenceKeys[field], value),
+    );
+    preferenceWrites = saved.catch(() => undefined);
+    return saved;
+  },
   startRuntime(): () => void {
     if (!isTauri()) return () => undefined;
     void refreshToken().catch(reportError);
