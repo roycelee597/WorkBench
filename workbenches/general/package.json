@@ -18,7 +18,7 @@
     "@fullcalendar/timegrid": "6.1.21",
     "@tiptap/core": "^3.32.2",
     "@tiptap/extension-list": "^3.32.2",
-    "@tiptap/extension-placeholder": "^3.32.2",
+    "@tiptap/extension-placeholder": "^3.33.0",
     "@tiptap/markdown": "^3.32.2",
     "@tiptap/react": "^3.32.2",
     "@tiptap/starter-kit": "^3.32.2",
