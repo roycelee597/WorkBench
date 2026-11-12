@@ -12,7 +12,7 @@ import {
   ListTodo,
 } from "lucide-react";
 import { Button, Dialog, cn } from "@workbench/ui";
-import { generalApi, type ReminderItem, type ReminderTarget } from "../api";
+import { generalApi, isFinanceReminder, type ReminderItem, type ReminderTarget } from "../api";
 import {
   priorities,
   reminderFields,
@@ -536,6 +536,11 @@ export function RemindersPage({
                       <CalendarDays size={15} aria-label="由日程生成" />
                     )}
                     {item.title}
+                    {isFinanceReminder(item.reminder) && (
+                      <span className="shrink-0 rounded-full bg-accent px-2 py-0.5 text-xs text-primary">
+                        金融
+                      </span>
+                    )}
                     {item.reminder.rrule && <Repeat2 size={13} aria-label="重复提醒" />}
                   </span>
                   {item.notes && (

@@ -1,4 +1,5 @@
 import type {
+  IndicatorMeta,
   ValuationMetric,
   ValuationView,
   ValuationWindow,
@@ -15,6 +16,24 @@ export type FinancePreferences = {
   valuationIndex: string;
   indicator: string;
 };
+
+export function preferencesForTarget(
+  target: FinanceTarget,
+  indicators: IndicatorMeta[],
+): Partial<FinancePreferences> {
+  const indicator = indicators.find(({ id }) => id === target.indicatorId);
+  const series = indicator?.series.find(({ key }) => key === target.seriesKey);
+  const result: Partial<FinancePreferences> = { indicator: target.indicatorId };
+  if (series?.index) result.valuationIndex = series.index;
+  if (series?.metric) result.valuationMetric = series.metric;
+  if (series?.window) {
+    result.valuationView = series.window === "raw" ? "raw" : "percentile";
+    if (series.window === "pct_5y") result.valuationWindow = "5y";
+    if (series.window === "pct_10y") result.valuationWindow = "10y";
+    if (series.window === "pct_all") result.valuationWindow = "all";
+  }
+  return result;
+}
 
 export const preferenceKeys = {
   range: "finance.default_range",
@@ -47,3 +66,4 @@ export function readPreferences(
     indicator: typeof values.indicator === "string" ? values.indicator : "",
   };
 }
+import type { FinanceTarget } from "../../../apps/desktop/src/core/finance/finance-target";

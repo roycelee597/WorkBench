@@ -4,9 +4,12 @@ import type {
   FinancePoint,
   IndicatorMeta,
 } from "../../../apps/desktop/src/core/finance/finance-reader";
+import { outsideThreshold } from "../../../apps/desktop/src/core/finance/threshold-evaluator";
+import type { FinanceThreshold } from "../../../apps/desktop/src/core/repositories/finance-thresholds";
 import type { financeApi } from "./api";
 import { buildChartOption } from "./chart-option";
 import { Chart } from "./components/Chart";
+import { ThresholdPanel } from "./ThresholdPanel";
 import { beijingDay, monthlyAverage } from "./monthly";
 import { readPreferences, type FinancePreferences, type FinanceRange } from "./preferences";
 import {
@@ -21,7 +24,15 @@ import {
 
 export type FinanceDashboardData = Pick<
   typeof financeApi,
-  "listIndicators" | "getRecent" | "getSeries" | "getOverlay" | "loadPreferences" | "savePreference"
+  | "listIndicators"
+  | "getRecent"
+  | "getSeries"
+  | "getOverlay"
+  | "loadPreferences"
+  | "savePreference"
+  | "loadThresholds"
+  | "saveThreshold"
+  | "deleteThreshold"
 >;
 
 type Props = {
@@ -44,6 +55,31 @@ const views = [
   { value: "monthly", label: "月均" },
 ] as const;
 const emptyPoints: FinancePoint[] = [];
+const emptyThresholds: FinanceThreshold[] = [];
+
+function BreachBadges({
+  thresholds,
+  value,
+  showNormal = false,
+}: {
+  thresholds: FinanceThreshold[];
+  value?: number | null | undefined;
+  showNormal?: boolean;
+}) {
+  if (value == null) return null;
+  const breached = thresholds.filter((threshold) => outsideThreshold(value, threshold));
+  if (showNormal && thresholds.length && !breached.length)
+    return <span className="rounded-full bg-muted px-2 py-1 text-xs text-primary">正常</span>;
+  return breached.map((threshold) => (
+    <span
+      key={threshold.id}
+      className="rounded-full bg-muted px-2 py-1 text-xs text-destructive"
+      title={threshold.label}
+    >
+      {threshold.direction === "above" ? "已高于阈值" : "已低于阈值"}
+    </span>
+  ));
+}
 
 function useRequest<T>(request: () => Promise<T>) {
   const [state, setState] = useState<{ request: () => Promise<T>; value?: T; error?: string }>();
@@ -170,6 +206,11 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
     [initial.value, changes],
   );
   const catalog = useRequest(useCallback(() => api.listIndicators(), [api, revision]));
+  const [thresholdRevision, setThresholdRevision] = useState(0);
+  const savedThresholds = useRequest(
+    useCallback(() => api.loadThresholds(), [api, revision, thresholdRevision]),
+  );
+  const allThresholds = savedThresholds.value ?? emptyThresholds;
   const meta = catalog.value?.find((item) => item.id === prefs.indicator) ?? catalog.value?.[0];
   const groups = useMemo(() => catalogGroups(catalog.value ?? [], prefs), [catalog.value, prefs]);
   const choice = meta && resolveSeries(meta, prefs);
@@ -225,8 +266,8 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
       : (meta?.name ?? "金融指标");
   const last = points.at(-1)?.trade_date;
   const thresholds = useMemo(
-    () => meta?.default_thresholds?.filter((entry) => entry.series_key === key) ?? [],
-    [meta, key],
+    () => allThresholds.filter((entry) => entry.series_key === key && entry.enabled),
+    [allThresholds, key],
   );
   const first = choice?.start ?? 20150101;
   const percent = choice?.percent ?? false;
@@ -263,7 +304,13 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
     ],
   );
   const error =
-    catalog.error ?? series.error ?? recent.error ?? overlay.error ?? initial.error ?? saveError;
+    catalog.error ??
+    series.error ??
+    recent.error ??
+    overlay.error ??
+    initial.error ??
+    savedThresholds.error ??
+    saveError;
   const loading = catalog.pending || series.pending || recent.pending;
 
   const setPreference = useCallback(
@@ -281,11 +328,6 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
   const value = latest.latest?.value;
   const prior = latest.previous?.value;
   const delta = value != null && prior != null ? value - prior : null;
-  const crossed =
-    value != null &&
-    thresholds.find((threshold) =>
-      threshold.direction === "above" ? value > threshold.level : value < threshold.level,
-    );
 
   return (
     <div className="grid min-w-0 items-start gap-4 lg:grid-cols-[210px_minmax(0,1fr)]">
@@ -320,7 +362,15 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
                     if (row.index) setPreference("valuationIndex", row.index);
                   }}
                 >
-                  <span>{row.label}</span>
+                  <span className="flex flex-wrap items-center gap-1">
+                    {row.label}
+                    <BreachBadges
+                      thresholds={allThresholds.filter(
+                        (threshold) => threshold.enabled && threshold.series_key === rowKey,
+                      )}
+                      value={latestRow?.value}
+                    />
+                  </span>
                   <span className="shrink-0 tabular-nums">
                     {displayValue(latestRow?.value, row.choice.percent, row.choice.decimals)}
                   </span>
@@ -374,18 +424,24 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
                 {displayValue(raw?.value, false, 2)}
               </p>
             )}
-            {thresholds.length > 0 && value != null && (
-              <span
-                className={
-                  crossed
-                    ? "rounded-full bg-muted px-3 py-1 text-destructive"
-                    : "rounded-full bg-muted px-3 py-1 text-primary"
-                }
-              >
-                {crossed ? crossed.label : "正常"}
-              </span>
-            )}
+            <BreachBadges thresholds={thresholds} value={value} showNormal />
           </div>
+        )}
+        {meta && (
+          <ThresholdPanel
+            key={meta.id}
+            indicator={meta}
+            seriesKey={key}
+            thresholds={allThresholds.filter((threshold) => threshold.indicator_id === meta.id)}
+            save={async (fields, id) => {
+              await api.saveThreshold(fields, id);
+              setThresholdRevision((value) => value + 1);
+            }}
+            remove={async (id) => {
+              await api.deleteThreshold(id);
+              setThresholdRevision((value) => value + 1);
+            }}
+          />
         )}
         {meta && (
           <section

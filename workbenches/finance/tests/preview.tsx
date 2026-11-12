@@ -143,6 +143,23 @@ function series(keys: string[]): SeriesData[] {
 
 const params = new URLSearchParams(location.search);
 const storageKey = "workbench-finance-test-preferences";
+type PreviewThreshold = Awaited<ReturnType<FinanceDashboardData["loadThresholds"]>>[number];
+const fixtureThresholds: PreviewThreshold[] = metadata.flatMap((indicator) =>
+  (indicator.default_thresholds ?? []).map((item, index) => ({
+    ...item,
+    id: `${indicator.id}:${index}`,
+    indicator_id: indicator.id,
+    default_key: null,
+    hysteresis: item.hysteresis ?? 0,
+    enabled: true,
+    created_at: 0,
+    updated_at: 0,
+    deleted_at: null,
+    device_id: "preview",
+    deletion_group_id: null,
+    purged_at: null,
+  })),
+);
 const api: FinanceDashboardData = {
   listIndicators: async () => {
     if (params.has("error")) throw new Error("模拟缓存读取错误");
@@ -154,6 +171,29 @@ const api: FinanceDashboardData = {
       points: item.points.filter((point) => point.value != null).slice(-2),
     })),
   getSeries: async (keys) => series(keys),
+  loadThresholds: async () => fixtureThresholds,
+  saveThreshold: async (input, id) => {
+    const threshold = fixtureThresholds.find((item) => item.id === id);
+    if (threshold) Object.assign(threshold, input);
+    else
+      fixtureThresholds.push({
+        ...input,
+        id: crypto.randomUUID(),
+        default_key: null,
+        created_at: 0,
+        updated_at: 0,
+        deleted_at: null,
+        device_id: "preview",
+        deletion_group_id: null,
+        purged_at: null,
+      });
+    return [...fixtureThresholds];
+  },
+  deleteThreshold: async (id) => {
+    const index = fixtureThresholds.findIndex((item) => item.id === id);
+    if (index >= 0) fixtureThresholds.splice(index, 1);
+    return [...fixtureThresholds];
+  },
   getOverlay: async () =>
     dates
       .filter((day) => day >= 20150101)

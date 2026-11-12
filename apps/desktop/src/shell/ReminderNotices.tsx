@@ -48,8 +48,8 @@ function Notice({
       <div className="reminder-notice-content">
         <button className="reminder-notice-title" disabled={busy} onClick={() => void run("open")}>
           {notice.title}
+          {notice.body && <span className="reminder-notice-body">{notice.body}</span>}
         </button>
-        {notice.body && <p>{notice.body}</p>}
         {notice.kind === "reminder" && (
           <div className="reminder-notice-actions">
             <Button size="sm" disabled={busy} onClick={() => void run("complete")}>

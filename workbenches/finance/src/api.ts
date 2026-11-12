@@ -8,18 +8,27 @@ import {
 } from "../../../apps/desktop/src/core/finance/local-sidecar-source";
 import type { FinanceStatus } from "../../../apps/desktop/src/core/finance/finance-reader";
 import { scheduleFinanceStartupUpdate } from "../../../apps/desktop/src/core/finance/startup-update";
-import { preferenceKeys, readPreferences, type FinancePreferences } from "./preferences";
+import { FinanceAlerts } from "../../../apps/desktop/src/core/finance/finance-alerts";
+import type { ThresholdInput } from "../../../apps/desktop/src/core/repositories/finance-thresholds";
+import {
+  preferenceKeys,
+  preferencesForTarget,
+  readPreferences,
+  type FinancePreferences,
+} from "./preferences";
 
 type TokenStatus = { configured: boolean; tail: string | null };
 const source = new LocalSidecarSource();
 const confirmedKey = "finance.initial_backfill_confirmed";
 let preferenceWrites = Promise.resolve();
 
-async function financeSettings() {
+async function financeData() {
   const { initializeDataLayer } =
     await import("../../../apps/desktop/src/core/repositories/initialize");
-  return (await initializeDataLayer()).settings;
+  return initializeDataLayer();
 }
+const financeSettings = async () => (await financeData()).settings;
+const alerts = new FinanceAlerts(source, financeData);
 
 export const useFinanceState = create<{
   token: TokenStatus | null;
@@ -49,6 +58,9 @@ async function requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
       return;
     }
     if (mode === "full-rebuild" && !confirmed) await settings.setValue(confirmedKey, true);
+    // 先给现有缓存建立静默基线，避免升级后的首次增量吞掉真正的新越线。
+    if (mode === "full-rebuild") await alerts.list().catch(reportError);
+    else await alerts.list();
     await source.requestUpdate(mode);
   } catch (error) {
     reportError(error);
@@ -60,6 +72,16 @@ export const financeApi = {
   getRecent: (keys: string[]) => source.getRecent(keys),
   getSeries: (keys: string[]) => source.getSeries(keys),
   getOverlay: () => source.getOverlay(),
+  loadThresholds: () => alerts.list(),
+  saveThreshold: (fields: ThresholdInput, id?: string) => alerts.save(fields, id),
+  deleteThreshold: (id: string) => alerts.delete(id),
+  async openReminder(reminderId: string) {
+    const target = await (await financeData()).financeAlertStates.targetForReminder(reminderId);
+    if (!target) return;
+    const preferences = preferencesForTarget(target, await source.listIndicators());
+    for (const [field, value] of Object.entries(preferences))
+      await financeApi.savePreference(field as keyof FinancePreferences, value);
+  },
   async loadPreferences(): Promise<FinancePreferences> {
     await preferenceWrites;
     const settings = await financeSettings();
@@ -83,9 +105,16 @@ export const financeApi = {
   },
   startRuntime(): () => void {
     if (!isTauri()) return () => undefined;
+    const unsubscribe = source.onCompleted((event, mode) => {
+      void alerts.complete(event, mode).catch(reportError);
+    });
     void refreshToken().catch(reportError);
     void source.connect().catch(reportError);
-    return scheduleFinanceStartupUpdate(() => void requestUpdate());
+    const stop = scheduleFinanceStartupUpdate(() => void requestUpdate());
+    return () => {
+      stop();
+      unsubscribe();
+    };
   },
   requestUpdate,
   async saveToken(value: string): Promise<void> {

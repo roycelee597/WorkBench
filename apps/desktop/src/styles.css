@@ -1786,10 +1786,12 @@ input::placeholder {
   text-align: left;
   overflow-wrap: anywhere;
 }
-.reminder-notice-content > p {
+.reminder-notice-body {
+  display: block;
   margin-top: 6px;
   color: var(--muted-foreground);
   font-size: 13px;
+  font-weight: 400;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

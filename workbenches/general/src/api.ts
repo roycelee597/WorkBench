@@ -1,4 +1,5 @@
 import type { DataLayer } from "../../../apps/desktop/src/core/repositories";
+import { FINANCE_WORKBENCH } from "../../../apps/desktop/src/core/finance/finance-target";
 import type {
   Memo,
   MemoFields,
@@ -54,6 +55,8 @@ export type ReminderDraft = Pick<
 >;
 export type MemoDraft = Pick<MemoFields, "title" | "content" | "pinned" | "tags">;
 export type Theme = "system" | "light" | "dark";
+export const isFinanceReminder = (reminder: Reminder) =>
+  reminder.source_workbench === FINANCE_WORKBENCH;
 export interface MemoFilter {
   query?: string;
   tag?: string;
@@ -378,10 +381,14 @@ export function createGeneralApi(
       await hostServices.setAutostart(enabled);
       await (await getData()).settings.setValue("autostart", enabled);
     },
-    async reminderTarget(occurrenceId: string) {
-      const row = await (await getData()).occurrences.get(occurrenceId);
+    async reminderTarget(occurrenceId: string, includeSource = false) {
+      const data = await getData();
+      const row = await data.occurrences.get(occurrenceId);
       if (!row) throw new Error("这条通知对应的提醒已删除");
-      return { reminderId: row.reminder_id, occurrenceId: row.id };
+      const target = { reminderId: row.reminder_id, occurrenceId: row.id };
+      if (!includeSource) return target;
+      const reminder = await data.reminders.get(row.reminder_id);
+      return { ...target, sourceWorkbench: reminder?.source_workbench ?? null };
     },
   };
 }
