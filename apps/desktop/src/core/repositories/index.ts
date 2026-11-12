@@ -8,6 +8,8 @@ import { SettingsRepository } from "./settings";
 import { TrashCleaner } from "./trash-cleaner";
 import { createChangeSignal } from "./change-signal";
 import { ReminderOccurrencesRepository } from "./reminder-occurrences";
+import { FinanceThresholdsRepository } from "./finance-thresholds";
+import { FinanceAlertStatesRepository } from "./finance-alert-states";
 
 export async function createDataLayer(
   db: SqlDatabase,
@@ -39,6 +41,8 @@ export async function createDataLayer(
     events: new EventsRepository(database, context),
     reminders: new RemindersRepository(database, context),
     occurrences: new ReminderOccurrencesRepository(database, context),
+    financeThresholds: new FinanceThresholdsRepository(database, context),
+    financeAlertStates: new FinanceAlertStatesRepository(database, context),
     settings,
     trash: new TrashCleaner(database, context, settings),
   };

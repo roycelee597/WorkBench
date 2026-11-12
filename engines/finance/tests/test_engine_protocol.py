@@ -373,7 +373,10 @@ def test_unknown_code_and_possible_change_are_warnings_and_other_dates_continue(
 
 
 @respx.mock
-def test_known_bj_quote_match_is_logged_without_ndjson_warning(tmp_path, client, caplog):
+@pytest.mark.parametrize("mainland_pair", [False, True])
+def test_known_bj_quote_match_only_keeps_mainland_pairs_in_ndjson(
+    tmp_path, client, caplog, mainland_pair
+):
     days, _, handler = fixture_handler()
     latest = str(days[-1])
 
@@ -385,6 +388,8 @@ def test_known_bj_quote_match_is_logged_without_ndjson_warning(tmp_path, client,
         if body["api_name"] == "stock_basic" and body["params"]["list_status"] == "L":
             rows.append(["920001.BJ", *rows[0][1:]])
         if body["api_name"] == "daily" and body["params"]["trade_date"] == latest:
+            if mainland_pair:
+                rows[1][2:] = rows[0][2:]
             rows.append(["920001.BJ", *rows[0][1:]])
         return httpx.Response(200, json=payload)
 
@@ -393,7 +398,15 @@ def test_known_bj_quote_match_is_logged_without_ndjson_warning(tmp_path, client,
     now = datetime.fromisoformat("2015-05-01T20:00:00+08:00")
     assert update(tmp_path / "finance.db", client, Protocol(output, TOKEN), now) == 0
     messages = events(output)
-    assert not any(event["type"] == "warning" for event in messages)
+    warnings = [event for event in messages if event["type"] == "warning"]
+    if mainland_pair:
+        assert [(event["code"], event["trade_date"]) for event in warnings] == [
+            ("POSSIBLE_CODE_CHANGE", latest)
+        ]
+        assert "000001.SH / 000002.SH" in warnings[0]["message"]
+        assert ".BJ" not in warnings[0]["message"]
+    else:
+        assert not warnings
     assert messages[-1]["status"] == "ok"
     assert "涉及北交所的疑似代码变更" in caplog.text
     assert "920001.BJ" in caplog.text

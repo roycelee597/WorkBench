@@ -9,6 +9,7 @@ import {
 } from "../core/scheduler/notification-port";
 import { useReminderNotices } from "./reminder-notices";
 import { ReminderNotices } from "./ReminderNotices";
+import { dispatchNotification } from "./notification-action";
 import { initializeQuickHost } from "./quick-bridge";
 import { shortcutController } from "./shortcut-runtime";
 import type { ReminderScheduler } from "../core/scheduler/scheduler";
@@ -26,7 +27,10 @@ const FinanceWorkbench = lazy(() =>
   import("@workbench/finance/page").then((module) => ({ default: module.FinanceWorkbench })),
 );
 
-async function handleNotification(action: NotificationAction) {
+async function handleNotification(
+  action: NotificationAction,
+  navigation: { openFinance: (reminderId: string) => Promise<void>; showGeneral: () => void },
+) {
   if (workspace.useWorkspace.getState().busy) {
     await new Promise<void>((resolve) => {
       const off = workspace.useWorkspace.subscribe((state) => {
@@ -37,20 +41,21 @@ async function handleNotification(action: NotificationAction) {
       });
     });
   }
-  if (action.kind === "missed") {
-    await workspace.useWorkspace.getState().openMissed(action.count);
-    const error = workspace.useWorkspace.getState().error;
-    if (error) throw new Error(error);
-    return;
-  }
-  const target = await generalApi.reminderTarget(action.occurrenceId);
-  if (action.kind === "complete") await generalApi.completeReminder(target);
-  else if (action.kind === "snooze") await generalApi.snoozeReminder(target);
-  else {
-    await workspace.useWorkspace.getState().openReminder(target);
+  async function openGeneral(open: () => Promise<unknown>) {
+    navigation.showGeneral();
+    await open();
     const error = workspace.useWorkspace.getState().error;
     if (error) throw new Error(error);
   }
+  return dispatchNotification(action, {
+    resolve: generalApi.reminderTarget,
+    complete: generalApi.completeReminder,
+    snooze: generalApi.snoozeReminder,
+    openFinance: navigation.openFinance,
+    openMissed: (count) => openGeneral(() => workspace.useWorkspace.getState().openMissed(count)),
+    openReminder: (target) =>
+      openGeneral(() => workspace.useWorkspace.getState().openReminder(target)),
+  });
 }
 
 function NavIcon({ type }: { type: "workspace" | "settings" | "trash" }) {
@@ -89,6 +94,7 @@ function NavIcon({ type }: { type: "workspace" | "settings" | "trash" }) {
 export function AppShell() {
   const state = workspace.useWorkspace();
   const [financeOpen, setFinanceOpen] = useState(false);
+  const [financeNavigation, setFinanceNavigation] = useState(0);
   const [enabling, setEnabling] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
   useEffect(() => financeApi.startRuntime(), []);
@@ -299,15 +305,25 @@ export function AppShell() {
               </p>
             }
           >
-            <FinanceWorkbench openSettings={() => openGeneral("settings")} />
+            <FinanceWorkbench
+              key={financeNavigation}
+              openSettings={() => openGeneral("settings")}
+            />
           </Suspense>
         )}
       </main>
       <ReminderNotices
-        onAction={(action) => {
-          if (action.kind !== "complete" && action.kind !== "snooze") setFinanceOpen(false);
-          return handleNotification(action);
-        }}
+        onAction={(action) =>
+          handleNotification(action, {
+            showGeneral: () => setFinanceOpen(false),
+            async openFinance(reminderId) {
+              await workspace.flush();
+              await financeApi.openReminder(reminderId);
+              setFinanceNavigation((value) => value + 1);
+              setFinanceOpen(true);
+            },
+          })
+        }
       />
       <FinanceBackfillDialog />
       <Dialog

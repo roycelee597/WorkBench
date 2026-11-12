@@ -28,10 +28,15 @@ export function updateStatement(
     values: [...Object.values(fields), ...values],
   };
 }
-export function insertStatement(table: string, fields: Record<string, SqlValue>): SqlStatement {
+export function insertStatement(
+  table: string,
+  fields: Record<string, SqlValue>,
+  guard?: { where: string; values: SqlValue[] },
+): SqlStatement {
   const keys = Object.keys(fields);
+  const placeholders = keys.map(() => "?").join(", ");
   return {
-    query: `INSERT INTO "${table}" (${keys.map((key) => `"${key}"`).join(", ")}) VALUES (${keys.map(() => "?").join(", ")})`,
-    values: Object.values(fields),
+    query: `INSERT INTO "${table}" (${keys.map((key) => `"${key}"`).join(", ")}) ${guard ? `SELECT ${placeholders} WHERE ${guard.where}` : `VALUES (${placeholders})`}`,
+    values: [...Object.values(fields), ...(guard?.values ?? [])],
   };
 }

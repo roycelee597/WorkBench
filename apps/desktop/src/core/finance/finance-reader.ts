@@ -41,7 +41,9 @@ const indicatorSchema = z.looseObject({
     .array(
       z.object({
         series_key: z.string(),
+        default_key: z.string().optional(),
         level: z.number(),
+        hysteresis: z.number().nonnegative().optional(),
         label: z.string(),
         direction: z.enum(["above", "below"]),
       }),

@@ -128,7 +128,7 @@ lint / typecheck / test / prettier --check 都通过，tauri dev 手动测试通
 1. 迁移：新增 src-tauri/migrations/0003_finance.sql（finance_thresholds、finance_alert_states，字段和索引按 spec §10.2，带同步字段），在 lib.rs 登记 version 3。不要修改 0001 和 0002。
 2. 仓库：在 core/repositories 下实现 finance-thresholds 和 finance-alert-states（UUID v7、软删除）。按 default_key 幂等地写入 spec §7.1 的 9 条默认阈值，用户删掉的默认阈值不会再自动加回来。删除的阈值 v1 不显示在回收站。
 3. 阈值面板（指标页里）：可以修改、停用、删除、新增（选择序列、方向、数值、回差、备注）；图表的阈值线改为读取用户的阈值。
-4. threshold-evaluator 纯函数（spec §7.2）：只在越线时提醒；有回差；首次计算和修改阈值后静默设置状态；补算多天只提醒一次，而且最新一天必须仍在阈值之外；重算的日子不重复提醒；用 finance://event 的 done.new_dates 判断哪些日子是新算的。
+4. threshold-evaluator 纯函数（spec §7.2）：只在越线时提醒；有回差；首次计算和修改阈值后静默设置状态；补算多天只提醒一次，而且最新一天必须仍在阈值之外；以 evaluated_through 为持久游标评估新算出的日子，历史回补和重算中不晚于游标的日期不提醒，完整重建静默重设。App 启动后和引擎每次退出后都评估（包括失败、取消或缺少 done），不依赖 done.new_dates，不保留完成事件内存队列。更新前先建立静默基线；评估失败报告错误但不阻塞更新或阈值保存／删除，下次自然从原游标续算。
 5. 写入提醒（spec §7.3）：source='manual'、source_workbench='com.royce.workbench.finance'、priority=2、due_at=now。新建提醒和写 finance_alert_states 在同一个 execute_batch 事务里完成。同一次更新中有 3 条及以上越线时合并成一条。提醒页给这类提醒显示“金融”标记，可以正常勾选完成。点击通知条主体时，如果是金融提醒，就跳到对应的指标页（扩展 handleNotification / reminderTarget，并补单测）。
 6. 左列和当前值卡片显示“已高于 / 已低于阈值”标记。
 7. 测试：spec §15 的 TypeScript 部分全部完成（评估器的各种情形、仓库、事务回滚、默认阈值幂等写入、合并规则、点击跳转）。

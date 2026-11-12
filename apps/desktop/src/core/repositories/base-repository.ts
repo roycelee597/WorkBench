@@ -36,21 +36,33 @@ export class BaseRepository<T extends RecordMetadata, Fields extends object> {
     if (!record) throw new Error("记录不存在或已删除");
     return record;
   }
-  protected async insert(fields: Fields): Promise<T> {
+  protected prepareInsert(
+    fields: Fields,
+    guard?: Parameters<typeof insertStatement>[2],
+  ): { id: string; statement: SqlStatement } {
     const now = this.context.now();
     const id = this.context.newId();
-    await this.db.batch([
-      insertStatement(this.definition.table, {
-        id,
-        created_at: now,
-        updated_at: now,
-        deleted_at: null,
-        device_id: this.context.deviceId,
-        deletion_group_id: null,
-        purged_at: null,
-        ...encodeFields(fields, this.definition.columns),
-      }),
-    ]);
+    return {
+      id,
+      statement: insertStatement(
+        this.definition.table,
+        {
+          id,
+          created_at: now,
+          updated_at: now,
+          deleted_at: null,
+          device_id: this.context.deviceId,
+          deletion_group_id: null,
+          purged_at: null,
+          ...encodeFields(fields, this.definition.columns),
+        },
+        guard,
+      ),
+    };
+  }
+  protected async insert(fields: Fields): Promise<T> {
+    const { id, statement } = this.prepareInsert(fields);
+    await this.db.batch([statement]);
     return this.requireActive(id);
   }
   protected async writePatch(id: string, fields: Partial<Fields>): Promise<T> {

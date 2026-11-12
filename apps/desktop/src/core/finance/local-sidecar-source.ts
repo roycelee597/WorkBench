@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { parseEngineEvent, type EngineEvent, type FinanceStage } from "./engine-events";
+import {
+  parseEngineEvent,
+  type EngineEvent,
+  type FinanceDone,
+  type FinanceStage,
+} from "./engine-events";
 import {
   FinanceReader,
   type DateRange,
@@ -61,7 +66,9 @@ export class LocalSidecarSource implements FinanceDataSource {
   private listeners = new Set<() => void>();
   private events = new Set<(event: EngineEvent) => void>();
   private connection: Promise<() => void> | undefined;
-  private outcome: Extract<EngineEvent, { type: "done" }>["status"] | undefined;
+  private outcome: FinanceDone["status"] | undefined;
+  private mode: UpdateMode = "auto";
+  private exits = new Set<(mode: UpdateMode) => void>();
 
   constructor(
     private readonly reader = new FinanceReader(),
@@ -79,6 +86,11 @@ export class LocalSidecarSource implements FinanceDataSource {
     this.events.add(callback);
     void this.connect().catch(() => undefined);
     return () => this.events.delete(callback);
+  }
+
+  onExit(callback: (mode: UpdateMode) => void): () => void {
+    this.exits.add(callback);
+    return () => this.exits.delete(callback);
   }
 
   private set(update: Partial<Snapshot>): void {
@@ -139,6 +151,10 @@ export class LocalSidecarSource implements FinanceDataSource {
             : event.code === 0 && this.outcome === "partial"
               ? "partial"
               : "failed";
+        const mode = this.mode;
+        this.outcome = undefined;
+        this.mode = "auto";
+        for (const callback of this.exits) callback(mode);
         this.set({
           status,
           stage: undefined,
@@ -175,15 +191,18 @@ export class LocalSidecarSource implements FinanceDataSource {
   async requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
     if (this.snapshot.status === "running" || this.snapshot.status === "already_running") return;
     this.outcome = undefined;
+    this.mode = mode;
     this.set({ status: "running", stage: undefined, progress: undefined, diagnostic: undefined });
     try {
       await this.connect();
       if (mode === "full-rebuild") await this.reader.suspendForRebuild();
       const result = await this.port.start(mode);
       if (result === "already_running" && this.getSnapshot().status === "running") {
+        this.mode = "auto";
         this.set({ status: "already_running" });
       }
     } catch (error) {
+      this.mode = "auto";
       this.reader.resume();
       this.set({ status: "failed", diagnostic: financeDiagnostic(error) });
     }
