@@ -66,9 +66,9 @@ export class LocalSidecarSource implements FinanceDataSource {
   private listeners = new Set<() => void>();
   private events = new Set<(event: EngineEvent) => void>();
   private connection: Promise<() => void> | undefined;
-  private outcome: FinanceDone | undefined;
+  private outcome: FinanceDone["status"] | undefined;
   private mode: UpdateMode = "auto";
-  private completed = new Set<(event: FinanceDone, mode: UpdateMode) => void>();
+  private exits = new Set<(mode: UpdateMode) => void>();
 
   constructor(
     private readonly reader = new FinanceReader(),
@@ -88,9 +88,9 @@ export class LocalSidecarSource implements FinanceDataSource {
     return () => this.events.delete(callback);
   }
 
-  onCompleted(callback: (event: FinanceDone, mode: UpdateMode) => void): () => void {
-    this.completed.add(callback);
-    return () => this.completed.delete(callback);
+  onExit(callback: (mode: UpdateMode) => void): () => void {
+    this.exits.add(callback);
+    return () => this.exits.delete(callback);
   }
 
   private set(update: Partial<Snapshot>): void {
@@ -140,23 +140,21 @@ export class LocalSidecarSource implements FinanceDataSource {
         this.set({ revision: this.snapshot.revision + 1 });
         break;
       case "done":
-        this.outcome = event;
+        this.outcome = event.status;
         break;
       case "engine_exit": {
         this.reader.resume();
         const status = event.cancelled
           ? "idle"
-          : event.code === 0 && this.outcome?.status === "ok"
+          : event.code === 0 && this.outcome === "ok"
             ? "complete"
-            : event.code === 0 && this.outcome?.status === "partial"
+            : event.code === 0 && this.outcome === "partial"
               ? "partial"
               : "failed";
-        const outcome = this.outcome;
         const mode = this.mode;
         this.outcome = undefined;
         this.mode = "auto";
-        if (outcome && (status === "complete" || status === "partial"))
-          for (const callback of this.completed) callback(outcome, mode);
+        for (const callback of this.exits) callback(mode);
         this.set({
           status,
           stage: undefined,

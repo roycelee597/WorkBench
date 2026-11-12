@@ -87,25 +87,34 @@ describe("金融引擎协议和更新状态", () => {
     expect(source.getSnapshot().status).toBe("idle");
   });
 
-  it("只将成功退出的 done 日期交给提醒评估，并标明重建", async () => {
+  it.each([
+    { status: "ok", code: 0, cancelled: false },
+    { status: "partial", code: 0, cancelled: false },
+    { status: "failed", code: 4, cancelled: false },
+    { status: undefined, code: 130, cancelled: true },
+    { status: undefined, code: null, cancelled: false },
+  ])("所有退出均触发评估，退出状态为 $status / $code", async ({ status, code, cancelled }) => {
     const { source, send } = harness();
     const callback = vi.fn();
-    source.onCompleted(callback);
-    const done = {
-      type: "done",
-      status: "partial",
-      new_dates: { top5_turnover_share: ["20261106"] },
-      through: { top5_turnover_share: "20261106" },
-    };
+    const off = source.onExit(callback);
     await source.requestUpdate();
-    send(done);
+    if (status) send({ type: "done", status, new_dates: {}, through: {} });
     expect(callback).not.toHaveBeenCalled();
-    send({ type: "engine_exit", code: 130, cancelled: true });
-    expect(callback).not.toHaveBeenCalled();
+    send({ type: "engine_exit", code, cancelled });
+    expect(callback).toHaveBeenCalledExactlyOnceWith("auto");
+    off();
+  });
+
+  it("取消的完整重建仍通知静默重设，下一轮恢复自动模式", async () => {
+    const { source, send } = harness();
+    const callback = vi.fn();
+    source.onExit(callback);
     await source.requestUpdate("full-rebuild");
-    send(done);
+    send({ type: "engine_exit", code: 130, cancelled: true });
+    expect(callback).toHaveBeenNthCalledWith(1, "full-rebuild");
+    await source.requestUpdate();
     send({ type: "engine_exit", code: 0, cancelled: false });
-    expect(callback).toHaveBeenCalledExactlyOnceWith(done, "full-rebuild");
+    expect(callback).toHaveBeenNthCalledWith(2, "auto");
   });
 
   it("启动十秒后只更新一次，托盘显示和页面切换不再触发", () => {

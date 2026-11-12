@@ -1,3 +1,4 @@
+import type { FinanceTarget } from "../../../apps/desktop/src/core/finance/finance-target";
 import type {
   IndicatorMeta,
   ValuationMetric,
@@ -66,4 +67,3 @@ export function readPreferences(
     indicator: typeof values.indicator === "string" ? values.indicator : "",
   };
 }
-import type { FinanceTarget } from "../../../apps/desktop/src/core/finance/finance-target";

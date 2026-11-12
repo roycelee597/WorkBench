@@ -28,7 +28,7 @@ async function financeData() {
   return initializeDataLayer();
 }
 const financeSettings = async () => (await financeData()).settings;
-const alerts = new FinanceAlerts(source, financeData);
+const alerts = new FinanceAlerts(source, financeData, Date.now, reportError);
 
 export const useFinanceState = create<{
   token: TokenStatus | null;
@@ -59,8 +59,7 @@ async function requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
     }
     if (mode === "full-rebuild" && !confirmed) await settings.setValue(confirmedKey, true);
     // 先给现有缓存建立静默基线，避免升级后的首次增量吞掉真正的新越线。
-    if (mode === "full-rebuild") await alerts.list().catch(reportError);
-    else await alerts.list();
+    await alerts.evaluate(mode).catch(reportError);
     await source.requestUpdate(mode);
   } catch (error) {
     reportError(error);
@@ -105,9 +104,10 @@ export const financeApi = {
   },
   startRuntime(): () => void {
     if (!isTauri()) return () => undefined;
-    const unsubscribe = source.onCompleted((event, mode) => {
-      void alerts.complete(event, mode).catch(reportError);
+    const unsubscribe = source.onExit((mode) => {
+      void alerts.evaluate(mode).catch(reportError);
     });
+    void alerts.evaluate().catch(reportError);
     void refreshToken().catch(reportError);
     void source.connect().catch(reportError);
     const stop = scheduleFinanceStartupUpdate(() => void requestUpdate());

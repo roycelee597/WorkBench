@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FinanceAlerts } from "../src/core/finance/finance-alerts";
-import type { FinanceDone } from "../src/core/finance/engine-events";
 import type { DateRange, FinancePoint, IndicatorMeta } from "../src/core/finance/finance-reader";
 import { FINANCE_WORKBENCH } from "../src/core/finance/finance-target";
 import { evaluateThreshold } from "../src/core/finance/threshold-evaluator";
@@ -105,38 +104,40 @@ const meta: IndicatorMeta[] = [
 function point(trade_date: number, value: number): FinancePoint & { value: number } {
   return { trade_date, value, extra_json: null };
 }
-function done(...dates: number[]): FinanceDone {
-  return { type: "done", status: "ok", new_dates: { [key]: dates.map(String) }, through: {} };
-}
 const days = [20261102, 20261103, 20261104, 20261105, 20261106] as const;
 
 describe("金融阈值与真实 SQLite 事务", () => {
   let f: Awaited<ReturnType<typeof fixture>>;
   let alerts: FinanceAlerts;
   let prices: FinancePoint[];
+  let source: ConstructorParameters<typeof FinanceAlerts>[0];
+  const createAlerts = (onError = vi.fn()) =>
+    new FinanceAlerts(
+      source,
+      async () => f.data,
+      () => f.clock.now,
+      onError,
+    );
   beforeEach(async () => {
     f = await fixture();
     prices = [point(days[0], 44)];
-    alerts = new FinanceAlerts(
-      {
-        listIndicators: async () => meta,
-        getRecent: async (keys: string[]) =>
-          keys.map((item) => ({ key: item, points: item === key ? prices.slice(-2) : [] })),
-        getSeries: async (keys: string[], range?: DateRange) =>
-          keys.map((item) => ({
-            key: item,
-            points:
-              item === key
-                ? prices.filter(
-                    ({ trade_date }) =>
-                      !range || (trade_date >= range.from && trade_date <= range.to),
-                  )
-                : [],
-          })),
-      },
-      async () => f.data,
-      () => f.clock.now,
-    );
+    source = {
+      listIndicators: async () => meta,
+      getRecent: async (keys: string[]) =>
+        keys.map((item) => ({ key: item, points: item === key ? prices.slice(-2) : [] })),
+      getSeries: async (keys: string[], range?: DateRange) =>
+        keys.map((item) => ({
+          key: item,
+          points:
+            item === key
+              ? prices.filter(
+                  ({ trade_date }) =>
+                    !range || (trade_date >= range.from && trade_date <= range.to),
+                )
+              : [],
+        })),
+    };
+    alerts = createAlerts();
   });
   afterEach(() => f.db.close());
 
@@ -188,7 +189,7 @@ describe("金融阈值与真实 SQLite 事务", () => {
         const day = days[index + 1]!;
         prices.push(point(day, value));
         f.clock.now += 1000;
-        await alerts.complete(done(day));
+        await alerts.evaluate();
         await scheduler.wake();
       }
       expect(actions).toEqual(["唤起", "通知", "唤起", "通知"]);
@@ -215,17 +216,20 @@ describe("金融阈值与真实 SQLite 事务", () => {
     }
   });
 
-  it("首次计算和完整重建静默，重算及未标为新日期的值不触发", async () => {
+  it("首次计算和完整重建静默，历史回补与已评估日期重算不触发", async () => {
     prices = [point(days[0], 44), point(days[1], 46)];
-    await alerts.complete(done(days[0], days[1]));
+    await alerts.evaluate();
     expect(await f.data.reminders.list()).toEqual([]);
     expect((await f.data.financeAlertStates.list())[0]).toMatchObject({
       breached: true,
       evaluated_through: days[1],
     });
-    prices = [point(days[0], 50), point(days[1], 40), point(days[2], 48)];
-    await alerts.complete(done(days[0], days[1]));
-    await alerts.complete(done(days[2]), "full-rebuild");
+    prices = [point(20261030, 49), point(days[0], 50), point(days[1], 40)];
+    await alerts.evaluate();
+    prices.push(point(days[2], 48));
+    await alerts.list(); // 重建中刷新面板只读取阈值并建立缺少的基线。
+    expect(await f.data.reminders.list()).toEqual([]);
+    await alerts.evaluate("full-rebuild");
     expect(await f.data.reminders.list()).toEqual([]);
     expect((await f.data.financeAlertStates.list())[0]?.evaluated_through).toBe(days[2]);
   });
@@ -235,18 +239,15 @@ describe("金融阈值与真实 SQLite 事务", () => {
     for (const level of [45.2, 45.4]) await alerts.save({ ...main, level });
     prices.push(point(days[1], 46), point(days[2], 43), point(days[3], 48));
     f.db.failAt = 3;
-    await expect(alerts.complete(done(days[3], days[2], days[1]))).rejects.toThrow("模拟事务失败");
+    await expect(alerts.evaluate()).rejects.toThrow("模拟事务失败");
     expect(await f.data.reminders.list()).toEqual([]);
     expect(await f.db.select("SELECT key FROM workbench_kv")).toEqual([]);
     expect(
       (await f.data.financeAlertStates.list()).map(({ evaluated_through }) => evaluated_through),
     ).toEqual([days[0], days[0], days[0]]);
     f.db.failAt = null;
-    await alerts.list();
-    await Promise.all([
-      alerts.complete(done(days[1], days[2], days[3])),
-      alerts.complete(done(days[1], days[2], days[3])),
-    ]);
+    await createAlerts().evaluate();
+    await Promise.all([alerts.evaluate(), alerts.evaluate()]);
     const reminders = await f.data.reminders.list();
     expect(reminders).toHaveLength(1);
     expect(reminders[0]?.title).toBe("金融指标：3 条阈值被触发");
@@ -262,7 +263,7 @@ describe("金融阈值与真实 SQLite 事务", () => {
   it("补算越线后回到阈值内不提醒，编辑后静默且停用不评估", async () => {
     const [threshold] = (await alerts.list()).filter(({ series_key }) => series_key === key);
     prices.push(point(days[1], 46), point(days[2], 44.5));
-    await alerts.complete(done(days[1], days[2]));
+    await alerts.evaluate();
     expect(await f.data.reminders.list()).toEqual([]);
     await alerts.save({ ...main, direction: "below", level: 45 }, threshold!.id);
     expect((await f.data.financeAlertStates.list())[0]).toMatchObject({
@@ -271,7 +272,7 @@ describe("金融阈值与真实 SQLite 事务", () => {
     });
     await alerts.save({ ...main, enabled: false }, threshold!.id);
     prices.push(point(days[3], 48));
-    await alerts.complete(done(days[3]));
+    await alerts.evaluate();
     expect(await f.data.reminders.list()).toEqual([]);
   });
 
@@ -300,16 +301,45 @@ describe("金融阈值与真实 SQLite 事务", () => {
     const [threshold] = (await alerts.list()).filter(({ series_key }) => series_key === key);
     await alerts.save({ ...main, level: 45.2, label: "第二条" });
     prices.push(point(days[1], 46), point(days[2], 44.5));
-    await alerts.complete(done(days[1], days[2]));
+    await alerts.evaluate();
     expect(await f.data.reminders.list()).toHaveLength(0);
     expect((await f.data.financeAlertStates.list()).every(({ breached }) => breached)).toBe(true);
     await alerts.save({ ...main, label: "备注更新" }, threshold!.id);
     expect((await f.data.financeAlertStates.list()).every(({ breached }) => breached)).toBe(true);
     prices.push(point(days[3], 43), point(days[4], 46));
-    await alerts.complete(done(days[3], days[4]));
+    await alerts.evaluate();
     const reminders = await f.data.reminders.list();
     expect(reminders).toHaveLength(2);
     expect(reminders.some(({ notes }) => notes.includes("备注更新"))).toBe(true);
+  });
+
+  it("新建评估实例后，仍从持久游标补齐未评估日并只提醒一次", async () => {
+    await alerts.evaluate();
+    prices.push(point(days[1], 46));
+    const restarted = createAlerts();
+    await restarted.evaluate();
+    expect(await f.data.reminders.list()).toHaveLength(1);
+    expect((await f.data.financeAlertStates.list())[0]?.evaluated_through).toBe(days[1]);
+    await createAlerts().evaluate();
+    expect(await f.data.reminders.list()).toHaveLength(1);
+  });
+
+  it("历史读取持续失败时仍可保存或删除阈值，修复后从原游标恢复", async () => {
+    const [threshold] = (await alerts.list()).filter(({ series_key }) => series_key === key);
+    prices.push(point(days[1], 46));
+    const read = vi.spyOn(source, "getSeries").mockRejectedValue(new Error("模拟行情读取失败"));
+    await expect(alerts.evaluate()).rejects.toThrow("模拟行情读取失败");
+    await expect(
+      alerts.save({ ...main, label: "备注可保存" }, threshold!.id),
+    ).resolves.toHaveLength(9);
+    const temporary = (await alerts.save({ ...main, enabled: false, label: "可删除" })).find(
+      ({ label }) => label === "可删除",
+    )!;
+    await expect(alerts.delete(temporary.id)).resolves.toHaveLength(9);
+    expect((await f.data.financeAlertStates.list())[0]?.evaluated_through).toBe(days[0]);
+    read.mockRestore();
+    await alerts.evaluate();
+    expect(await f.data.reminders.list()).toHaveLength(1);
   });
 });
 
