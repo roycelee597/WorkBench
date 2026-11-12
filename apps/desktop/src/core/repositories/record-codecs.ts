@@ -9,21 +9,21 @@ import type {
   Setting,
 } from "./models";
 
-function text(row: SqlRow, key: string): string {
+export function text(row: SqlRow, key: string): string {
   const value = row[key];
   if (typeof value !== "string") throw new Error(`数据库字段 ${key} 不是字符串`);
   return value;
 }
-function number(row: SqlRow, key: string): number {
+export function number(row: SqlRow, key: string): number {
   const value = row[key];
   if (typeof value !== "number" || !Number.isFinite(value))
     throw new Error(`数据库字段 ${key} 不是数字`);
   return value;
 }
-function nullableText(row: SqlRow, key: string): string | null {
+export function nullableText(row: SqlRow, key: string): string | null {
   return row[key] === null ? null : text(row, key);
 }
-function nullableNumber(row: SqlRow, key: string): number | null {
+export function nullableNumber(row: SqlRow, key: string): number | null {
   return row[key] === null ? null : number(row, key);
 }
 export function isJsonValue(value: unknown): value is JsonValue {
@@ -37,7 +37,7 @@ function json(row: SqlRow, key: string): JsonValue {
   if (!isJsonValue(value)) throw new Error(`数据库字段 ${key} 不是有效 JSON`);
   return value;
 }
-function metadata(row: SqlRow): RecordMetadata {
+export function metadata(row: SqlRow): RecordMetadata {
   return {
     id: text(row, "id"),
     created_at: number(row, "created_at"),
@@ -65,7 +65,14 @@ function numberArray(row: SqlRow, key: string): number[] {
 }
 
 export interface RecordDefinition<T> {
-  table: "memos" | "events" | "reminders" | "settings" | "reminder_occurrences";
+  table:
+    | "memos"
+    | "events"
+    | "reminders"
+    | "settings"
+    | "reminder_occurrences"
+    | "finance_thresholds"
+    | "finance_alert_states";
   columns: string[];
   order: string;
   cleared: Record<string, SqlValue>;

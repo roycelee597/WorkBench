@@ -12,6 +12,11 @@ export class RemindersRepository extends BaseRepository<Reminder, ReminderFields
     super(db, context, reminderDefinition);
   }
   async create(input: NewReminder): Promise<Reminder> {
+    const { id, statement } = await this.prepareCreate(input);
+    await this.db.batch([statement]);
+    return this.requireActive(id);
+  }
+  async prepareCreate(input: NewReminder) {
     const fields: ReminderFields = {
       notes: "",
       due_at: null,
@@ -30,7 +35,7 @@ export class RemindersRepository extends BaseRepository<Reminder, ReminderFields
     };
     this.validate(fields);
     await this.validateParent(fields);
-    return this.insert(fields);
+    return this.prepareInsert(fields);
   }
   async update(id: string, patch: Partial<ReminderFields>): Promise<Reminder> {
     const current = await this.requireActive(id);

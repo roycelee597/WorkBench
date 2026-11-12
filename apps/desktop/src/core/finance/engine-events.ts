@@ -35,6 +35,7 @@ const eventSchema = z.discriminatedUnion("type", [
 ]);
 
 export type EngineEvent = z.infer<typeof eventSchema>;
+export type FinanceDone = Extract<EngineEvent, { type: "done" }>;
 export type FinanceStage = z.infer<typeof stage>;
 
 export function parseEngineEvent(payload: unknown): EngineEvent | undefined {
