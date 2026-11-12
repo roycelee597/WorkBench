@@ -87,6 +87,27 @@ describe("金融引擎协议和更新状态", () => {
     expect(source.getSnapshot().status).toBe("idle");
   });
 
+  it("只将成功退出的 done 日期交给提醒评估，并标明重建", async () => {
+    const { source, send } = harness();
+    const callback = vi.fn();
+    source.onCompleted(callback);
+    const done = {
+      type: "done",
+      status: "partial",
+      new_dates: { top5_turnover_share: ["20261106"] },
+      through: { top5_turnover_share: "20261106" },
+    };
+    await source.requestUpdate();
+    send(done);
+    expect(callback).not.toHaveBeenCalled();
+    send({ type: "engine_exit", code: 130, cancelled: true });
+    expect(callback).not.toHaveBeenCalled();
+    await source.requestUpdate("full-rebuild");
+    send(done);
+    send({ type: "engine_exit", code: 0, cancelled: false });
+    expect(callback).toHaveBeenCalledExactlyOnceWith(done, "full-rebuild");
+  });
+
   it("启动十秒后只更新一次，托盘显示和页面切换不再触发", () => {
     vi.useFakeTimers();
     try {
