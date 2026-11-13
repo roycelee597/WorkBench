@@ -11,6 +11,7 @@ import { buildChartOption } from "./chart-option";
 import { Chart } from "./components/Chart";
 import { ThresholdPanel } from "./ThresholdPanel";
 import { beijingDay, monthlyAverage } from "./monthly";
+import { isAkshare } from "./data-source";
 import { readPreferences, type FinancePreferences, type FinanceRange } from "./preferences";
 import {
   displayValue,
@@ -524,6 +525,11 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
                     ? "图表暂时无法读取"
                     : "所选序列暂无可用数据"}
               </div>
+            )}
+            {(visible.some(isAkshare) || overlayPoints.some(isAkshare)) && (
+              <p className="text-sm text-muted-foreground">
+                菱形点表示 AKShare 备用源；月均标记表示其中包含备用源日值。
+              </p>
             )}
             {monthly && visible.some((point) => "monthToDate" in point && point.monthToDate) && (
               <p className="text-sm text-muted-foreground">

@@ -28,6 +28,11 @@ function harness(result: "started" | "already_running" = "started") {
 }
 
 describe("金融引擎协议和更新状态", () => {
+  it("把显式关闭备用源的选项传给原生启动命令", async () => {
+    const { source, start } = harness();
+    await source.requestUpdate("auto", false);
+    expect(start).toHaveBeenCalledWith("auto", false);
+  });
   it("校验交易日期和进度，忽略损坏的 NDJSON", () => {
     const progress = {
       type: "progress",

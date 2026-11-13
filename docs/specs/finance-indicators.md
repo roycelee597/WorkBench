@@ -115,8 +115,10 @@ Tushare 各接口入库时间不同（官方文档写法略有出入，取较晚
 | 新高个股统计     | `stock_a_high_low_statistics(symbol="all")`                                     | 乐咕乐股         | ❌ 只用于测试时对照              | 定义与本规格不同                                                          |
 
 - 设置里有「Tushare 失败时使用 AKShare 备用源」开关，默认开。
+- F5 已确认（2026-11-13）：仅对 `NETWORK`、`RATE_LIMITED`、`UPSTREAM_SCHEMA` 启用备用。`TOKEN_INVALID`、`PERMISSION_DENIED` 保留配置错误并引导去设置，不触发备用；取消和本地错误也不触发。「测试连接」始终只验证 Tushare。
 - **创业板指和上证指数的估值，以及历史个股日线，都没有口径一致的 AKShare 替代**。Tushare 不可用时，这些数据就停在 `pending`，下次再试。
 - AKShare 依赖较多（如 `py_mini_racer`，含 V8 引擎），会明显增大安装包。已确认（2026-11-07）：放在单独的 PR-F5 里，**先实测安装包增加多少，再由 Royce 决定是否打包进去**。
+- F5 体积实测后的决定（2026-11-13）：**正式版默认不打包，仅保留可选能力**；安装包增加 24.25 MiB（63.6%），完整条件与可选构建方法见 `docs/finance-akshare.md`。开关开启但未安装组件时自动跳过，不增加组件缺失错误。
 
 ## 5. 指标口径（v1 三个）
 

@@ -22,7 +22,7 @@ export interface FinanceDataSource {
   getRecent(keys: string[]): Promise<SeriesData[]>;
   getOverlay(): Promise<FinancePoint[]>;
   getStatus(): Promise<FinanceStatus>;
-  requestUpdate(mode?: UpdateMode): Promise<void>;
+  requestUpdate(mode?: UpdateMode, akshareFallback?: boolean): Promise<void>;
   onEvent(callback: (event: EngineEvent) => void): () => void;
 }
 
@@ -35,12 +35,12 @@ type Snapshot = {
 };
 
 type Bridge = {
-  start(mode: UpdateMode): Promise<"started" | "already_running">;
+  start(mode: UpdateMode, akshareFallback: boolean): Promise<"started" | "already_running">;
   subscribe(callback: (payload: unknown) => void): Promise<() => void>;
 };
 
 const bridge: Bridge = {
-  start: (mode) => invoke("finance_update_start", { mode }),
+  start: (mode, akshareFallback) => invoke("finance_update_start", { mode, akshareFallback }),
   subscribe: (callback) => listen("finance://event", (event) => callback(event.payload)),
 };
 
@@ -188,7 +188,7 @@ export class LocalSidecarSource implements FinanceDataSource {
     return this.reader.getOverlay();
   }
 
-  async requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
+  async requestUpdate(mode: UpdateMode = "auto", akshareFallback = true): Promise<void> {
     if (this.snapshot.status === "running" || this.snapshot.status === "already_running") return;
     this.outcome = undefined;
     this.mode = mode;
@@ -196,7 +196,7 @@ export class LocalSidecarSource implements FinanceDataSource {
     try {
       await this.connect();
       if (mode === "full-rebuild") await this.reader.suspendForRebuild();
-      const result = await this.port.start(mode);
+      const result = await this.port.start(mode, akshareFallback);
       if (result === "already_running" && this.getSnapshot().status === "running") {
         this.mode = "auto";
         this.set({ status: "already_running" });

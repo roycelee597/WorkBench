@@ -13,6 +13,7 @@ from .engine import update, verify
 from .errors import EngineError
 from .planner import SHANGHAI
 from .protocol import Protocol, read_secrets
+from .sources.akshare_fallback import AkshareFallback
 from .sources.tushare import TushareClient
 
 
@@ -93,7 +94,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("缺少时区")
         except ValueError:
             raise EngineError("ARGUMENT", "--now 必须包含时区，例如 +08:00") from None
-        return update(args.db, client, protocol, now, args.mode)
+        fallback = AkshareFallback(
+            secrets["akshare_fallback"],
+            check_cancelled=client.check_cancelled,
+            warn=lambda error: protocol.error(error, warning=True),
+        )
+        return update(args.db, client, protocol, now, args.mode, fallback=fallback)
     except EngineError as error:
         protocol.error(error)
         return 2 if error.code == "ARGUMENT" else error.exit_code
