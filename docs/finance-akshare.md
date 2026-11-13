@@ -51,7 +51,7 @@ pnpm finance:engine
 备用源只在主源失败且开关开启时懒加载。未安装组件时静默跳过，不另报“缺少 AKShare”；Tushare 本身的失败仍正常显示。设置里的“测试连接”始终只验证 Tushare，不会用备用源冒充连接成功。取消更新不会触发备用取数。
 
 - 交易日历从 2005 年开始，只写新浪实际返回的开市日；不会把接口没有返回的日期猜成休市，也不删除已有交易所日历。来源保存在现有 `dataset_status.source`，不修改缓存表结构。
-- 沪深300 收盘使用 `stock_zh_index_daily("sh000300")`，数据写入 `index_daily.source='akshare'`。历史收盘可以备用，当天收盘仍受北京时间 19:00 就绪规则限制。已有的有效 Tushare 收盘优先保留；主源恢复后可以覆盖备用值。
+- 沪深300 收盘使用 `stock_zh_index_daily("sh000300")`，数据写入 `index_daily.source='akshare'`。历史收盘可以备用，当天收盘仍受北京时间 19:00 就绪规则限制。已有的有效 Tushare 收盘优先保留；备用响应缺某天时保留那天已有的缓存和完成标记，主源恢复后可以覆盖备用值。
 - 成交额快照使用 `stock_zh_a_spot_em()`，仅保留代码以 0／3／6 开头的沪深 A 股，成交额由元换算为千元，沿用 `ceil(N×5%)` 和成交额为正的口径。符合条件的行存在非有限数或重复代码时拒绝整份快照，不能悄悄缩小分母。只写前 5% 指标，`extra_json.source='akshare'`；不伪造个股日线、复权因子或估值。有效主源指标优先保留。
 - 快照必须对应**实际北京时间的今天且已过 16:00**，抓取跨午夜时丢弃。`--now` 只影响规划和重试，不会把实际今日快照冒充历史数据。没有同口径备用的项目继续保留缓存并显示未就绪。
 - 双源均失败时保留已有行情和指标；首个日历请求在双源均不可用时仍只写 `run_log`。日历备用成功表示已获得有效数据，之后可以发布白名单备用结果，整次更新标为“部分完成”。
@@ -96,7 +96,7 @@ Windows 实测使用 `com.royce.workbench.f5-native-check` 和独立目录 `engi
 - 默认开启时原生入口收到 `true`；界面关闭后收到 `false`，隔离业务库中 `finance.akshare_fallback` 为 JSON `false`。失败状态下缓存仍可查看，来源说明仍保留。
 - 停止闲置隔离进程后重新启动，设置仍未勾选；启动自动更新再次收到 `false`。[重启后设置截图](screenshots/finance-akshare-settings.jpg)。重新开启后收到 `true`，离线夹具返回的 `partial` 正常显示为“部分数据待补齐”。正式版进程保持运行，未对其数据库、阈值或凭据进行写入。验收后仅停止闲置隔离实例、清理本次虚构凭据，保留隔离记录。
 
-本地结果：`pnpm lint`、`pnpm typecheck`、`pnpm test`（193 项）、`prettier . --check`、`ruff check`、`ruff format --check`、`pytest`（85 项，真实取数测试默认排除）均通过。Python 默认环境和安装 AKShare extra 的独立环境分别运行离线测试。最终默认 `pnpm finance:engine` 成功，版本事件 `with_akshare=false`，归档中没有 AKShare；最终 sidecar 为 37158667 字节（实现功能后略大于前述同条件体积对比时的版本）。
+本地结果：`pnpm lint`、`pnpm typecheck`、`pnpm test`（193 项）、`prettier . --check`、`ruff check`、`ruff format --check`、`pytest`（86 项，真实取数测试默认排除）均通过。Python 默认环境和安装 AKShare extra 的独立环境分别运行离线测试。最终默认 `pnpm finance:engine` 成功，版本事件 `with_akshare=false`，归档中没有 AKShare；最终 sidecar 为 37158646 字节（实现功能后略大于前述同条件体积对比时的版本）。
 
 ## 提交复审前待确认
 

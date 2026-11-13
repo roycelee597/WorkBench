@@ -276,6 +276,24 @@ def test_primary_cancellation_never_enters_backup_channel(db, client, ak):
     ak[1].assert_not_called()
 
 
+def test_partial_backup_keeps_cached_day_completion_when_that_day_is_absent(db, client, ak):
+    with db.conn:
+        db.conn.execute("INSERT INTO index_daily VALUES ('000300.SH',20261111,4400,'tushare')")
+        db.mark("index_daily.000300.SH", 20261111, "ok", 1, fetched_at=12345)
+    before = tuple(db.conn.execute("SELECT * FROM dataset_status").fetchone())
+    client.fetch = Mock(side_effect=EngineError("NETWORK", "离线", retryable=True))
+    assert index_daily.refresh(
+        db, client, [20261111, 20261112, 20261113], 20261113, fallback=provider()
+    )
+    assert (
+        tuple(db.conn.execute("SELECT * FROM dataset_status WHERE trade_date=20261111").fetchone())
+        == before
+    )
+    assert db.conn.execute(
+        "SELECT close,source FROM index_daily WHERE trade_date=20261111"
+    ).fetchone()[:] == (4400, "tushare")
+
+
 @respx.mock
 def test_snapshot_cannot_replace_valid_tushare_point(db, client, ak):
     db.points([SeriesPoint("top5_turnover_share", 20261113, 44.2, {"n": 5217, "k": 261})])

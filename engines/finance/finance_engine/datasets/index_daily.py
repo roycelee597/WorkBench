@@ -39,6 +39,7 @@ def refresh(
 def store(db: Database, rows: list[dict], dates: list[int]) -> bool:
     if not dates:
         return True
+    backup = any(row.get("source") == "akshare" for row in rows)
     mapped = {int(row["trade_date"]): row for row in rows}
     if len(mapped) != len(rows) or any(
         row["ts_code"] != "000300.SH" or not min(dates) <= int(row["trade_date"]) <= max(dates)
@@ -54,6 +55,9 @@ def store(db: Database, rows: list[dict], dates: list[int]) -> bool:
                 "SELECT source FROM index_daily WHERE ts_code='000300.SH' AND trade_date=?", (day,)
             ).fetchone()
             if source == "akshare" and cached and cached[0] == "tushare":
+                continue
+            if backup and row is None and cached:
+                # 备用源缺某天时保留该天原有缓存及完成标记。
                 continue
             if row:
                 db.conn.execute(
