@@ -114,11 +114,56 @@ def test_index_backup_does_not_write_intraday_or_future_close(ak):
     ]
 
 
-@pytest.mark.parametrize("amounts", [[90000, float("nan")], [90000, float("inf")]])
-def test_missing_snapshot_amount_does_not_silently_change_denominator(amounts, ak):
+def test_suspended_snapshot_rows_are_excluded_from_turnover_and_n(ak):
     module, _loader = ak
     module.stock_zh_a_spot_em.return_value = pd.DataFrame(
-        {"代码": ["600000", "000001"], "成交额": amounts}
+        {
+            "代码": ["600000", "000001", "300001", "600001", "000002", "300002"],
+            "成交额": [90000, 6000, 4000, float("nan"), 0, -1000],
+        }
+    )
+    warning = Mock()
+    point = provider(warn=warning).turnover(20261113)
+    assert point is not None and point.value == 90
+    assert point.extra == {"n": 3, "k": 1, "source": "akshare"}
+    warning.assert_not_called()
+
+
+def test_all_suspended_snapshot_has_no_indicator_value(ak):
+    module, _loader = ak
+    module.stock_zh_a_spot_em.return_value = pd.DataFrame(
+        {"代码": ["600000", "000001", "300001"], "成交额": [float("nan"), 0, -1000]}
+    )
+    assert provider().turnover(20261113) is None
+
+
+@pytest.mark.parametrize("amount", [float("inf"), float("-inf")])
+def test_infinite_snapshot_amount_rejects_entire_snapshot(amount, ak):
+    module, _loader = ak
+    module.stock_zh_a_spot_em.return_value = pd.DataFrame(
+        {"代码": ["600000", "000001"], "成交额": [90000, amount]}
+    )
+    warning = Mock()
+    assert provider(warn=warning).turnover(20261113) is None
+    assert warning.call_args[0][0].code == "AKSHARE_FAILED"
+
+
+@pytest.mark.parametrize("first_amount", [1000, float("nan"), 0])
+def test_duplicate_snapshot_code_is_rejected_even_when_first_row_is_suspended(first_amount, ak):
+    module, _loader = ak
+    module.stock_zh_a_spot_em.return_value = pd.DataFrame(
+        {"代码": ["600000", "600000"], "成交额": [first_amount, 90000]}
+    )
+    warning = Mock()
+    assert provider(warn=warning).turnover(20261113) is None
+    assert warning.call_args[0][0].code == "AKSHARE_FAILED"
+
+
+@pytest.mark.parametrize("code", ["60000", "6000000", "60000A"])
+def test_invalid_snapshot_code_rejects_entire_snapshot(code, ak):
+    module, _loader = ak
+    module.stock_zh_a_spot_em.return_value = pd.DataFrame(
+        {"代码": ["600000", code], "成交额": [90000, float("nan")]}
     )
     warning = Mock()
     assert provider(warn=warning).turnover(20261113) is None

@@ -137,9 +137,12 @@ class AkshareFallback:
                     continue
                 code += ".SH" if code.startswith("6") else ".SZ"
                 amount = float(row["成交额"]) / 1000  # 东方财富元 → Tushare 千元。
-                if code in seen or not math.isfinite(amount):
-                    raise ValueError("快照重复或成交额缺失")
+                if code in seen or math.isinf(amount):
+                    raise ValueError("快照重复或成交额为无穷大")
                 seen.add(code)
+                # 东方财富停牌显示“-”，AKShare 会转换为 NaN；按非停牌口径跳过。
+                if math.isnan(amount) or amount <= 0:
+                    continue
                 rows.append({"ts_code": code, "amount": amount})
             if day != day_number(self.clock()):
                 return None
