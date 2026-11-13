@@ -12,7 +12,7 @@ import respx
 
 from finance_engine.datasets import index_daily
 from finance_engine.db import Database
-from finance_engine.engine import update
+from finance_engine.engine import Update, update
 from finance_engine.errors import EngineError
 from finance_engine.indicators.base import SeriesPoint
 from finance_engine.protocol import Protocol
@@ -273,6 +273,64 @@ def test_disabled_fallback_preserves_primary_error_and_cache(db, client, ak):
 def test_primary_cancellation_never_enters_backup_channel(db, client, ak):
     client.fetch = Mock(side_effect=EngineError("CANCELLED", "已取消"))
     assert update(db.path, client, Protocol(io.StringIO()), NOW, fallback=provider()) == 130
+    ak[1].assert_not_called()
+
+
+@pytest.mark.parametrize("code", ["TOKEN_INVALID", "PERMISSION_DENIED"])
+@pytest.mark.parametrize("stage", ["calendar", "stock_basic", "daily", "index_daily"])
+def test_configuration_errors_never_import_backup_at_any_entry(db, client, ak, code, stage):
+    from .test_engine_protocol import snapshot
+
+    before = snapshot(db)
+    error = EngineError(code, "配置错误")
+
+    def fetch(api, *_args, **_kwargs):
+        if stage == "stock_basic" and api == "trade_cal":
+            return [{"cal_date": 20261113, "is_open": 1}]
+        raise error
+
+    client.fetch = Mock(side_effect=fetch)
+    output = io.StringIO()
+    source = provider()
+    if stage in ("calendar", "stock_basic"):
+        assert update(db.path, client, Protocol(output), NOW, fallback=source) == 3
+        assert f'"code": "{code}"' in output.getvalue()
+        if stage == "calendar":
+            assert snapshot(db) == before
+    else:
+        with pytest.raises(EngineError) as caught:
+            if stage == "index_daily":
+                index_daily.refresh(db, client, [20261113], 20261113, fallback=source)
+            else:
+                Update(db, client, Protocol(output), NOW, source).stocks("recent", [20261113])
+        assert caught.value.code == code
+    ak[1].assert_not_called()
+
+
+@pytest.mark.parametrize("code", ["RATE_LIMITED", "UPSTREAM_SCHEMA"])
+def test_rate_and_upstream_failures_can_use_whitelisted_backup(db, client, ak, code):
+    client.fetch = Mock(side_effect=EngineError(code, "主源暂不可用"))
+    output = io.StringIO()
+    assert update(db.path, client, Protocol(output), NOW, fallback=provider()) == 0
+    assert f'"code": "{code}"' in output.getvalue()
+    assert '"status": "partial"' in output.getvalue()
+    assert db.conn.execute("SELECT value FROM indicator_values").fetchone()[0] == 90
+
+
+@pytest.mark.parametrize("code", ["TOKEN_INVALID", "PERMISSION_DENIED"])
+@pytest.mark.parametrize("api", ["index_dailybasic", "index_daily"])
+def test_index_stage_propagates_configuration_error_without_downgrading(db, client, ak, code, api):
+    def fetch(name, *_args, **_kwargs):
+        if name == api:
+            raise EngineError(code, "指数接口配置错误")
+        return []
+
+    client.fetch = Mock(side_effect=fetch)
+    job = Update(db, client, Protocol(io.StringIO()), NOW, provider())
+    job.days = [20261113]
+    with pytest.raises(EngineError) as caught:
+        job.indices()
+    assert caught.value.code == code
     ak[1].assert_not_called()
 
 

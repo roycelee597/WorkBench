@@ -14,6 +14,11 @@ from ..indicators.top5_turnover import top5_turnover
 from ..planner import SHANGHAI, VALUATION_START, day_number
 
 
+def allows_fallback(error: EngineError) -> bool:
+    # 凭据、积分及本地错误必须原样报告，不能用备用结果掩盖配置问题。
+    return error.code in {"NETWORK", "RATE_LIMITED", "UPSTREAM_SCHEMA"}
+
+
 def market_day(value: object) -> int:
     parsed = date.fromisoformat(str(value)[:10])
     return parsed.year * 10000 + parsed.month * 100 + parsed.day

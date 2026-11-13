@@ -48,7 +48,7 @@ pnpm finance:engine
 
 规格仅允许以下同口径数据作为备用：交易日历、沪深300 收盘、目标日为今天的全市场成交额快照（过滤北交所，仅用于前 5% 指标）。创业板指和上证指数估值、沪深300估值及历史个股日线均不使用 AKShare 替代，避免把不同口径混入历史序列。
 
-备用源只在主源失败且开关开启时懒加载。未安装组件时静默跳过，不另报“缺少 AKShare”；Tushare 本身的失败仍正常显示。设置里的“测试连接”始终只验证 Tushare，不会用备用源冒充连接成功。取消更新不会触发备用取数。
+备用源只在主源发生网络、限流或接口／数据源错误（`NETWORK`、`RATE_LIMITED`、`UPSTREAM_SCHEMA`）且开关开启时懒加载。未安装组件时静默跳过，不另报“缺少 AKShare”；Tushare 本身的失败仍正常显示。token 无效、积分不足（`TOKEN_INVALID`、`PERMISSION_DENIED`）保留配置错误并引导设置，不触发备用；取消和本地错误也不触发。设置里的“测试连接”始终只验证 Tushare，不会用备用源冒充连接成功。
 
 - 交易日历从 2005 年开始，只写新浪实际返回的开市日；不会把接口没有返回的日期猜成休市，也不删除已有交易所日历。来源保存在现有 `dataset_status.source`，不修改缓存表结构。
 - 沪深300 收盘使用 `stock_zh_index_daily("sh000300")`，数据写入 `index_daily.source='akshare'`。历史收盘可以备用，当天收盘仍受北京时间 19:00 就绪规则限制。已有的有效 Tushare 收盘优先保留；备用响应缺某天时保留那天已有的缓存和完成标记，主源恢复后可以覆盖备用值。
@@ -96,8 +96,8 @@ Windows 实测使用 `com.royce.workbench.f5-native-check` 和独立目录 `engi
 - 默认开启时原生入口收到 `true`；界面关闭后收到 `false`，隔离业务库中 `finance.akshare_fallback` 为 JSON `false`。失败状态下缓存仍可查看，来源说明仍保留。
 - 停止闲置隔离进程后重新启动，设置仍未勾选；启动自动更新再次收到 `false`。[重启后设置截图](screenshots/finance-akshare-settings.jpg)。重新开启后收到 `true`，离线夹具返回的 `partial` 正常显示为“部分数据待补齐”。正式版进程保持运行，未对其数据库、阈值或凭据进行写入。验收后仅停止闲置隔离实例、清理本次虚构凭据，保留隔离记录。
 
-本地结果：`pnpm lint`、`pnpm typecheck`、`pnpm test`（193 项）、`prettier . --check`、`ruff check`、`ruff format --check`、`pytest`（86 项，真实取数测试默认排除）均通过。Python 默认环境和安装 AKShare extra 的独立环境分别运行离线测试。最终默认 `pnpm finance:engine` 成功，版本事件 `with_akshare=false`，归档中没有 AKShare；最终 sidecar 为 37158646 字节（实现功能后略大于前述同条件体积对比时的版本）。
+本地结果：`pnpm lint`、`pnpm typecheck`、`pnpm test`（193 项）、`prettier . --check`、`ruff check`、`ruff format --check`、`pytest`（100 项，真实取数测试默认排除）均通过。Python 默认环境和安装 AKShare extra 的独立环境分别运行离线测试。最终默认 `pnpm finance:engine` 成功，版本事件 `with_akshare=false`，归档中没有 AKShare。[PR #25 CI 检查记录](https://github.com/roycelee597/WorkBench/pull/25/checks)。
 
-## 提交复审前待确认
+## 错误触发范围确认（2026-11-13）
 
-已向 Royce 询问：`TOKEN_INVALID`、`PERMISSION_DENIED` 是否也触发三个白名单备用入口。F5 文本只写“Tushare 失败”，§11 同时要求凭据／积分错误清楚显示。当前草稿按一般失败处理，并保留主源诊断；建议配置错误直接报告并引导设置，仅对网络、限流和上游字段故障启用备用。收到答复后补充相应回归，再将草稿提交复审；“测试连接”在两种方案中均只验证 Tushare。
+Royce 已选择“保留配置错误，不触发备用”。所有备用入口使用同一错误白名单；日历、证券目录、个股日线和指数收盘四个入口分别回归两类配置错误，确认不会导入或调用 AKShare，原错误仍报告。指数估值和收盘阶段额外回归：两类配置错误必须上抛，不能降级为“部分完成”。另有集成测试确认限流和上游错误仍可发布白名单备用结果。

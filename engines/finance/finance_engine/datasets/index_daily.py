@@ -2,7 +2,7 @@
 
 from ..db import Database
 from ..errors import EngineError
-from ..sources.akshare_fallback import AkshareFallback
+from ..sources.akshare_fallback import AkshareFallback, allows_fallback
 from ..sources.tushare import TushareClient
 
 FIELDS = ["ts_code", "trade_date", "close"]
@@ -27,7 +27,7 @@ def refresh(
         )
         rows = [{**row, "source": "tushare"} for row in rows]
     except EngineError as error:
-        if error.code == "CANCELLED" or fallback is None:
+        if not allows_fallback(error) or fallback is None:
             raise
         rows = fallback.index(dates)
         if rows is None:

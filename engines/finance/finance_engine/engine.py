@@ -16,7 +16,7 @@ from .indicators.base import ComputeContext, SeriesPoint
 from .indicators.index_valuation import INDICES
 from .planner import SHANGHAI, STOCK_START, VALUATION_START, day_number, plan_stock, ready_days
 from .protocol import Protocol
-from .sources.akshare_fallback import AkshareFallback
+from .sources.akshare_fallback import AkshareFallback, allows_fallback
 from .sources.tushare import TushareClient
 
 
@@ -118,7 +118,7 @@ class Update:
                         dataset="index_valuation." + code,
                     )
             except EngineError as error:
-                if error.code in ("TOKEN_INVALID", "CANCELLED"):
+                if error.code in ("TOKEN_INVALID", "PERMISSION_DENIED", "CANCELLED"):
                     raise
                 self.warn(error, dataset="index_valuation." + code)
         overlay_days = [day for day in available if day >= STOCK_START]
@@ -133,7 +133,7 @@ class Update:
             ):
                 self.warn(EngineError("DATA_NOT_READY", "沪深300 收盘尚未发布", retryable=True))
         except EngineError as error:
-            if error.code in ("TOKEN_INVALID", "CANCELLED"):
+            if error.code in ("TOKEN_INVALID", "PERMISSION_DENIED", "CANCELLED"):
                 raise
             self.warn(error, dataset="index_daily")
         for indicator in self.index_indicators:
@@ -166,7 +166,7 @@ class Update:
                         trade_date=str(day),
                     )
             except EngineError as error:
-                if error.code != "CANCELLED" and self.fallback and self.fallback.available():
+                if allows_fallback(error) and self.fallback and self.fallback.available():
                     # 主源不可用时不逐日重试整段历史；仅处理允许的备用数据。
                     raise
                 if error.code in (
@@ -209,7 +209,7 @@ class Update:
             self.metadata()
             self.primary_run()
         except EngineError as error:
-            if error.code == "CANCELLED" or not self.fallback or not self.fallback.available():
+            if not allows_fallback(error) or not self.fallback or not self.fallback.available():
                 raise
             self.warn(error)
             self.metadata()
@@ -329,7 +329,7 @@ def update(
             try:
                 calendar_rows = trade_cal.fetch(client, now.astimezone(SHANGHAI).year)
             except EngineError as error:
-                if error.code == "CANCELLED" or fallback is None:
+                if not allows_fallback(error) or fallback is None:
                     raise
                 calendar_rows = fallback.calendar(now.astimezone(SHANGHAI).year)
                 if calendar_rows is None:
