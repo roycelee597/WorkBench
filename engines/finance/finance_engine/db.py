@@ -82,6 +82,7 @@ class Database:
         rows: int = 0,
         error: str | None = None,
         *,
+        source: str = "tushare",
         attempts: int | None = None,
         fetched_at: int | None = None,
     ) -> None:
@@ -92,7 +93,7 @@ class Database:
                ON CONFLICT(dataset,trade_date) DO UPDATE SET status=excluded.status,
                rows=excluded.rows, source=excluded.source, attempts=COALESCE(?,attempts+1),
                last_error=excluded.last_error, fetched_at=excluded.fetched_at""",
-            (dataset, day, status, rows, "tushare", attempts, error, fetched_at, attempts),
+            (dataset, day, status, rows, source, attempts, error, fetched_at, attempts),
         )
 
     def points(self, points: list) -> dict[str, list[str]]:

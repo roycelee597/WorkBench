@@ -16,6 +16,7 @@ from .indicators.base import ComputeContext, SeriesPoint
 from .indicators.index_valuation import INDICES
 from .planner import SHANGHAI, STOCK_START, VALUATION_START, day_number, plan_stock, ready_days
 from .protocol import Protocol
+from .sources.akshare_fallback import AkshareFallback
 from .sources.tushare import TushareClient
 
 
@@ -27,10 +28,20 @@ def verify(client: TushareClient) -> None:
 
 
 class Update:
-    def __init__(self, db: Database, client: TushareClient, protocol: Protocol, now: datetime):
+    def __init__(
+        self,
+        db: Database,
+        client: TushareClient,
+        protocol: Protocol,
+        now: datetime,
+        fallback: AkshareFallback | None = None,
+    ):
         self.db, self.client, self.protocol, self.now = db, client, protocol, now
         self.days: list[int] = []
         self.partial = False
+        self.fallback = fallback
+        if fallback is not None:
+            fallback.warn = self.warn
         self.fresh: dict[str, set[str]] = {}
         self.stock_indicators = [
             indicator for indicator in INDICATORS if "stock_daily" in indicator.depends_on
@@ -117,7 +128,9 @@ class Update:
             if day in overlay_days[-3:] or states.get(("index_daily.000300.SH", day)) != "ok"
         ]
         try:
-            if not index_daily.refresh(self.db, self.client, pending, today):
+            if not index_daily.refresh(
+                self.db, self.client, pending, today, fallback=self.fallback
+            ):
                 self.warn(EngineError("DATA_NOT_READY", "沪深300 收盘尚未发布", retryable=True))
         except EngineError as error:
             if error.code in ("TOKEN_INVALID", "CANCELLED"):
@@ -153,6 +166,9 @@ class Update:
                         trade_date=str(day),
                     )
             except EngineError as error:
+                if error.code != "CANCELLED" and self.fallback and self.fallback.available():
+                    # 主源不可用时不逐日重试整段历史；仅处理允许的备用数据。
+                    raise
                 if error.code in (
                     "TOKEN_INVALID",
                     "PERMISSION_DENIED",
@@ -175,6 +191,7 @@ class Update:
             )
 
     def run(self, calendar_rows: list[dict]) -> None:
+        self.partial |= any(row.get("source") == "akshare" for row in calendar_rows)
         trade_cal.store(self.db, calendar_rows)
         self.days = [
             int(row[0])
@@ -187,7 +204,18 @@ class Update:
         if not self.days:
             raise EngineError("UPSTREAM_SCHEMA", "交易日历没有可用开市日")
         self.stage("stock_basic")
-        stock_basic.refresh(self.db, self.client)
+        try:
+            stock_basic.refresh(self.db, self.client)
+            self.metadata()
+            self.primary_run()
+        except EngineError as error:
+            if error.code == "CANCELLED" or not self.fallback or not self.fallback.available():
+                raise
+            self.warn(error)
+            self.metadata()
+            self.fallback_only()
+
+    def metadata(self) -> None:
         with self.db.conn:
             for indicator in INDICATORS:
                 self.db.conn.execute(
@@ -197,6 +225,8 @@ class Update:
             self.db.conn.execute(
                 "UPDATE meta SET value=? WHERE key='engine_version'", (__version__,)
             )
+
+    def primary_run(self) -> None:
         self.indices()
         available = ready_days(self.days, self.now, 16, STOCK_START)
         exhausted_daily = stock_daily.exhausted_days(self.db)
@@ -235,9 +265,54 @@ class Update:
             }
             self.publish(indicator, sorted(affected | (set(available) - written)))
 
+    def fallback_only(self) -> None:
+        """主源失败后只补白名单数据，不向个股日线或估值表写入备用内容。"""
+        assert self.fallback is not None
+        self.stage("index")
+        index_days = ready_days(self.days, self.now, 19, STOCK_START)
+        states = self.states()
+        pending = [
+            day
+            for day in index_days
+            if day in index_days[-3:] or states.get(("index_daily.000300.SH", day)) != "ok"
+        ]
+        rows = self.fallback.index(pending)
+        if rows is not None:
+            index_daily.store(self.db, rows, pending)
+        stock_days = ready_days(self.days, self.now, 16, STOCK_START)
+        with self.db.conn:
+            for datasets, days in (
+                (["stock_daily", "adj_factor"], stock_days),
+                (["index_valuation." + code for code in INDICES], index_days),
+            ):
+                if days:
+                    for dataset in datasets:
+                        if (dataset, days[-1]) not in states:
+                            self.db.mark(dataset, days[-1], "pending", error="主数据源暂不可用")
+        self.stage("recent")
+        if stock_days:
+            day = stock_days[-1]
+            cached = self.db.conn.execute(
+                "SELECT value,json_extract(extra_json,'$.source') FROM indicator_values "
+                "WHERE series_key='top5_turnover_share' AND trade_date=?",
+                (day,),
+            ).fetchone()
+            if cached is None or cached[0] is None or cached[1] == "akshare":
+                point = self.fallback.turnover(day)
+                if point is not None:
+                    for key, days in self.db.points([point]).items():
+                        self.fresh.setdefault(key, set()).update(days)
+                    self.protocol.emit("indicator_updated", indicator=point.key, through=str(day))
+
 
 def update(
-    path: Path, client: TushareClient, protocol: Protocol, now: datetime, mode: str = "auto"
+    path: Path,
+    client: TushareClient,
+    protocol: Protocol,
+    now: datetime,
+    mode: str = "auto",
+    *,
+    fallback: AkshareFallback | None = None,
 ) -> int:
     with database_lock(path):
         db = Database(path)
@@ -251,7 +326,15 @@ def update(
                 )
             protocol.emit("stage", stage="calendar")
             # 首个请求失败时，除了 run_log 不改任何现有行情、元数据或完成标记。
-            calendar_rows = trade_cal.fetch(client, now.astimezone(SHANGHAI).year)
+            try:
+                calendar_rows = trade_cal.fetch(client, now.astimezone(SHANGHAI).year)
+            except EngineError as error:
+                if error.code == "CANCELLED" or fallback is None:
+                    raise
+                calendar_rows = fallback.calendar(now.astimezone(SHANGHAI).year)
+                if calendar_rows is None:
+                    raise
+                protocol.error(error, warning=True, dataset="trade_cal")
             if not calendar_rows:
                 raise EngineError("UPSTREAM_SCHEMA", "交易日历为空，拒绝开始更新")
             if mode == "full-rebuild":
@@ -266,7 +349,7 @@ def update(
                 finally:
                     # 删除失败时重新连接已有库，仍能记录失败并返回受控错误。
                     db = Database(path)
-            job = Update(db, client, protocol, now)
+            job = Update(db, client, protocol, now, fallback)
             job.run(calendar_rows)
             status = "partial" if job.partial else "ok"
         except EngineError as error:
