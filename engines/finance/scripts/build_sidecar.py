@@ -20,7 +20,11 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--dist-dir", type=Path, default=engine.parents[1] / "apps/desktop/src-tauri/binaries"
     )
     parser.add_argument("--work-dir", type=Path, default=engine / ".local/sidecar-build")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # PyInstaller 的工作目录是引擎目录，自定义相对路径须先按调用位置固定。
+    args.dist_dir = args.dist_dir.resolve()
+    args.work_dir = args.work_dir.resolve()
+    return args
 
 
 def build_command(engine: Path, args: argparse.Namespace) -> list[str]:

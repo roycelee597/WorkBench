@@ -96,7 +96,7 @@ Windows 实测使用 `com.royce.workbench.f5-native-check` 和独立目录 `engi
 - 默认开启时原生入口收到 `true`；界面关闭后收到 `false`，隔离业务库中 `finance.akshare_fallback` 为 JSON `false`。失败状态下缓存仍可查看，来源说明仍保留。
 - 停止闲置隔离进程后重新启动，设置仍未勾选；启动自动更新再次收到 `false`。[重启后设置截图](screenshots/finance-akshare-settings.jpg)。重新开启后收到 `true`，离线夹具返回的 `partial` 正常显示为“部分数据待补齐”。正式版进程保持运行，未对其数据库、阈值或凭据进行写入。验收后仅停止闲置隔离实例、清理本次虚构凭据，保留隔离记录。
 
-本地结果：`pnpm lint`、`pnpm typecheck`、`pnpm test`（193 项）、`prettier . --check`、`ruff check`、`ruff format --check`、`pytest`（100 项，真实取数测试默认排除）均通过。Python 默认环境和安装 AKShare extra 的独立环境分别运行离线测试。最终默认 `pnpm finance:engine` 成功，版本事件 `with_akshare=false`，归档中没有 AKShare。[PR #25 CI 检查记录](https://github.com/roycelee597/WorkBench/pull/25/checks)。
+本地结果：`pnpm lint`、`pnpm typecheck`、`pnpm test`（193 项）、`prettier . --check`、`ruff check`、`ruff format --check`、`pytest`（101 项，真实取数测试默认排除）均通过。Python 默认环境和安装 AKShare extra 的独立环境分别运行离线测试。最终默认 `pnpm finance:engine` 成功，版本事件 `with_akshare=false`，归档中没有 AKShare；当前代码另行显式构建包含版也成功，`with_akshare=true`。自定义输出目录的绝对／相对路径均有构建回归，避免 PyInstaller 切换工作目录后输出到错误位置。[PR #25 CI 检查记录](https://github.com/roycelee597/WorkBench/pull/25/checks)。
 
 ## 错误触发范围确认（2026-11-13）
 

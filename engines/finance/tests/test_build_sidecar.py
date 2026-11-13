@@ -53,7 +53,11 @@ def test_missing_optional_dependency_refuses_opt_in_before_build(monkeypatch):
         builder.main(["--with-akshare"])
 
 
-def test_build_smoke_only_runs_version_and_reports_measurement(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("relative", [False, True])
+def test_build_smoke_only_runs_version_and_reports_measurement(
+    monkeypatch, tmp_path, capsys, relative
+):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(builder.platform, "system", lambda: "Windows")
     monkeypatch.setattr(builder.platform, "machine", lambda: "AMD64")
     calls = []
@@ -70,7 +74,14 @@ def test_build_smoke_only_runs_version_and_reports_measurement(monkeypatch, tmp_
 
     monkeypatch.setattr(builder.subprocess, "run", package)
     monkeypatch.setattr(builder.subprocess, "check_output", version)
-    builder.main(["--dist-dir", str(tmp_path), "--work-dir", str(tmp_path / "work")])
+    builder.main(
+        [
+            "--dist-dir",
+            "." if relative else str(tmp_path),
+            "--work-dir",
+            "work" if relative else str(tmp_path / "work"),
+        ]
+    )
     result = json.loads(capsys.readouterr().out)
     assert result["bytes"] == 9
     assert result["with_akshare"] is False
