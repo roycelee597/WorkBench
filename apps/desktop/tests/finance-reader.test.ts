@@ -96,11 +96,11 @@ it("查询范围只有缺失交易日时仍返回空点", async () => {
 
 it("沪深300按自身覆盖区间补开市日，忽略休市日和其他指数", async () => {
   setCache(`CREATE TABLE index_daily (
-      ts_code TEXT, trade_date INTEGER, close REAL, PRIMARY KEY (ts_code, trade_date)
+      ts_code TEXT, trade_date INTEGER, close REAL, source TEXT DEFAULT 'tushare', PRIMARY KEY (ts_code, trade_date)
     ) WITHOUT ROWID;
     INSERT INTO trade_calendar VALUES (20261105,1), (20261106,1), (20261107,0),
       (20261108,0), (20261109,1), (20261110,1), (20261111,1);
-    INSERT INTO index_daily VALUES
+    INSERT INTO index_daily (ts_code,trade_date,close) VALUES
       ('000300.SH',20261106,4500), ('000300.SH',20261110,4550),
       ('000001.SH',20261105,3800), ('000001.SH',20261109,3900), ('000001.SH',20261111,4000);`);
 
@@ -119,4 +119,18 @@ it("使用原生固定路径连接，不向 SQL 插件提交文件路径", async
   expect(database).toHaveBeenCalledWith(key);
   expect(invoke).toHaveBeenNthCalledWith(1, "finance_reader_open");
   expect(invoke).toHaveBeenNthCalledWith(2, "finance_reader_close");
+});
+
+it("沪深300备用来源随有效点读取，空开市日不伪造来源", async () => {
+  setCache(`CREATE TABLE index_daily (
+      ts_code TEXT, trade_date INTEGER, close REAL, source TEXT,
+      PRIMARY KEY (ts_code,trade_date));
+    INSERT INTO trade_calendar VALUES (20261111,1),(20261112,1),(20261113,1);
+    INSERT INTO index_daily VALUES
+      ('000300.SH',20261111,4500,'tushare'),('000300.SH',20261113,4520,'akshare');`);
+  expect(await new FinanceReader().getOverlay()).toEqual([
+    { trade_date: 20261111, value: 4500, extra_json: null },
+    { trade_date: 20261112, value: null, extra_json: null },
+    { trade_date: 20261113, value: 4520, extra_json: '{"source":"akshare"}' },
+  ]);
 });

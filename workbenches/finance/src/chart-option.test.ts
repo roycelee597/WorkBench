@@ -166,3 +166,39 @@ it("原始估值没有百分比轴，全部从 2005 年开始", () => {
   expect(option).toMatchSnapshot();
   expect(rangeStart("1y", 20050101, 20240229)).toBe(dayTime(20230228));
 });
+
+it.each([false, true])("备用点的日线／月均和叠加线保留来源标注（月均=%s）", (monthly) => {
+  const daily = [
+    { trade_date: 20261112, value: 44, extra_json: null },
+    { trade_date: 20261113, value: 46, extra_json: '{"source":"akshare"}' },
+  ];
+  const overlay = [{ trade_date: 20261113, value: 4520, extra_json: '{"source":"akshare"}' }];
+  const option = buildChartOption(monthly ? monthlyAverage(daily, 20261113) : daily, overlay, [], {
+    name: "前 5%",
+    percent: true,
+    decimals: 1,
+    dark: true,
+    range: "all",
+    first: 20261112,
+    last: 20261113,
+  });
+  const lines = option.series as {
+    data: unknown[];
+    tooltip: { valueFormatter: (value: unknown, index: number) => string };
+  }[];
+  const index = monthly ? 0 : 1;
+  expect(lines[0]!.data[index]).toMatchObject({
+    symbol: "diamond",
+    name: monthly ? "月均含 AKShare 备用源" : "AKShare 备用源",
+  });
+  expect(lines[0]!.tooltip.valueFormatter(46, index)).toContain("AKShare 备用源");
+  expect(lines[1]!.data[0]).toMatchObject({ symbol: "diamond", name: "AKShare 备用源" });
+  expect(lines[1]!.tooltip.valueFormatter(4520, 0)).toContain("4520.00 点（AKShare 备用源）");
+  const chart = init(null, undefined, { renderer: "svg", ssr: true, width: 500, height: 350 });
+  try {
+    chart.setOption(option);
+    expect(chart.renderToSVGString().match(/fill="#f0c477"/g)?.length).toBeGreaterThanOrEqual(2);
+  } finally {
+    chart.dispose();
+  }
+});

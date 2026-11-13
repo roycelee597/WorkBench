@@ -20,6 +20,7 @@ import {
 type TokenStatus = { configured: boolean; tail: string | null };
 const source = new LocalSidecarSource();
 const confirmedKey = "finance.initial_backfill_confirmed";
+const fallbackKey = "finance.akshare_fallback";
 let preferenceWrites = Promise.resolve();
 
 async function financeData() {
@@ -52,6 +53,7 @@ async function requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
     const token = useFinanceState.getState().token ?? (await refreshToken());
     if (!token.configured) return;
     const settings = await financeSettings();
+    await preferenceWrites;
     const confirmed = (await settings.getValue(confirmedKey)) === true;
     if (mode === "auto" && !confirmed) {
       useFinanceState.setState({ confirmBackfill: true });
@@ -60,13 +62,24 @@ async function requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
     if (mode === "full-rebuild" && !confirmed) await settings.setValue(confirmedKey, true);
     // 先给现有缓存建立静默基线，避免升级后的首次增量吞掉真正的新越线。
     await alerts.evaluate(mode).catch(reportError);
-    await source.requestUpdate(mode);
+    await source.requestUpdate(mode, (await settings.getValue(fallbackKey)) !== false);
   } catch (error) {
     reportError(error);
   }
 }
 
 export const financeApi = {
+  async loadFallback(): Promise<boolean> {
+    await preferenceWrites;
+    return (await (await financeSettings()).getValue(fallbackKey)) !== false;
+  },
+  saveFallback(enabled: boolean): Promise<void> {
+    const saved = preferenceWrites.then(async () =>
+      (await financeSettings()).setValue(fallbackKey, enabled),
+    );
+    preferenceWrites = saved.catch(() => undefined);
+    return saved;
+  },
   listIndicators: () => source.listIndicators(),
   getRecent: (keys: string[]) => source.getRecent(keys),
   getSeries: (keys: string[]) => source.getSeries(keys),

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button, Dialog } from "@workbench/ui";
 import {
   displayFinanceError,
@@ -15,11 +15,27 @@ export function FinanceSettings() {
   const [failure, setFailure] = useState("");
   const [working, setWorking] = useState(false);
   const [rebuild, setRebuild] = useState(false);
+  const [fallback, setFallback] = useState<boolean | null>(null);
   const token = useFinanceState((state) => state.token);
   const runtimeError = useFinanceState((state) => state.error);
   const { status, error } = useFinanceCache();
   const update = useFinanceUpdate();
   const busy = working || update.status === "running" || update.status === "already_running";
+
+  useEffect(() => {
+    let live = true;
+    void financeApi.loadFallback().then(
+      (enabled) => {
+        if (live) setFallback(enabled);
+      },
+      (error: unknown) => {
+        if (live) setFailure(displayFinanceError(error));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function act(action: () => Promise<void>, success = "") {
     setWorking(true);
@@ -97,6 +113,26 @@ export function FinanceSettings() {
           </Button>
         </div>
       </form>
+      <div className="space-y-2 border-t border-border pt-3">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={fallback ?? true}
+            disabled={busy || fallback === null}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              void act(async () => {
+                await financeApi.saveFallback(enabled);
+                setFallback(enabled);
+              });
+            }}
+          />
+          Tushare 失败时使用 AKShare 备用源
+        </label>
+        <p className="text-muted-foreground">
+          仅补交易日历、沪深300收盘和当天成交额。默认安装包不含该组件，未安装时会自动跳过。
+        </p>
+      </div>
       <div className="space-y-2 border-t border-border pt-3">
         <h3 className="font-medium">数据状态</h3>
         <p>

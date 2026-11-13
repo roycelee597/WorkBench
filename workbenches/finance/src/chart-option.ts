@@ -10,6 +10,7 @@ import type { FinancePoint } from "../../../apps/desktop/src/core/finance/financ
 import type { MonthlyPoint } from "./monthly";
 import { dayTime, displayValue, rangeStart } from "./series-view";
 import type { FinanceRange } from "./preferences";
+import { isAkshare, sourceLabel } from "./data-source";
 
 export type FinanceChartOption = ComposeOption<
   | LineSeriesOption
@@ -48,22 +49,34 @@ export function buildChartOption(
   const primary = view.dark ? "#8bd5b2" : "#27785b";
   const muted = view.dark ? "#a1b1aa" : "#75867f";
   const warning = view.dark ? "#ffad9f" : "#a84236";
+  const backup = view.dark ? "#f0c477" : "#8a5d13";
   const startValue = rangeStart(view.range, view.first, view.last);
   const endValue = dayTime(view.last);
   const share = view.percent && !view.percentile;
   const thresholdLevels = thresholds.map(({ level }) => level);
   const filterMode = share ? "filter" : "none";
-  const pointData: LineSeriesOption["data"] = series.map((point) => {
+  const plotPoint = (
+    point: FinancePoint | MonthlyPoint,
+  ): NonNullable<LineSeriesOption["data"]>[number] => {
     const value = [dayTime(point.trade_date), point.value];
-    return "monthToDate" in point && point.monthToDate && point.value != null
-      ? {
-          value,
-          symbol: "circle",
-          symbolSize: 7,
-          label: { show: true, formatter: "本月至今", position: "top", color: ink },
-        }
-      : value;
-  });
+    const month = "monthToDate" in point && point.monthToDate && point.value != null;
+    const source = sourceLabel(point);
+    if (!month && !source) return value;
+    return {
+      value,
+      ...(month
+        ? {
+            symbol: "circle",
+            symbolSize: 7,
+            label: { show: true, formatter: "本月至今", position: "top" as const, color: ink },
+          }
+        : {}),
+      ...(source
+        ? { name: source, symbol: "diamond", symbolSize: 8, itemStyle: { color: backup } }
+        : {}),
+    };
+  };
+  const pointData = series.map(plotPoint);
   return {
     useUTC: true,
     animation: false,
@@ -140,7 +153,10 @@ export function buildChartOption(
         data: pointData,
         lineStyle: { color: primary, width: 2 },
         itemStyle: { color: primary },
-        tooltip: { valueFormatter: (value) => formatTip(value, view.percent, view.decimals) },
+        tooltip: {
+          valueFormatter: (value, index) =>
+            `${formatTip(value, view.percent, view.decimals)}${sourceLabel(series[index]) ? `（${sourceLabel(series[index])}）` : ""}`,
+        },
         markLine: {
           silent: true,
           symbol: "none",
@@ -158,12 +174,16 @@ export function buildChartOption(
               name: overlayName,
               type: "line" as const,
               yAxisIndex: 1,
-              showSymbol: false,
+              showSymbol: overlay.some(isAkshare),
+              ...(overlay.some(isAkshare) ? { symbol: "none" } : {}),
               connectNulls: false,
-              data: overlay.map((point) => [dayTime(point.trade_date), point.value]),
+              data: overlay.map(plotPoint),
               lineStyle: { color: muted, width: 1 },
               itemStyle: { color: muted },
-              tooltip: { valueFormatter: (value: unknown) => `${formatTip(value, false, 2)} 点` },
+              tooltip: {
+                valueFormatter: (value: unknown, index: number) =>
+                  `${formatTip(value, false, 2)} 点${sourceLabel(overlay[index]) ? `（${sourceLabel(overlay[index])}）` : ""}`,
+              },
             },
           ]
         : []),

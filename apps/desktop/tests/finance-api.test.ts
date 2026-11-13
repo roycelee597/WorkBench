@@ -111,6 +111,28 @@ describe("金融入口的持久游标与更新容错", () => {
     await vi.waitFor(async () => expect(await cursor()).toBe(20261102));
   }
 
+  it("备用源默认开启，保存后实际传给引擎，并跨入口重载保持", async () => {
+    expect(await module.financeApi.loadFallback()).toBe(true);
+    await module.financeApi.saveFallback(false);
+    expect(await f.data.settings.getValue("finance.akshare_fallback")).toBe(false);
+    await module.financeApi.requestUpdate();
+    expect(bridge.invoke).toHaveBeenCalledWith("finance_update_start", {
+      mode: "auto",
+      akshareFallback: false,
+    });
+    send({ type: "engine_exit", code: 0, cancelled: false });
+    await module.financeApi.loadThresholds();
+    vi.resetModules();
+    const restarted = await import("../../../workbenches/finance/src/api");
+    expect(await restarted.financeApi.loadFallback()).toBe(false);
+    await restarted.financeApi.saveFallback(true);
+    await restarted.financeApi.requestUpdate();
+    expect(bridge.invoke).toHaveBeenLastCalledWith("finance_update_start", {
+      mode: "auto",
+      akshareFallback: true,
+    });
+  });
+
   it.each([
     { name: "失败", status: "failed", code: 4, cancelled: false },
     { name: "取消", status: undefined, code: 130, cancelled: true },

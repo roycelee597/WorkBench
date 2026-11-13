@@ -1,4 +1,5 @@
 import type { FinancePoint } from "../../../apps/desktop/src/core/finance/finance-reader";
+import { isAkshare } from "./data-source";
 
 export type MonthlyPoint = FinancePoint & { month: number; monthToDate: boolean };
 
@@ -8,14 +9,15 @@ export function beijingDay(now: Date): number {
 }
 
 export function monthlyAverage(points: FinancePoint[], today: number): MonthlyPoint[] {
-  const months = new Map<number, { last: number; sum: number; count: number }>();
+  const months = new Map<number, { last: number; sum: number; count: number; akshare: boolean }>();
   for (const point of points) {
     const month = Math.floor(point.trade_date / 100);
-    const entry = months.get(month) ?? { last: point.trade_date, sum: 0, count: 0 };
+    const entry = months.get(month) ?? { last: point.trade_date, sum: 0, count: 0, akshare: false };
     entry.last = Math.max(entry.last, point.trade_date);
     if (point.value != null) {
       entry.sum += point.value;
       entry.count += 1;
+      entry.akshare ||= isAkshare(point);
     }
     months.set(month, entry);
   }
@@ -25,7 +27,7 @@ export function monthlyAverage(points: FinancePoint[], today: number): MonthlyPo
       month,
       trade_date: entry.last,
       value: entry.count ? entry.sum / entry.count : null,
-      extra_json: null,
+      extra_json: entry.akshare ? JSON.stringify({ source: "akshare" }) : null,
       monthToDate: month === Math.floor(today / 100),
     }));
 }

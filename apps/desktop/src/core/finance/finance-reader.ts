@@ -196,7 +196,7 @@ export class FinanceReader {
     return this.read<FinancePoint[]>([], (db) =>
       db.select<FinancePoint[]>(
         `WITH quotes AS (
-          SELECT trade_date,close FROM index_daily WHERE ts_code='000300.SH'
+          SELECT trade_date,close,source FROM index_daily WHERE ts_code='000300.SH'
         ), bounds AS (
           SELECT min(trade_date) AS first_date,max(trade_date) AS last_date FROM quotes
         ), days AS (
@@ -206,7 +206,8 @@ export class FinanceReader {
             ON c.cal_date BETWEEN b.first_date AND b.last_date
           WHERE c.is_open=1
         )
-        SELECT d.trade_date,q.close AS value,NULL AS extra_json
+        SELECT d.trade_date,q.close AS value,
+          CASE WHEN q.source='akshare' THEN json_object('source','akshare') ELSE NULL END AS extra_json
         FROM days AS d LEFT JOIN quotes AS q USING (trade_date)
         ORDER BY d.trade_date`,
       ),
