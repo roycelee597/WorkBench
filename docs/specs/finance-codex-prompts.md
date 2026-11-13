@@ -17,7 +17,7 @@
 
 【我是谁】我叫 Royce，是计算机专业的学生，编程基础比较弱，主要会用的语言是 Python，刚开始学用 GitHub。请全程用中文，每一步都说明你做了什么、为什么这样做、我应该怎么验证。需要我手动操作的地方（比如安装软件、登录、填 token），请停下来，把步骤一条一条写清楚。
 
-【项目】WorkBench：模块化桌面工作台，开源（MIT），仓库 https://github.com/roycelee597/WorkBench，我电脑上的本地路径是 E:\RoyceLee597\project\WorkBench（Windows）。目标：一个主程序 + 多个“工作台”。内置“综合工作台”（备忘录 / 日程 / 提醒），以后通过插件加入更多工作台。数据保存在本地，表结构已经为以后多设备同步预留了字段。
+【项目】WorkBench：模块化桌面工作台，开源（MIT），仓库 https://github.com/roycelee597/WorkBench，开发环境为 Windows，以下命令均在仓库根目录运行。目标：一个主程序 + 多个“工作台”。内置“综合工作台”（备忘录 / 日程 / 提醒），以后通过插件加入更多工作台。数据保存在本地，表结构已经为以后多设备同步预留了字段。
 
 【技术栈（不要更换）】Tauri 2 + React 19 + TypeScript（strict）+ Vite、Tailwind + shadcn/ui、Zustand、SQLite（tauri-plugin-sql）、Vitest、ESLint + Prettier。pnpm monorepo（pnpm 11.25.0，Node 24）：
 - apps/desktop：主程序
