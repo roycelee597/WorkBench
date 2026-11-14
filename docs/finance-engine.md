@@ -4,11 +4,7 @@
 
 ## 环境与安装
 
-本机已确认：uv 0.12.17、Python 3.12.14。Python 位于：
-
-```text
-C:\Users\royce\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe
-```
+本机已确认：uv 0.12.17、Python 3.12.14。Python 由 uv 管理。
 
 无需重复安装 Python。普通 `python` 命令当前指向不可用的 Windows 商店别名，以下命令用 uv 选择 3.12，不依赖该别名。
 

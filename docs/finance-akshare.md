@@ -110,10 +110,9 @@ Royce 已选择“保留配置错误，不触发备用”。所有备用入口�
 
 本地检查：`ruff check`、`ruff format --check`、`pytest`（默认环境及 AKShare extra 隔离环境均 **109 项通过**）、`pnpm lint`、`pnpm typecheck`、`pnpm test`（**193 项通过**）、`prettier . --check` 全部通过。没有启动 App 或 `tauri dev`，没有使用真实 token 或正式版缓存。远端结果见 [PR #25 CI 检查记录](https://github.com/roycelee597/WorkBench/pull/25/checks)。
 
-可在自己的 PowerShell 中照做本次定向回归：
+在仓库根目录打开 PowerShell，运行以下定向回归：
 
 ```powershell
-Set-Location 'E:\RoyceLee597\project\WorkBench'
 uv run --project engines/finance --locked pytest engines/finance/tests/test_akshare_fallback.py -q -k "suspended_snapshot or infinite_snapshot_amount or duplicate_snapshot_code or invalid_snapshot_code"
 ```
 

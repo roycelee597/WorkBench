@@ -142,7 +142,7 @@ F1 实测覆盖 2,818 个有效交易日。P5 为 **0.472441%**，P50 为 **3.61
 
 ## F4 正式版升级后验收（2026-11-12）
 
-本轮正式版为 `E:\WorkBench\workbench.exe`，来源为 main `d74cd32` 的 Windows 安装包。正式版在验收前已经启动（21:19:40），本轮只切换页面观察，不点击更新、重建、阈值编辑／删除、完成或贪睡。首次启动的瞬间未由本轮重新执行；已结合真实库状态和提醒时间线核对静默基线。没有启动 `pnpm tauri dev`，没有使用真实 token 运行回补。
+本轮使用已安装的正式版 WorkBench（`workbench.exe`），来源为 main `d74cd32` 的 Windows 安装包，金融缓存目录为 `%LOCALAPPDATA%\com.royce.workbench\`。正式版在验收前已经启动（21:19:40），本轮只切换页面观察，不点击更新、重建、阈值编辑／删除、完成或贪睡。首次启动的瞬间未由本轮重新执行；已结合真实库状态和提醒时间线核对静默基线。没有启动 `pnpm tauri dev`，没有使用真实 token 运行回补。
 
 | 项                                  | 本轮结果                                 | 证据与实测记录                                                                                                                                                                                                                                                                                                               |
 | ----------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -164,10 +164,10 @@ F1 实测覆盖 2,818 个有效交易日。P5 为 **0.472441%**，P50 为 **3.61
 
 ### 正式版真实库的只读检查
 
-本机已在忽略目录准备 `engines/finance/dist/f4-installed-check/production-readonly-check.py`。在用户自己的 PowerShell 中运行，避免 Codex AppData 兼容重定向：
+本机已在忽略目录准备 `engines/finance/dist/f4-installed-check/production-readonly-check.py`。在仓库根目录打开用户自己的 PowerShell 后运行，避免 Codex AppData 兼容重定向：
 
 ```powershell
-& 'E:/RoyceLee597/project/WorkBench/engines/finance/.venv/Scripts/python.exe' 'E:/RoyceLee597/project/WorkBench/engines/finance/dist/f4-installed-check/production-readonly-check.py'
+& './engines/finance/.venv/Scripts/python.exe' './engines/finance/dist/f4-installed-check/production-readonly-check.py'
 ```
 
 脚本不读取 token；仅以 SQLite `mode=ro` 连接并启用 `PRAGMA query_only=ON`，查询默认阈值、评估游标、金融提醒和行情最新有效值，计算行情文件检查前后的 SHA-256。结果只写到忽略目录中的 `production-readonly.json`，不改正式版数据。旧库若没有金融表会直接报错，不能误记为零条阈值。用户已成功执行并提供结果，代理已读取生成的 JSON 并核对以下事实；原始 JSON 保留在忽略目录，不提交真实数据库或原始个人数据。
