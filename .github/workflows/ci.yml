@@ -24,7 +24,7 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v7
       - name: 安装 Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: 安装 uv
@@ -87,7 +87,7 @@ jobs:
         run: pnpm test
 
       - name: 安装 Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
