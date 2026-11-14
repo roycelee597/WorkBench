@@ -22,6 +22,7 @@ import {
 } from "@workbench/general";
 import { cn, Button, Dialog } from "@workbench/ui";
 import { FinanceBackfillDialog, FinanceSettings, financeApi } from "@workbench/finance";
+import { AiSettings } from "@workbench/ai";
 
 const FinanceWorkbench = lazy(() =>
   import("@workbench/finance/page").then((module) => ({ default: module.FinanceWorkbench })),
@@ -295,7 +296,14 @@ export function AppShell() {
           </div>
         )}
         <div className={financeOpen ? "hidden" : "contents"}>
-          <GeneralWorkbench settingsExtra={<FinanceSettings />} />
+          <GeneralWorkbench
+            settingsExtra={
+              <>
+                <AiSettings />
+                <FinanceSettings />
+              </>
+            }
+          />
         </div>
         {financeOpen && (
           <Suspense

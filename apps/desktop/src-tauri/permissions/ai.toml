@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-ai"
+description = "仅允许主窗口管理 AI 凭据、查询本地用量和调用 DeepSeek。"
+commands.allow = ["ai_key_set", "ai_key_status", "ai_key_clear", "ai_key_test", "ai_chat", "ai_open_platform"]

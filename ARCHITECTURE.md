@@ -115,6 +115,7 @@ flowchart TB
 - 工作台**永远拿不到** Tauri API，也不能直接碰数据库；一切都经过 Bridge，Bridge 每次都检查权限。
 - **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问；Phase 2 只替换该入口为 SDK。内置金融指标工作台在 Phase 2 前采用同样的例外，所有数据调用集中到 `workbenches/finance/src/api.ts`；其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
 - 业务逻辑尽量写在 TypeScript（④），Rust（⑤）只做系统能力。
+- AI 助手以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。Phase 2 前采用内置工作台例外，所有数据调用集中到 `workbenches/ai/src/api.ts`；AI 仅编排并生成待确认提案，不直接写业务库，用户确认后的写入经拥有数据的综合工作台 `workbenches/general/src/api.ts` 完成。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中；用量由 Rust 独立持久化到应用数据目录的 `ai-usage.json`，不写 `workbench.db`。Phase 2 再迁移到 SDK。
 - 金融指标工作台以 `docs/specs/finance-indicators.md` 为具体依据：取数与指标计算由 `engines/finance/` 的独立 Python 引擎完成，作为 Tauri sidecar 分发；Rust 仅管理系统凭据、子进程和事件。App 通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，界面不直接访问 SQL；阈值、提醒和设置仍经 `core/repositories/` 访问 `workbench.db`。Phase 2 再将金融工作台入口迁移到 SDK。
 
 ---

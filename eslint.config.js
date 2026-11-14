@@ -34,6 +34,7 @@ export default defineConfig([
       "apps/desktop/src/**/*.{ts,tsx}",
       "packages/ui/src/**/*.{ts,tsx}",
       "workbenches/general/src/**/*.{ts,tsx}",
+      "workbenches/ai/src/**/*.{ts,tsx}",
     ],
     extends: [reactHooks.configs.flat.recommended, reactRefresh.configs.vite],
   },

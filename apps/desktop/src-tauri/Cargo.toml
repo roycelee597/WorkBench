@@ -26,6 +26,7 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 keyring = { version = "3", features = ["windows-native"] }
 tauri-plugin-shell = "2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 [profile.release]
 codegen-units = 1

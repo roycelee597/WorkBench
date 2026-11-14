@@ -12,6 +12,7 @@
     "allow-desktop-lifecycle",
     "sql:allow-select",
     "allow-finance",
+    "allow-ai",
     "allow-execute-batch"
   ]
 }
