@@ -183,6 +183,21 @@ pub struct ChatResponse {
     pub usage: TokenUsage,
 }
 
+// 响应只读取必要字段，兼容上游附带的元数据；请求类型仍保持严格。
+#[derive(Deserialize)]
+struct ResponseFunction {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Deserialize)]
+struct ResponseCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    function: ResponseFunction,
+}
+
 pub fn normalize_response(bytes: &[u8]) -> Result<ChatResponse> {
     let value: Value = serde_json::from_slice(bytes).map_err(|_| AiError::bad())?;
     let choices = value
@@ -207,7 +222,7 @@ pub fn normalize_response(bytes: &[u8]) -> Result<ChatResponse> {
         Some(Value::Null) => None,
         _ => return Err(AiError::bad()),
     };
-    let calls: Vec<WireCall> = match message.get("tool_calls") {
+    let calls: Vec<ResponseCall> = match message.get("tool_calls") {
         None | Some(Value::Null) => vec![],
         Some(calls) => serde_json::from_value(calls.clone()).map_err(|_| AiError::bad())?,
     };

@@ -215,6 +215,79 @@ fn normalize_text_tools_and_reject_truncated_or_malformed_responses() {
 }
 
 #[test]
+fn response_tool_calls_ignore_upstream_metadata() {
+    let mut value = response();
+    value["choices"][0]["finish_reason"] = json!("tool_calls");
+    value["choices"][0]["logprobs"] = json!({"content": []});
+    value["choices"][0]["message"] = json!({
+        "role": "assistant",
+        "content": null,
+        "reasoning_content": "上游附加内容",
+        "tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "calendar_list_events",
+                "arguments": "{\"from\":\"2026-11-14\"}",
+                "extra": "额外元数据"
+            }
+        }]
+    });
+    let parsed = normalized(value).unwrap();
+    assert!(parsed.content.is_none());
+    assert_eq!(parsed.tool_calls.len(), 1);
+    assert_eq!(parsed.tool_calls[0].id, "call_1");
+    assert_eq!(parsed.tool_calls[0].name, "calendar_list_events");
+    assert_eq!(parsed.tool_calls[0].arguments, "{\"from\":\"2026-11-14\"}");
+    assert_eq!(parsed.usage.total_tokens, 16);
+}
+
+#[test]
+fn response_tool_calls_still_require_valid_core_fields() {
+    let valid = json!({
+        "index": 0,
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "calendar_list_events", "arguments": "{}"}
+    });
+    let mut wrong_type = valid.clone();
+    wrong_type["type"] = json!("other");
+    let mut missing_id = valid.clone();
+    missing_id.as_object_mut().unwrap().remove("id");
+    let mut wrong_arguments = valid;
+    wrong_arguments["function"]["arguments"] = json!({});
+    for call in [wrong_type, missing_id, wrong_arguments] {
+        let mut value = response();
+        value["choices"][0]["finish_reason"] = json!("tool_calls");
+        value["choices"][0]["message"]["content"] = Value::Null;
+        value["choices"][0]["message"]["tool_calls"] = json!([call]);
+        assert_eq!(normalized(value).unwrap_err().code, "BAD_RESPONSE");
+    }
+}
+
+#[test]
+fn request_messages_and_tool_calls_still_reject_unknown_fields() {
+    let message = json!({
+        "role": "assistant", "content": null,
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {
+            "name": "calendar_list_events", "arguments": "{}"
+        }}]
+    });
+    let mut call_metadata = message.clone();
+    call_metadata["tool_calls"][0]["index"] = json!(0);
+    let mut function_metadata = message.clone();
+    function_metadata["tool_calls"][0]["function"]["extra"] = json!(true);
+    let mut message_metadata = message;
+    message_metadata["reasoning_content"] = json!("额外内容");
+    for message in [call_metadata, function_metadata, message_metadata] {
+        let mut value = request();
+        value["messages"] = json!([message]);
+        assert_eq!(request_body(value).unwrap_err().code, "BAD_RESPONSE");
+    }
+}
+
+#[test]
 fn loopback_only_in_debug_and_release_ignores_every_override() {
     for value in ["http://127.0.0.1:9999", "http://localhost:9999/"] {
         assert_eq!(base_url(Some(value), true).unwrap().scheme(), "http");
@@ -320,6 +393,44 @@ fn corrupt_usage_recovers_conservatively_and_storage_failure_does_not_charge() {
     fs::create_dir(directory.0.join("ai-usage.json.tmp")).unwrap();
     assert_eq!(store.charge(100_000).unwrap_err().code, "STORAGE_ERROR");
     assert_eq!(store.snapshot(100_000).calls, 150);
+}
+
+#[test]
+fn successful_reply_survives_token_usage_persistence_failure() {
+    let directory = Scratch::new();
+    let mut store = UsageStore::load(&directory.0, 100_000).unwrap();
+    store.charge(100_000).unwrap();
+    fs::create_dir(directory.0.join("ai-usage.json.tmp")).unwrap();
+    let reply = normalized(response()).unwrap();
+    let expected = serde_json::to_value(&reply).unwrap();
+    let result = finish_response(
+        Ok(reply),
+        |usage| store.add_tokens(usage.prompt_tokens, usage.completion_tokens, 100_000),
+        |error| {
+            audit(
+                &directory.0,
+                &format!("token_usage_save_failed code={}", error.code),
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(serde_json::to_value(result).unwrap(), expected);
+    let log = fs::read_to_string(directory.0.join("ai-client.log")).unwrap();
+    assert!(log.contains("token_usage_save_failed code=STORAGE_ERROR"));
+    assert!(!log.contains("你好"));
+    assert!(!log.contains("已停止发送"));
+    let mut reloaded = UsageStore::load(&directory.0, 100_000).unwrap();
+    assert_eq!(reloaded.snapshot(100_000).calls, 1);
+}
+
+#[test]
+fn upstream_error_is_preserved_without_token_persistence() {
+    let result = finish_response(
+        Err(AiError::new("UPSTREAM", "测试上游错误")),
+        |_| panic!("失败回复不应保存 token 统计"),
+        |_| panic!("没有统计写入就不应记录写盘失败"),
+    );
+    assert_eq!(result.unwrap_err().code, "UPSTREAM");
 }
 
 // 真实本机 TCP 服务验证传输，无需外网、真实凭据、额外测试依赖。

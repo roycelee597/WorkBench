@@ -356,6 +356,20 @@ pub async fn ai_key_test(
     Ok(ConnectionStatus { ok: true })
 }
 
+fn finish_response(
+    result: Result<ChatResponse>,
+    persist_tokens: impl FnOnce(&protocol::TokenUsage) -> Result<()>,
+    audit_failure: impl FnOnce(&AiError),
+) -> Result<ChatResponse> {
+    if let Ok(reply) = &result {
+        if let Err(error) = persist_tokens(&reply.usage) {
+            // 回复已经成功，附加统计写盘失败只审计，不丢弃回复或要求用户重发。
+            audit_failure(&error);
+        }
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn ai_chat(
     window: WebviewWindow,
@@ -404,10 +418,20 @@ pub async fn ai_chat(
             ),
         );
     }
-    if result.is_ok() {
-        state.with_usage(window.app_handle(), |store| {
-            store.add_tokens(tokens.0, tokens.1, now())
-        })?;
-    }
-    result
+    finish_response(
+        result,
+        |usage| {
+            state.with_usage(window.app_handle(), |store| {
+                store.add_tokens(usage.prompt_tokens, usage.completion_tokens, now())
+            })
+        },
+        |error| {
+            if let Ok(path) = data_directory(window.app_handle()) {
+                audit(
+                    &path,
+                    &format!("token_usage_save_failed code={}", error.code),
+                );
+            }
+        },
+    )
 }
