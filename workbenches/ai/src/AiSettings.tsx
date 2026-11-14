@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@workbench/ui";
 import { aiApi, type AiApi } from "./api";
+import { AiShortcutSettings } from "./AiShortcutSettings";
 import {
   aiError,
   aiModelSchema,
@@ -184,6 +185,7 @@ export function AiSettings({ api = aiApi }: { api?: AiApi } = {}) {
           {failure}
         </p>
       )}
+      <AiShortcutSettings api={api} />
     </section>
   );
 }
