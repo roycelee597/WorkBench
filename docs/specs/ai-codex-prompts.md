@@ -26,13 +26,13 @@
 【A1】先读 docs/specs/codex-handoff.md 并遵守其中的规矩，再读 AGENTS.md、ARCHITECTURE.md §3 §7、docs/specs/ai-assistant.md（重点 §7、§10、§12、§13、§14、§17 的 Rust 和 llm-client 部分、§18）和 docs/specs/ai-codex-prompts.md 开头的通用规矩。参考现有 apps/desktop/src-tauri/src/finance.rs 的 main_only、keyring 和 token_status 写法。从最新 main 新建分支 feat/ai-client。
 
 0. 如果 docs/specs/ai-assistant.md、ai-codex-prompts.md、codex-handoff.md 还不在仓库里，先告诉我，等我放进去后，第一个提交把它们加进去（docs: 添加 AI 工作台规格）。
-1. 依赖：Rust 新增 reqwest（default-features = false，features json、rustls-tls）。如果规格 §18.2 第 11 条还没写“已同意”，先停下来问我。
+1. 依赖：Rust 新增 reqwest（default-features = false，features json、rustls；0.13 的 rustls 即原方案 rustls-tls 的对应特性）。规格 §18.2 第 11 条已写“已同意”。
 2. 新建 src-tauri/src/ai.rs，实现 §10.2 的 5 个命令（全部 main_only）：凭据服务名 "{identifier}.ai"、账户 deepseek；ai_chat 按 §10.4 做模型白名单、体积上限、强制 max_tokens/stream/thinking、单请求在途、按模型调用次数计的每分钟 20 次和每天 300 次本地上限、允许 tool / assistant.tool_calls 消息、128 KB 体积上限、10s/30s 超时、不重试、§14 错误码映射、日志不含 key 和正文；debug 构建才读 WORKBENCH_AI_BASE_URL 且只接受回环地址。Rust 用应用数据目录的 ai-usage.json 持久化北京时间自然日和分钟计数，启动恢复；已发出请求（含失败/超时）计数，未发出的不计；文件损坏按今天 150 次保守恢复并写日志。ai_key_status 附带非敏感用量，禁止用 settings 存 ai.usage。新增 permissions/ai.toml（allow-ai），只加进 capabilities/default.json。在 lib.rs 登记。ARCHITECTURE.md 同步补充 AI 接入边界，其余总结留到 A5。
 3. 前端 apps/desktop/src/core/ai/llm-client.ts：LlmClient 接口、TauriLlmClient（invoke ai_chat）、zod 响应模型、错误码类型；再写一个测试用 MockLlmClient。
 4. 设置页“AI 助手”分区（workbenches/ai/src/AiSettings.tsx，先只建包和这个组件，AppShell 的 settingsExtra 同时放 AiSettings 和 FinanceSettings）：key 保存/测试连接/清除，只显示尾号；模型下拉；今日用量。快捷键、“允许 AI 读取”开关与发送内容说明、对话记录分别留到 A2、A4、A5。
 5. 测试：§17 的 Rust 部分（cargo test --lib ai::tests，本地运行，结果写进文档）和 llm-client 的 Vitest（错误码解析、非法响应）。
 6. 🔬 §18.3 第 1、2 条：查 DeepSeek 官方文档确认模型名和参数，把查到的日期和结论写进文档。
-7. 写 docs/ai-client-verification.md：自动检查结果；隔离实例里用假 key + 本机模拟服务验证 保存/尾号/测试连接/清除、401/402/429/超时/5xx 提示；在凭据管理器查看条目的方法；确认日志和开发者工具里搜不到假 key。
+7. 写 docs/ai-client-verification.md：自动检查结果；隔离实例里用假 key + 本机模拟服务验证 保存/尾号/测试连接/清除、401/402/429/超时/5xx 提示；在凭据管理器查看条目的方法；确认数据库、用量文件、日志和自动控制台输出无假 key，保存后状态和聊天 IPC 不带完整 key。说明用户输入保存时密码框和该次保存 IPC 的必要短暂传递，不能承诺开发者工具无法观察这次输入。
 
 本 PR 不做对话页、快捷键和任何日程/提醒操作。按通用规矩提交、开 PR、不要合并，用中文报告。
 ```

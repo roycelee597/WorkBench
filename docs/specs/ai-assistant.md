@@ -24,7 +24,7 @@
 3. 一句话修改或删除：日程、提醒事项。
 4. **所有写入（新建、修改、删除）都先弹确认卡片，Royce 点「确认」后才写入**；AI 永远不自己猜目标，匹配到多条时列出来让 Royce 选。
 5. 全局快捷键：在任何窗口按下，主窗口（即使藏在托盘）显示并聚焦，打开 AI 工作台，光标放进输入框。
-6. API key 存在 Windows 凭据管理器，前端 JS 永远拿不到完整 key。
+6. API key 存在 Windows 凭据管理器；只在用户输入保存时短暂经过前端和 IPC，保存后前端不能读取完整 key，后续 DeepSeek 请求的鉴权头只由 Rust 组装。
 
 **v1 不做**：见 §15。
 
@@ -357,28 +357,28 @@ export interface AiActionGroup {
 
 ### 10.1 为什么从 Rust 发请求
 
-1. **key 不进前端**：如果在前端 `fetch`，完整 key 必须出现在 JS 内存里；从 Rust 发请求，key 只在 Rust 进程内从凭据管理器读出、放进 `Authorization` 头。
+1. **保存后不把 key 返回前端**：用户输入保存时完整 key 必须短暂经过密码框和 IPC，输入框立即清空，不能承诺开发者工具无法观察这次保存调用；后续调用只由 Rust 从凭据管理器读出并放进 `Authorization` 头，状态接口永远只返回末 4 位。
 2. **CSP 不用放开**：`tauri.conf.json` 的 `connect-src` 只允许 `'self' ipc: http://ipc.localhost`，前端本来就连不了外网；保持不变。
 3. **与金融工作台一致**：Tushare token 也是 Rust 用 `keyring` 管理、前端只看末 4 位。
 4. Rust 还能统一做超时、单请求、限频和日志脱敏。业务逻辑（prompt、tools、校验、卡片）仍全部在 TypeScript，符合「Rust 只做系统能力」。
 
 ### 10.2 命令（全部检查 `window.label() == "main"`，与 `finance.rs` 的 `main_only` 一致）
 
-| 命令               | 作用                                                                                     |
-| ------------------ | ---------------------------------------------------------------------------------------- |
-| `ai_key_set(key)`  | 去掉首尾空白后存入凭据管理器；长度 20–200、只允许可见 ASCII，否则 `KEY_FORMAT`；返回状态 |
+| 命令               | 作用                                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| `ai_key_set(key)`  | 去掉首尾空白后存入凭据管理器；长度 20–200、只允许可见 ASCII，否则 `KEY_FORMAT`；返回状态        |
 | `ai_key_status()`  | 返回 `{ configured: bool, tail: "末4位" \| null, usage }`，附今日非敏感用量，**永远不返回 key** |
-| `ai_key_clear()`   | 删除凭据（不存在也算成功）                                                               |
-| `ai_key_test()`    | `GET https://api.deepseek.com/models`（不计费）验证 key，返回 `ok` 或错误码              |
-| `ai_chat(request)` | 见 §10.4                                                                                 |
+| `ai_key_clear()`   | 删除凭据（不存在也算成功）                                                                      |
+| `ai_key_test()`    | `GET https://api.deepseek.com/models`（不计费）验证 key，返回 `ok` 或错误码                     |
+| `ai_chat(request)` | 见 §10.4                                                                                        |
 
 - 凭据：`keyring::Entry::new(&format!("{}.ai", app.config().identifier), "deepseek")`。正式版服务名为 **`com.royce.workbench.ai`**，账户名 `deepseek`。隔离实例因为 identifier 不同，自动用不同的凭据条目，不会碰到正式版的 key。
-- 新增权限文件 `src-tauri/permissions/ai.toml`（`allow-ai`，列出上面 5 个命令），加入 `capabilities/default.json`（仅 main 窗口）；`quick-create` 窗口不授予。
+- 新增权限文件 `src-tauri/permissions/ai.toml`（`allow-ai`，列出上面 5 个命令），加入 `capabilities/default.json`（仅 main 窗口）；`quick-create` 窗口不授予。设置页官方链接另用同样 main_only 的 `ai_open_platform()` 辅助命令，只打开固定的 `https://platform.deepseek.com/`，不接受任意地址，复用现有 shell 插件。
 - key 不写进 SQLite、设置 JSON、日志、错误信息或事件；换电脑不同步。
 
 ### 10.3 HTTP 客户端
 
-- 新增 Rust 依赖 **`reqwest`**（`default-features = false`，features `json`、`rustls-tls`），**Royce 已同意**（§18.2 第 11 条）。仅启用 rustls，不启用 native-tls；不为此另加非必要依赖。理由：Tauri 自带的 `tauri-plugin-http` 本质也是 reqwest，但它面向前端调用，会引入额外权限面；直接在 Rust 用 reqwest 最小。
+- 新增 Rust 直接依赖 **`reqwest`**（`default-features = false`，features `json`、`rustls`），**Royce 已同意**（§18.2 第 11 条）。当前锁定版本 0.13.5 的特性名为 `rustls`，等同原方案的 `rustls-tls` 意图；复用已锁定版本，避免引入第二版 reqwest。仅启用 rustls，不启用 native-tls；不为此另加非必要依赖。
 - 地址写死 `https://api.deepseek.com`。**仅 debug 构建**允许用环境变量 `WORKBENCH_AI_BASE_URL` 指向本机模拟服务（只接受 `http://127.0.0.1:<端口>` 或 `http://localhost:<端口>`），用于隔离实例联调；release 构建忽略该变量（`cfg(debug_assertions)`，单测覆盖）。
 
 ### 10.4 `ai_chat`
@@ -484,7 +484,7 @@ CREATE INDEX idx_ai_messages_created ON ai_messages(created_at) WHERE deleted_at
 
 ## 16. 验收标准
 
-1. **key**：设置填写后，Windows「凭据管理器」里能看到 `com.royce.workbench.ai` 条目（隔离实例为 `<隔离 identifier>.ai`）；workbench.db、日志、开发者工具的网络和控制台里都搜不到 key 原文；设置页只显示尾号。错误 key →「测试连接」显示「API key 无效」。
+1. **key**：设置填写后，Windows「凭据管理器」里能看到 `com.royce.workbench.ai` 条目（隔离实例为 `<隔离 identifier>.ai`）；workbench.db、用量文件、应用日志和自动控制台输出不含 key 原文，保存后状态只返回末 4 位，聊天请求经前端 IPC 不带 key、由 Rust 添加鉴权头。用户输入保存时密码框与那一次保存 IPC 必须承载 key，不能承诺调试工具无法观察用户刚输入的值（§10.1）；不主动打印保存参数。错误 key →「测试连接」显示「API key 无效」。
 2. **快捷键**：主窗口隐藏在托盘时按 `Ctrl+Alt+Space`（或隔离实例的替代组合）→ 窗口出现、切到 AI 工作台、光标在输入框。改成与快速新建相同的组合会被拒绝；改成被占用的组合会提示冲突并保留旧组合。
 3. **新建**：以下句子各生成正确的确认卡片，确认后数据出现在对应页面，取消则不写入：
    - 「明天下午三点提醒我交实验报告」→ 提醒，due 为明天 15:00。
@@ -579,7 +579,7 @@ CREATE INDEX idx_ai_messages_created ON ai_messages(created_at) WHERE deleted_at
 | 8   | 批量删除                   | 允许，最多 20 项，卡片逐条列出可取消；批量修改不做                                                           | 「删掉下周所有健身」很常见；批量修改风险大，v1 不做                                                                |
 | 9   | 模型与模式                 | `deepseek-flash`、非思考模式；设置里可切 `deepseek-v4-pro`                                                   | 这类任务不需要长推理；flash 价格约为 pro 的四分之一                                                                |
 | 10  | 金融提醒能否被 AI 修改删除 | **不能**，只能查询                                                                                           | 避免误删阈值提醒；需要时在提醒页手动处理                                                                           |
-| 11  | 新 Rust 依赖               | **`reqwest`**（rustls、json），**已同意**                                                                     | 不启用 native-tls，不加非必要依赖；不需要新的前端依赖（zod、dayjs、rrule 已有）                                      |
+| 11  | 新 Rust 依赖               | **`reqwest`**（rustls、json），**已同意**                                                                    | 不启用 native-tls，不加非必要依赖；不需要新的前端依赖（zod、dayjs、rrule 已有）                                    |
 | 12  | 本地用量上限               | 每分钟 20 次、每天 300 次模型调用，`max_tokens = 800`                                                        | 防止 bug 或误操作刷钱；用满一天也只有几元                                                                          |
 | 13  | 提前提醒非标准值           | 取不超过它的最近一档并在卡片标黄                                                                             | 现有日程只支持固定几档；备选：直接报错                                                                             |
 | 14  | 新建记录的来源标记         | 日程和提醒写 `source_workbench = 'com.royce.workbench.ai'`                                                   | 便于以后统计；界面上不额外显示标记                                                                                 |
