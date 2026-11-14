@@ -1,3 +1,4 @@
+mod ai;
 mod database;
 mod desktop;
 mod finance;
@@ -10,6 +11,7 @@ pub fn run() {
         .manage(desktop::ShellState::default())
         .manage(quick_create::QuickState::default())
         .manage(finance::FinanceState::default())
+        .manage(ai::AiState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|argument| argument == "--background") {
@@ -50,6 +52,7 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            ai::setup(app.handle());
             desktop::setup(app)?;
             quick_create::setup(app)?;
             Ok(())
@@ -75,6 +78,12 @@ pub fn run() {
             desktop::show_main,
             desktop::exit_app,
             finance::finance_token_set,
+            ai::ai_key_set,
+            ai::ai_key_status,
+            ai::ai_key_clear,
+            ai::ai_key_test,
+            ai::ai_chat,
+            ai::ai_open_platform,
             finance::finance_token_status,
             finance::finance_token_clear,
             finance::finance_update_start,
