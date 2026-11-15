@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import { isTauri, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -11,7 +11,13 @@ import { useReminderNotices } from "./reminder-notices";
 import { ReminderNotices } from "./ReminderNotices";
 import { dispatchNotification } from "./notification-action";
 import { initializeQuickHost } from "./quick-bridge";
-import { shortcutController } from "./shortcut-runtime";
+import {
+  aiShortcutController,
+  configureAiShortcutOpening,
+  getAiShortcutStatus,
+  shortcutController,
+  subscribeAiShortcutStatus,
+} from "./shortcut-runtime";
 import type { ReminderScheduler } from "../core/scheduler/scheduler";
 import {
   GeneralWorkbench,
@@ -22,31 +28,47 @@ import {
 } from "@workbench/general";
 import { cn, Button, Dialog } from "@workbench/ui";
 import { FinanceBackfillDialog, FinanceSettings, financeApi } from "@workbench/finance";
-import { AiSettings } from "@workbench/ai";
+import { AiSettings, configureAiHostServices } from "@workbench/ai";
 
 const FinanceWorkbench = lazy(() =>
   import("@workbench/finance/page").then((module) => ({ default: module.FinanceWorkbench })),
 );
+const AiWorkbench = lazy(() =>
+  import("@workbench/ai/page").then((module) => ({ default: module.AiWorkbench })),
+);
+const builtinWorkbenches = [
+  { id: "general", name: "综合工作台", icon: "workspace", component: GeneralWorkbench },
+  { id: "finance", name: "金融指标", icon: "workspace", component: FinanceWorkbench },
+  { id: "ai", name: "AI 助手", icon: "workspace", component: AiWorkbench },
+] as const;
+type BuiltinWorkbench = (typeof builtinWorkbenches)[number]["id"];
+
+async function waitForWorkspace() {
+  if (!workspace.useWorkspace.getState().busy) return;
+  await new Promise<void>((resolve) => {
+    const off = workspace.useWorkspace.subscribe((state) => {
+      if (!state.busy) {
+        off();
+        resolve();
+      }
+    });
+  });
+}
+
+function ensureWorkspaceNavigation() {
+  const error = workspace.useWorkspace.getState().error;
+  if (error) throw new Error(error);
+}
 
 async function handleNotification(
   action: NotificationAction,
   navigation: { openFinance: (reminderId: string) => Promise<void>; showGeneral: () => void },
 ) {
-  if (workspace.useWorkspace.getState().busy) {
-    await new Promise<void>((resolve) => {
-      const off = workspace.useWorkspace.subscribe((state) => {
-        if (!state.busy) {
-          off();
-          resolve();
-        }
-      });
-    });
-  }
+  await waitForWorkspace();
   async function openGeneral(open: () => Promise<unknown>) {
-    navigation.showGeneral();
     await open();
-    const error = workspace.useWorkspace.getState().error;
-    if (error) throw new Error(error);
+    ensureWorkspaceNavigation();
+    navigation.showGeneral();
   }
   return dispatchNotification(action, {
     resolve: generalApi.reminderTarget,
@@ -94,8 +116,10 @@ function NavIcon({ type }: { type: "workspace" | "settings" | "trash" }) {
 }
 export function AppShell() {
   const state = workspace.useWorkspace();
-  const [financeOpen, setFinanceOpen] = useState(false);
+  const [activeWorkbench, setActiveWorkbench] = useState<BuiltinWorkbench>("general");
   const [financeNavigation, setFinanceNavigation] = useState(0);
+  const [aiFocusVersion, setAiFocusVersion] = useState(0);
+  const aiShortcut = useSyncExternalStore(subscribeAiShortcutStatus, getAiShortcutStatus);
   const [enabling, setEnabling] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
   useEffect(() => financeApi.startRuntime(), []);
@@ -113,10 +137,16 @@ export function AppShell() {
         else await disable();
       },
     });
+    configureAiHostServices({
+      getShortcut: async () => {
+        await aiShortcutController.start();
+        return aiShortcutController.getStatus();
+      },
+      setShortcut: (value) => aiShortcutController.configure(value),
+    });
     void initializeQuickHost().catch(() =>
       workspace.useWorkspace.setState({ shortcutError: "快速新建服务未能启动，请重启应用。" }),
     );
-    void shortcutController.start();
     const offOffer = onAutostartOffer(() =>
       workspace.useWorkspace.setState({ autostartOffer: true }),
     );
@@ -124,39 +154,38 @@ export function AppShell() {
     let offRequests: (() => void) | undefined;
     let scheduler: ReminderScheduler | undefined;
     let sequence = Promise.resolve();
-    async function idle() {
-      if (!workspace.useWorkspace.getState().busy) return;
-      await new Promise<void>((resolve) => {
-        const off = workspace.useWorkspace.subscribe((state) => {
-          if (!state.busy) {
-            off();
-            resolve();
-          }
-        });
-      });
-    }
     function queue(action: () => Promise<void>) {
-      sequence = sequence
-        .then(async () => {
-          await idle();
-          await action();
-        })
-        .catch(async (error: unknown) => {
-          console.error("桌面操作失败", error);
-          workspace.useWorkspace.setState({
-            desktopError: error instanceof Error ? error.message : "操作未完成，请在提醒页重试。",
-          });
-          await invoke("show_main").catch(() => undefined);
+      const pending = sequence.then(async () => {
+        await waitForWorkspace();
+        await action();
+      });
+      sequence = pending.catch(async (error: unknown) => {
+        console.error("桌面操作失败", error);
+        workspace.useWorkspace.setState({
+          desktopError: error instanceof Error ? error.message : "操作未完成，请在提醒页重试。",
         });
-      return sequence;
+        await invoke("show_main").catch(() => undefined);
+      });
+      return pending;
     }
+    const offAiOpening = configureAiShortcutOpening(async () => {
+      await invoke("show_main");
+      await queue(async () => {
+        await workspace.flush();
+        setActiveWorkbench("ai");
+        setAiFocusVersion((value) => value + 1);
+      });
+    });
+    void shortcutController.start();
+    void aiShortcutController.start();
     async function drain() {
       const requests = await invoke<string[]>("take_shell_requests");
       for (const request of requests)
         await queue(async () => {
           if (request === "new-reminder") {
-            setFinanceOpen(false);
             await workspace.useWorkspace.getState().newReminder();
+            ensureWorkspaceNavigation();
+            setActiveWorkbench("general");
           } else if (request === "hide") {
             await workspace.flush();
             await invoke("hide_main");
@@ -165,7 +194,7 @@ export function AppShell() {
             scheduler?.stop();
             await invoke("exit_app");
           }
-        });
+        }).catch(() => undefined);
     }
     void listen("shell-requests", () => {
       void drain().catch((error: unknown) => {
@@ -203,11 +232,46 @@ export function AppShell() {
       disposed = true;
       offRequests?.();
       offOffer();
+      offAiOpening();
     };
   }, []);
-  function openGeneral(page: "today" | "settings" | "trash") {
-    setFinanceOpen(false);
-    void state.navigate(page);
+  async function openGeneral(page: "today" | "settings" | "trash") {
+    await waitForWorkspace();
+    await workspace.useWorkspace.getState().navigate(page);
+    ensureWorkspaceNavigation();
+    setActiveWorkbench("general");
+  }
+  function reportNavigation(error: unknown) {
+    workspace.useWorkspace.setState({
+      desktopError: error instanceof Error ? error.message : "未能打开工作台，请重试。",
+    });
+  }
+  function navigateGeneral(page: "today" | "settings" | "trash") {
+    void openGeneral(page).catch(reportNavigation);
+  }
+  function openAiSettings() {
+    void openGeneral("settings")
+      .then(() => {
+        requestAnimationFrame(() => {
+          document.getElementById("ai-settings-heading")?.scrollIntoView({ block: "start" });
+        });
+      })
+      .catch(reportNavigation);
+  }
+  async function openWorkbench(id: BuiltinWorkbench) {
+    if (id === "general") return openGeneral("today");
+    await workspace.flush();
+    setActiveWorkbench(id);
+    if (id === "ai") setAiFocusVersion((value) => value + 1);
+  }
+  function manualCreate() {
+    void waitForWorkspace()
+      .then(() => workspace.useWorkspace.getState().newReminder())
+      .then(() => {
+        ensureWorkspaceNavigation();
+        setActiveWorkbench("general");
+      })
+      .catch(reportNavigation);
   }
   return (
     <div className="app-shell">
@@ -221,50 +285,47 @@ export function AppShell() {
         </div>
         <p className="sidebar-section-title">工作空间</p>
         <nav>
-          <button
-            type="button"
-            className={cn(
-              "sidebar-link",
-              !financeOpen && state.page !== "settings" && state.page !== "trash" && "selected",
-            )}
-            disabled={!state.ready || state.busy}
-            onClick={() => openGeneral("today")}
-          >
-            <NavIcon type="workspace" />
-            <span>综合工作台</span>
-            <span className="sidebar-active-dot" />
-          </button>
-          <button
-            type="button"
-            className={cn("sidebar-link", financeOpen && "selected")}
-            disabled={!state.ready || state.busy}
-            onClick={() =>
-              void workspace
-                .flush()
-                .then(() => setFinanceOpen(true))
-                .catch(() => undefined)
-            }
-          >
-            <NavIcon type="workspace" />
-            <span>金融指标</span>
-            <span className="sidebar-active-dot" />
-          </button>
+          {builtinWorkbenches.map((workbench) => (
+            <button
+              key={workbench.id}
+              type="button"
+              className={cn(
+                "sidebar-link",
+                activeWorkbench === workbench.id &&
+                  (workbench.id !== "general" ||
+                    (state.page !== "settings" && state.page !== "trash")) &&
+                  "selected",
+              )}
+              disabled={!state.ready || state.busy}
+              onClick={() => void openWorkbench(workbench.id).catch(reportNavigation)}
+            >
+              <NavIcon type={workbench.icon} />
+              <span>{workbench.name}</span>
+              <span className="sidebar-active-dot" />
+            </button>
+          ))}
         </nav>
         <div className="sidebar-bottom">
           <button
             type="button"
-            className={cn("sidebar-link", !financeOpen && state.page === "settings" && "selected")}
+            className={cn(
+              "sidebar-link",
+              activeWorkbench === "general" && state.page === "settings" && "selected",
+            )}
             disabled={!state.ready || state.busy}
-            onClick={() => openGeneral("settings")}
+            onClick={() => navigateGeneral("settings")}
           >
             <NavIcon type="settings" />
             设置
           </button>
           <button
             type="button"
-            className={cn("sidebar-link", !financeOpen && state.page === "trash" && "selected")}
+            className={cn(
+              "sidebar-link",
+              activeWorkbench === "general" && state.page === "trash" && "selected",
+            )}
             disabled={!state.ready || state.busy}
-            onClick={() => openGeneral("trash")}
+            onClick={() => navigateGeneral("trash")}
           >
             <NavIcon type="trash" />
             回收站
@@ -285,8 +346,16 @@ export function AppShell() {
         {state.shortcutError && (
           <div className="desktop-error" role="alert">
             {state.shortcutError}
-            <Button size="sm" variant="outline" onClick={() => openGeneral("settings")}>
+            <Button size="sm" variant="outline" onClick={() => navigateGeneral("settings")}>
               快捷键设置
+            </Button>
+          </div>
+        )}
+        {aiShortcut.error && (
+          <div className="desktop-error" role="alert">
+            {aiShortcut.error}
+            <Button size="sm" variant="outline" onClick={openAiSettings}>
+              AI 快捷键设置
             </Button>
           </div>
         )}
@@ -295,7 +364,7 @@ export function AppShell() {
             {state.desktopError}
           </div>
         )}
-        <div className={financeOpen ? "hidden" : "contents"}>
+        <div className={activeWorkbench === "general" ? "contents" : "hidden"}>
           <GeneralWorkbench
             settingsExtra={
               <>
@@ -305,7 +374,7 @@ export function AppShell() {
             }
           />
         </div>
-        {financeOpen && (
+        {activeWorkbench === "finance" && (
           <Suspense
             fallback={
               <p className="p-6" role="status">
@@ -315,7 +384,22 @@ export function AppShell() {
           >
             <FinanceWorkbench
               key={financeNavigation}
-              openSettings={() => openGeneral("settings")}
+              openSettings={() => navigateGeneral("settings")}
+            />
+          </Suspense>
+        )}
+        {activeWorkbench === "ai" && (
+          <Suspense
+            fallback={
+              <p className="p-6" role="status">
+                正在打开 AI 助手…
+              </p>
+            }
+          >
+            <AiWorkbench
+              openSettings={openAiSettings}
+              manualCreate={manualCreate}
+              focusVersion={aiFocusVersion}
             />
           </Suspense>
         )}
@@ -323,12 +407,12 @@ export function AppShell() {
       <ReminderNotices
         onAction={(action) =>
           handleNotification(action, {
-            showGeneral: () => setFinanceOpen(false),
+            showGeneral: () => setActiveWorkbench("general"),
             async openFinance(reminderId) {
               await workspace.flush();
               await financeApi.openReminder(reminderId);
               setFinanceNavigation((value) => value + 1);
-              setFinanceOpen(true);
+              setActiveWorkbench("finance");
             },
           })
         }

@@ -5,15 +5,23 @@ import {
   aiModelSchema,
   DEFAULT_AI_MODEL,
   invokeAi,
+  TauriLlmClient,
   type AiInvoker,
   type AiModel,
+  type LlmRequest,
 } from "../../../apps/desktop/src/core/ai/llm-client";
 import type { SettingsRepository } from "../../../apps/desktop/src/core/repositories/settings";
+import {
+  DEFAULT_AI_SHORTCUT,
+  normalizeShortcut,
+} from "../../../apps/desktop/src/core/shortcut-controller";
+import { aiHostServices } from "./host-services";
 
 export function createAiApi(
   getSettings: () => Promise<Pick<SettingsRepository, "getValue" | "setValue">>,
   call: AiInvoker = invokeAi,
 ) {
+  const client = new TauriLlmClient(call);
   async function status(command = "ai_key_status", args?: Record<string, unknown>) {
     try {
       const result = aiKeyStatusSchema.safeParse(await call(command, args));
@@ -24,6 +32,18 @@ export function createAiApi(
     }
   }
   return {
+    chat: (request: LlmRequest) => client.chat(request),
+    async getStoredShortcut(): Promise<string> {
+      const value = await (await getSettings()).getValue("ai.global_shortcut");
+      return value === undefined
+        ? DEFAULT_AI_SHORTCUT
+        : normalizeShortcut(typeof value === "string" ? value : "");
+    },
+    async setStoredShortcut(value: string) {
+      await (await getSettings()).setValue("ai.global_shortcut", normalizeShortcut(value));
+    },
+    getGlobalShortcut: () => aiHostServices.getShortcut(),
+    setGlobalShortcut: (value: string) => aiHostServices.setShortcut(value),
     keyStatus: () => status(),
     saveKey: (key: string) => status("ai_key_set", { key }),
     async clearKey() {

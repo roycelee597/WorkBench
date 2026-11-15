@@ -2,6 +2,7 @@
 @source "../../../packages/ui/src";
 @source "../../../workbenches/general/src";
 @source "../../../workbenches/finance/src";
+@source "../../../workbenches/ai/src";
 @custom-variant dark (&:is(.dark *));
 @theme inline {
   --color-background: var(--background);
@@ -2076,4 +2077,217 @@ input::placeholder {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+.ai-workbench {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ai-chat-surface {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 14px;
+  width: 100%;
+  max-width: 1080px;
+  padding: 0 36px 18px;
+  margin-inline: auto;
+}
+.ai-key-guide {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  background: var(--accent);
+  border: 1px solid var(--selected-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.ai-key-guide strong {
+  font-weight: 600;
+}
+.ai-key-guide p {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-top: 7px;
+}
+.ai-welcome {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0;
+}
+.ai-welcome-mark {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 18px;
+  color: var(--primary);
+  background: var(--accent);
+  font-size: 30px;
+  margin-bottom: 20px;
+}
+.ai-welcome h2 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.6px;
+}
+.ai-welcome > p {
+  color: var(--muted-foreground);
+  margin-top: 12px;
+  font-size: 13px;
+}
+.ai-examples {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: min(100%, 620px);
+  margin-top: 28px;
+}
+.ai-examples button {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 16px;
+  font-size: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+}
+.ai-examples button:hover {
+  border-color: var(--selected-border);
+  background: var(--accent);
+}
+.ai-examples span {
+  color: var(--primary);
+}
+.ai-composer {
+  flex-shrink: 0;
+  padding: 15px 16px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 3px 18px #182b1506;
+}
+.ai-composer:focus-within {
+  border-color: var(--selected-border);
+}
+.ai-composer textarea {
+  font: inherit;
+  width: 100%;
+  min-height: 72px;
+  max-height: 180px;
+  resize: vertical;
+  padding: 3px 2px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--foreground);
+  line-height: 1.7;
+}
+.ai-composer textarea::placeholder {
+  color: var(--muted-foreground);
+  opacity: 0.8;
+}
+.ai-composer-footer {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-top: 10px;
+}
+.ai-composer-footer > span:first-child {
+  flex: 1;
+}
+.ai-disclaimer {
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.ai-message-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 2px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.ai-message {
+  max-width: 87%;
+  line-height: 1.8;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.ai-message-author {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  margin-bottom: 6px;
+}
+.ai-message p {
+  white-space: pre-wrap;
+}
+.ai-message ul {
+  padding-left: 20px;
+}
+.ai-user-message {
+  align-self: flex-end;
+}
+.ai-user-message .ai-message-author {
+  text-align: right;
+}
+.ai-user-message > p {
+  padding: 13px 18px;
+  border: 1px solid var(--selected-border);
+  border-radius: 14px 14px 3px 14px;
+  background: var(--accent);
+}
+.ai-assistant-message {
+  align-self: flex-start;
+}
+.ai-assistant-message > p {
+  padding: 8px 0;
+}
+.ai-message-note,
+.ai-activity {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.ai-error-card {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--destructive) 35%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 5%, var(--card));
+  border-radius: 11px;
+  padding: 16px 18px;
+  color: var(--destructive);
+}
+.ai-error-card > strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.ai-error-card > p {
+  margin: 7px 0 13px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+@media (max-width: 1020px) {
+  .ai-chat-surface {
+    padding-inline: 24px;
+  }
+  .ai-workbench-header {
+    padding-inline: 24px;
+  }
 }

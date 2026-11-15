@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SHORTCUT,
+  DEFAULT_AI_SHORTCUT,
   ShortcutController,
+  ShortcutCoordinator,
   normalizeShortcut,
   type ShortcutPort,
 } from "../src/core/shortcut-controller";
@@ -29,6 +31,9 @@ describe("全局快捷键", () => {
   it("规范化并拒绝无修饰键、重复键及系统关闭组合", () => {
     expect(normalizeShortcut(" shift + control + alt + n ")).toBe("Ctrl+Alt+Shift+N");
     expect(normalizeShortcut("Alt+F10")).toBe("Alt+F10");
+    expect(normalizeShortcut("ctrl + alt + space")).toBe(DEFAULT_AI_SHORTCUT);
+    expect(normalizeShortcut("shift + control + space")).toBe("Ctrl+Shift+Space");
+    expect(normalizeShortcut("Ctrl+Alt+Shift+Space")).toBe("Ctrl+Alt+Shift+Space");
     for (const value of [
       "N",
       "Shift+N",
@@ -37,6 +42,11 @@ describe("全局快捷键", () => {
       "Ctrl+Alt+Delete",
       "Win+N",
       "Ctrl+N+M",
+      "Space",
+      "Ctrl+Space",
+      "Alt+Space",
+      "Shift+Space",
+      "Alt+Shift+Space",
     ])
       expect(() => normalizeShortcut(value)).toThrow();
   });
@@ -88,5 +98,112 @@ describe("全局快捷键", () => {
     registered.get("Ctrl+Alt+F10")!();
     await Promise.resolve();
     expect(controller.getStatus().error).toContain("打开快速新建");
+  });
+  it("停止后同一个控制器可重新启动，配置原组合返回当前状态", async () => {
+    const { controller, port } = setup();
+    await controller.start();
+    expect(await controller.configure(DEFAULT_SHORTCUT)).toMatchObject({
+      active: DEFAULT_SHORTCUT,
+    });
+    await controller.stop();
+    await controller.start();
+    expect(controller.getStatus().active).toBe(DEFAULT_SHORTCUT);
+    expect(port.register).toHaveBeenCalledTimes(2);
+  });
+});
+
+function setupPair(aiStored = DEFAULT_AI_SHORTCUT) {
+  const coordinator = new ShortcutCoordinator();
+  const registered = new Map<string, () => void>();
+  const makePort = (initial: string): ShortcutPort => {
+    let stored = initial;
+    return {
+      register: vi.fn(async (key, pressed) => {
+        if (registered.has(key)) throw new Error("系统冲突");
+        registered.set(key, pressed);
+      }),
+      unregister: vi.fn(async (key) => {
+        registered.delete(key);
+      }),
+      load: vi.fn(async () => stored),
+      persist: vi.fn(async (key) => {
+        stored = key;
+      }),
+      open: vi.fn(async () => undefined),
+    };
+  };
+  const quickPort = makePort(DEFAULT_SHORTCUT);
+  const aiPort = makePort(aiStored);
+  const quick = new ShortcutController(quickPort, undefined, { coordinator, label: "快速新建" });
+  const ai = new ShortcutController(aiPort, undefined, {
+    coordinator,
+    label: "AI 助手",
+    defaultShortcut: DEFAULT_AI_SHORTCUT,
+    openError: "未能打开 AI 助手，请重试。",
+  });
+  return { quick, ai, quickPort, aiPort, registered };
+}
+
+describe("快速新建和 AI 快捷键互斥", () => {
+  it("启动读到重复设置时保留先注册的一方，明确提示冲突功能", async () => {
+    const { quick, ai, aiPort } = setupPair(DEFAULT_SHORTCUT);
+    await Promise.all([quick.start(), ai.start()]);
+    expect(quick.getStatus().active).toBe(DEFAULT_SHORTCUT);
+    expect(ai.getStatus()).toMatchObject({
+      active: null,
+      error: expect.stringContaining("快速新建"),
+    });
+    expect(aiPort.register).not.toHaveBeenCalled();
+    await ai.configure(DEFAULT_AI_SHORTCUT);
+    expect(ai.getStatus().active).toBe(DEFAULT_AI_SHORTCUT);
+  });
+  it("双向改键均先检查另一功能，注册和配置不会被覆盖", async () => {
+    const { quick, ai, registered, quickPort, aiPort } = setupPair();
+    await Promise.all([quick.start(), ai.start()]);
+    await expect(quick.configure(DEFAULT_AI_SHORTCUT)).rejects.toThrow("AI 助手");
+    await expect(ai.configure(DEFAULT_SHORTCUT)).rejects.toThrow("快速新建");
+    expect([...registered.keys()]).toEqual([DEFAULT_SHORTCUT, DEFAULT_AI_SHORTCUT]);
+    expect(quickPort.persist).not.toHaveBeenCalled();
+    expect(aiPort.persist).not.toHaveBeenCalled();
+  });
+  it("两个并发改键通过同一队列，后改的一方不会取消先改的新绑定", async () => {
+    const { quick, ai, registered } = setupPair();
+    await Promise.all([quick.start(), ai.start()]);
+    const changes = await Promise.allSettled([
+      quick.configure("Ctrl+Alt+F8"),
+      ai.configure("Ctrl+Alt+F8"),
+    ]);
+    expect(changes.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+    expect([...registered.keys()]).toEqual([DEFAULT_AI_SHORTCUT, "Ctrl+Alt+F8"]);
+    expect(quick.getStatus().active).toBe("Ctrl+Alt+F8");
+    expect(ai.getStatus().active).toBe(DEFAULT_AI_SHORTCUT);
+  });
+  it("AI 保存失败只撤销 AI 新组合，快速新建和原 AI 组合仍可触发", async () => {
+    const { quick, ai, registered, aiPort, quickPort } = setupPair();
+    await Promise.all([quick.start(), ai.start()]);
+    vi.mocked(aiPort.persist).mockRejectedValueOnce(new Error("设置写盘失败"));
+    await expect(ai.configure("Ctrl+Shift+Space")).rejects.toThrow("保留原快捷键");
+    expect([...registered.keys()]).toEqual([DEFAULT_SHORTCUT, DEFAULT_AI_SHORTCUT]);
+    registered.get(DEFAULT_SHORTCUT)!();
+    registered.get(DEFAULT_AI_SHORTCUT)!();
+    expect(quickPort.open).toHaveBeenCalledOnce();
+    expect(aiPort.open).toHaveBeenCalledOnce();
+    vi.mocked(aiPort.open).mockRejectedValueOnce(new Error("打开失败"));
+    registered.get(DEFAULT_AI_SHORTCUT)!();
+    await Promise.resolve();
+    expect(ai.getStatus().error).toContain("AI 助手");
+    expect(quick.getStatus().error).toBeNull();
+  });
+  it("AI 释放旧组合失败会撤销新组合并恢复已保存配置，可再次改键", async () => {
+    const { quick, ai, registered, aiPort } = setupPair();
+    await Promise.all([quick.start(), ai.start()]);
+    vi.mocked(aiPort.unregister).mockRejectedValueOnce(new Error("释放失败"));
+    await expect(ai.configure("Ctrl+Shift+Space")).rejects.toThrow("保留原快捷键");
+    expect([...registered.keys()]).toEqual([DEFAULT_SHORTCUT, DEFAULT_AI_SHORTCUT]);
+    expect(aiPort.persist).toHaveBeenNthCalledWith(1, "Ctrl+Shift+Space");
+    expect(aiPort.persist).toHaveBeenNthCalledWith(2, DEFAULT_AI_SHORTCUT);
+    expect(ai.getStatus().active).toBe(DEFAULT_AI_SHORTCUT);
+    await ai.configure("Ctrl+Shift+Space");
+    expect(ai.getStatus()).toMatchObject({ active: "Ctrl+Shift+Space", error: null });
   });
 });

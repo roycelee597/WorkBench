@@ -5,13 +5,15 @@
   "type": "module",
   "license": "MIT",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./page": "./src/AiWorkbench.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@workbench/ui": "workspace:*"
+    "@workbench/ui": "workspace:*",
+    "zustand": "^5.0.16"
   },
   "peerDependencies": {
     "react": "^19.1.0",
