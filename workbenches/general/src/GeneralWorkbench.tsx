@@ -6,6 +6,8 @@ import { TodayPage } from "./components/TodayPage";
 import { MemosPage } from "./components/MemosPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { TrashPage } from "./components/TrashPage";
+import { CreateDraftDialog } from "./components/CreateDraftDialog";
+import { openAiTarget } from "./ai-navigation";
 const CalendarPage = lazy(() =>
   import("./components/CalendarPage").then((module) => ({ default: module.CalendarPage })),
 );
@@ -19,7 +21,10 @@ const tabs = [
   { page: "calendar", label: "日程", Icon: CalendarDays },
   { page: "reminders", label: "提醒事项", Icon: Bell },
 ] as const;
-export function GeneralWorkbench({ settingsExtra }: { settingsExtra?: ReactNode } = {}) {
+export function GeneralWorkbench({
+  settingsExtra,
+  active = true,
+}: { settingsExtra?: ReactNode; active?: boolean } = {}) {
   const state = workspace.useWorkspace();
   const initialize = state.initialize;
   useEffect(() => {
@@ -153,7 +158,11 @@ export function GeneralWorkbench({ settingsExtra }: { settingsExtra?: ReactNode 
               </p>
             }
           >
-            <CalendarPage key={state.calendarNavigationVersion} focus={state.calendarTarget} />
+            <CalendarPage
+              key={state.calendarNavigationVersion}
+              focus={state.calendarTarget}
+              visible={active}
+            />
           </Suspense>
         ) : state.page === "reminders" ? (
           <Suspense
@@ -167,12 +176,29 @@ export function GeneralWorkbench({ settingsExtra }: { settingsExtra?: ReactNode 
               key={state.reminderNavigationVersion}
               focus={state.reminderTarget}
               createRequested={state.reminderCreate}
+              visible={active}
             />
           </Suspense>
         ) : (
           <TodayPage />
         )}
       </div>
+      {state.createDraft && (
+        <CreateDraftDialog
+          initial={state.createDraft}
+          open={active}
+          onClose={() => workspace.useWorkspace.setState({ createDraft: null })}
+          onSaved={(target) => {
+            workspace.useWorkspace.setState({ createDraft: null });
+            if (target)
+              void openAiTarget(target).catch(() =>
+                workspace.useWorkspace.setState({
+                  desktopError: "内容已保存，暂时无法打开。请到对应页面查看。",
+                }),
+              );
+          }}
+        />
+      )}
     </div>
   );
 }

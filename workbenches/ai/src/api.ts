@@ -16,6 +16,7 @@ import {
   normalizeShortcut,
 } from "../../../apps/desktop/src/core/shortcut-controller";
 import { aiHostServices } from "./host-services";
+import type { AiTarget } from "../../../apps/desktop/src/core/ai/action-types";
 
 export function createAiApi(
   getSettings: () => Promise<Pick<SettingsRepository, "getValue" | "setValue">>,
@@ -33,6 +34,9 @@ export function createAiApi(
   }
   return {
     chat: (request: LlmRequest) => client.chat(request),
+    openTarget: (target: AiTarget) => aiHostServices.openTarget(target),
+    openCreateForm: (actionName: string, draft: unknown) =>
+      aiHostServices.openCreateForm(actionName, draft),
     async getStoredShortcut(): Promise<string> {
       const value = await (await getSettings()).getValue("ai.global_shortcut");
       return value === undefined

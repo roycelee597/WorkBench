@@ -6,6 +6,11 @@ import { workspace } from "@workbench/general";
 import type { NotificationAction } from "../src/core/scheduler/notification-port";
 import { FINANCE_WORKBENCH } from "../src/core/finance/finance-target";
 import { AppShell } from "../src/shell/AppShell";
+import type { AiHostServices } from "../../../workbenches/ai/src/host-services";
+import {
+  parseAiCreateDraft,
+  type AiCreateDraft,
+} from "../../../workbenches/general/src/ai-create-model";
 
 const mock = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -15,6 +20,8 @@ const mock = vi.hoisted(() => ({
   newReminder: vi.fn(),
   openReminder: vi.fn(),
   openMissed: vi.fn(),
+  openAiTarget: vi.fn(),
+  openCreateDraft: vi.fn(),
   resolve: vi.fn(),
   complete: vi.fn(),
   snooze: vi.fn(),
@@ -72,6 +79,7 @@ vi.mock("@workbench/general", async () => {
     shortcutError: null,
     desktopError: null,
     autostartOffer: false,
+    createDraft: null as AiCreateDraft | null,
     deleted: [],
     deletedEvents: [],
     deletedReminders: [],
@@ -79,11 +87,20 @@ vi.mock("@workbench/general", async () => {
     newReminder: mock.newReminder,
     openReminder: mock.openReminder,
     openMissed: mock.openMissed,
+    openCreateDraft: mock.openCreateDraft,
   }));
   return {
     workspace: { useWorkspace, flush: mock.flush },
-    GeneralWorkbench: ({ settingsExtra }: { settingsExtra: React.ReactNode }) => (
-      <section data-testid="general">综合内容{settingsExtra}</section>
+    GeneralWorkbench: ({
+      settingsExtra,
+      active,
+    }: {
+      settingsExtra: React.ReactNode;
+      active: boolean;
+    }) => (
+      <section data-testid="general" data-active={active}>
+        综合内容{settingsExtra}
+      </section>
     ),
     generalApi: {
       reminderTarget: mock.resolve,
@@ -93,6 +110,8 @@ vi.mock("@workbench/general", async () => {
     },
     configureHostServices: mock.configureGeneral,
     onAutostartOffer: () => () => undefined,
+    generalAiActions: { workbenchId: "test.shell.general", label: "测试综合", actions: [] },
+    openAiTarget: mock.openAiTarget,
   };
 });
 vi.mock("@workbench/finance", () => ({
@@ -179,6 +198,7 @@ beforeEach(async () => {
     shortcutError: null,
     desktopError: null,
     autostartOffer: false,
+    createDraft: null,
   });
   mock.flush.mockReset().mockResolvedValue(undefined);
   mock.navigate.mockReset().mockImplementation(async (page: "today" | "settings" | "trash") => {
@@ -196,6 +216,16 @@ beforeEach(async () => {
   mock.openMissed.mockReset().mockImplementation(async () => {
     await mock.flush();
     workspace.useWorkspace.setState({ page: "reminders", error: null });
+  });
+  mock.openAiTarget.mockReset().mockImplementation(async () => {
+    workspace.useWorkspace.setState({ page: "memos", error: null });
+  });
+  mock.openCreateDraft.mockReset().mockImplementation(async (_name: string, draft: unknown) => {
+    workspace.useWorkspace.setState({
+      createDraft: parseAiCreateDraft(draft),
+      page: "memos",
+      error: null,
+    });
   });
   mock.quickStart.mockResolvedValue(undefined);
   mock.aiStart.mockResolvedValue(undefined);
@@ -225,11 +255,27 @@ afterEach(async () => {
     root.unmount();
   });
   container.remove();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 function button(text: string) {
   return [...container.querySelectorAll("button")].find((item) => item.textContent === text)!;
 }
+
+function aiHost() {
+  return mock.configureAi.mock.calls[0]![0] as Required<AiHostServices>;
+}
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+const memoDraft: AiCreateDraft = {
+  type: "memo",
+  form: { title: "转到表单", content: "尚未保存", pinned: false, tags: [] },
+};
 async function click(text: string) {
   await act(async () => {
     button(text).click();
@@ -418,5 +464,108 @@ describe("已有通知和托盘跳转回归", () => {
     expect(mock.invoke).not.toHaveBeenCalledWith("exit_app");
     expect(mock.schedulerStop).not.toHaveBeenCalled();
     error.mockRestore();
+  });
+});
+
+describe("AI 保存结果与手动表单的 Shell 接线", () => {
+  it("查看先保存综合草稿，定位成功才切综合，general active 跟随工作台", async () => {
+    await click("AI 助手");
+    expect(container.querySelector('[data-testid="general"]')?.getAttribute("data-active")).toBe(
+      "false",
+    );
+    const saving = deferred();
+    mock.flush.mockClear().mockReturnValueOnce(saving.promise);
+    const target = { kind: "memo" as const, memoId: "new-memo" };
+    let opening!: Promise<void>;
+    await act(async () => {
+      opening = aiHost().openTarget(target);
+    });
+    expect(mock.flush).toHaveBeenCalledOnce();
+    expect(mock.openAiTarget).not.toHaveBeenCalled();
+    expect(selected()).toBe("AI 助手");
+    await act(async () => {
+      saving.resolve();
+      await opening;
+    });
+    expect(mock.openAiTarget).toHaveBeenCalledExactlyOnceWith(target);
+    expect(selected()).toBe("综合工作台");
+    expect(container.querySelector('[data-testid="general"]')?.getAttribute("data-active")).toBe(
+      "true",
+    );
+  });
+  it("转表单先保存再交付草稿，等待期间不会提前切页", async () => {
+    await click("AI 助手");
+    const saving = deferred();
+    mock.flush.mockClear().mockReturnValueOnce(saving.promise);
+    let opening!: Promise<void>;
+    await act(async () => {
+      opening = aiHost().openCreateForm("memos_create", memoDraft);
+    });
+    expect(mock.flush).toHaveBeenCalledOnce();
+    expect(mock.openCreateDraft).not.toHaveBeenCalled();
+    expect(selected()).toBe("AI 助手");
+    await act(async () => {
+      saving.resolve();
+      await opening;
+    });
+    expect(mock.openCreateDraft).toHaveBeenCalledExactlyOnceWith("memos_create", memoDraft);
+    expect(workspace.useWorkspace.getState().createDraft).toEqual(memoDraft);
+    expect(selected()).toBe("综合工作台");
+  });
+  it("任一 host 导航在保存失败时均保持 AI，且不交付目标或草稿", async () => {
+    await click("AI 助手");
+    mock.flush.mockRejectedValue(new Error("综合草稿仍未保存"));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await act(async () => {
+      await expect(aiHost().openTarget({ kind: "memo", memoId: "memo" })).rejects.toThrow(
+        "综合草稿仍未保存",
+      );
+      await expect(aiHost().openCreateForm("memos_create", memoDraft)).rejects.toThrow(
+        "综合草稿仍未保存",
+      );
+    });
+    expect(selected()).toBe("AI 助手");
+    expect(mock.openAiTarget).not.toHaveBeenCalled();
+    expect(mock.openCreateDraft).not.toHaveBeenCalled();
+    expect(workspace.useWorkspace.getState().createDraft).toBeNull();
+  });
+  it("目标已删除或表单校验失败时保持 AI，错误返回给卡片", async () => {
+    await click("AI 助手");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mock.openAiTarget.mockRejectedValueOnce(new Error("备忘录已删除"));
+    await act(async () => {
+      await expect(aiHost().openTarget({ kind: "memo", memoId: "deleted" })).rejects.toThrow(
+        "备忘录已删除",
+      );
+    });
+    expect(selected()).toBe("AI 助手");
+    mock.openCreateDraft.mockImplementationOnce(async () => {
+      workspace.useWorkspace.setState({ error: "草稿类型与操作不一致" });
+    });
+    await act(async () => {
+      await expect(aiHost().openCreateForm("reminders_create", memoDraft)).rejects.toThrow(
+        "草稿类型与操作不一致",
+      );
+    });
+    expect(selected()).toBe("AI 助手");
+  });
+  it("已有手动草稿时拒绝覆盖，原草稿在切回 AI 后仍保留", async () => {
+    const existing = structuredClone(memoDraft);
+    existing.form.content = "用户已经编辑过的正文";
+    await act(async () => {
+      workspace.useWorkspace.setState({ createDraft: existing });
+    });
+    await click("AI 助手");
+    mock.flush.mockClear();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await act(async () => {
+      await expect(aiHost().openCreateForm("memos_create", memoDraft)).rejects.toThrow(
+        "请先保存或关闭",
+      );
+    });
+    expect(mock.flush).not.toHaveBeenCalled();
+    expect(mock.openCreateDraft).not.toHaveBeenCalled();
+    expect(workspace.useWorkspace.getState().createDraft).toBe(existing);
+    expect(selected()).toBe("AI 助手");
   });
 });
