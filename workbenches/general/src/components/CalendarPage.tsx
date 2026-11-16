@@ -69,7 +69,13 @@ const errorMessage = (error: unknown) =>
       ? "内容已发生变化，请取消后重新打开日程。"
       : "操作失败，请重试。";
 
-export function CalendarPage({ focus }: { focus?: EventOccurrence | null }) {
+export function CalendarPage({
+  focus,
+  visible = true,
+}: {
+  focus?: EventOccurrence | null;
+  visible?: boolean;
+}) {
   const [focusDismissed, setFocusDismissed] = useState(false);
   const calendar = useRef<FullCalendar>(null);
   const [range, setRange] = useState<TimeRange | null>(null);
@@ -445,7 +451,7 @@ export function CalendarPage({ focus }: { focus?: EventOccurrence | null }) {
         />
       </div>
       <Dialog
-        open={modal}
+        open={modal && visible}
         className={pending ? "calendar-scope-dialog" : "calendar-form-dialog"}
         onOpenChange={(open) => {
           if (!open) closeEditor();
@@ -541,7 +547,7 @@ export function CalendarPage({ focus }: { focus?: EventOccurrence | null }) {
         )}
       </Dialog>
       <Dialog
-        open={confirmDelete}
+        open={confirmDelete && visible}
         onOpenChange={(open) => {
           if (!busy) setConfirmDelete(open);
         }}
