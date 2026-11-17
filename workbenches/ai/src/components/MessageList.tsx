@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
-import type { AiMessage } from "../ai-store";
+import type { AiMessage, AiStore } from "../ai-store";
 import { ErrorCard } from "./ErrorCard";
+import { ProposalCard } from "./ProposalCard";
 
 export function MessageList({
   messages,
@@ -8,12 +9,14 @@ export function MessageList({
   openSettings,
   manualCreate,
   openPlatform,
+  store,
 }: {
   messages: AiMessage[];
   activity: string;
   openSettings: () => void;
   manualCreate: () => void;
   openPlatform: () => void;
+  store: AiStore;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -55,6 +58,8 @@ export function MessageList({
                   ))}
                 </ul>
               </div>
+            ) : event.prepared.type === "proposal" ? (
+              <ProposalCard id={message.id} store={store} />
             ) : (
               <p className="ai-message-note">已生成操作提案，尚未保存。</p>
             )}

@@ -23,7 +23,7 @@ import {
   type ReminderFormDraft,
   type ReminderGroup,
 } from "../reminder-model";
-import { repeatChoices } from "../calendar-model";
+import { ReminderFields } from "./ReminderFields";
 import { workspace } from "../workspace-store";
 
 const message = (error: unknown) =>
@@ -32,10 +32,12 @@ function ReminderEditor({
   item,
   onClose,
   onSaved,
+  visible = true,
 }: {
   item?: ReminderItem | undefined;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  visible?: boolean;
 }) {
   const [initial] = useState(() => reminderForm(item?.reminder));
   const [draft, setDraft] = useState<ReminderFormDraft>(initial);
@@ -44,9 +46,6 @@ function ReminderEditor({
   const [deleting, setDeleting] = useState(false);
   const historical = Boolean(item && (!item.isCurrent || item.completed_at !== null));
   const generated = item?.reminder.source === "event";
-  const update = (patch: Partial<ReminderFormDraft>) => setDraft({ ...draft, ...patch });
-  const repeat = (patch: Partial<ReminderFormDraft["repeat"]>) =>
-    update({ repeat: { ...draft.repeat, ...patch } });
   async function run(action: () => Promise<unknown>) {
     if (busy) return;
     setBusy(true);
@@ -87,7 +86,7 @@ function ReminderEditor({
   }
   return (
     <Dialog
-      open
+      open={visible}
       onOpenChange={(open) => {
         if (!open && !busy) onClose();
       }}
@@ -173,152 +172,13 @@ function ReminderEditor({
               save();
             }}
           >
-            <fieldset disabled={busy}>
-              <label className="event-field">
-                标题
-                <input
-                  required
-                  autoFocus
-                  value={draft.title}
-                  readOnly={generated}
-                  placeholder="需要记得做的事"
-                  onChange={(event) => update({ title: event.target.value })}
-                />
-              </label>
-              <label className="event-field">
-                备注
-                <textarea
-                  rows={3}
-                  value={draft.notes}
-                  readOnly={generated}
-                  onChange={(event) => update({ notes: event.target.value })}
-                />
-              </label>
-              <label className="event-all-day">
-                <input
-                  type="checkbox"
-                  checked={draft.timed}
-                  disabled={generated}
-                  onChange={(event) => update({ timed: event.target.checked })}
-                />
-                设置到期时间
-              </label>
-              {draft.timed && (
-                <>
-                  <label className="event-field">
-                    到期时间
-                    <input
-                      required
-                      type="datetime-local"
-                      value={draft.due}
-                      readOnly={generated}
-                      onChange={(event) => update({ due: event.target.value })}
-                    />
-                  </label>
-                  <p className="event-zone">提醒时区：{draft.zone}</p>
-                </>
-              )}
-              <div className="event-field-row">
-                <label className="event-field">
-                  优先级
-                  <select
-                    value={draft.priority}
-                    onChange={(event) => update({ priority: Number(event.target.value) })}
-                  >
-                    {priorities.map((label, index) => (
-                      <option key={label} value={index}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="event-field">
-                  重复
-                  <select
-                    disabled={!draft.timed || generated}
-                    value={draft.timed ? draft.repeat.preset : "none"}
-                    onChange={(event) =>
-                      repeat({
-                        preset: event.target.value as ReminderFormDraft["repeat"]["preset"],
-                      })
-                    }
-                  >
-                    {repeatChoices.map((choice) => (
-                      <option key={choice.value} value={choice.value}>
-                        {choice.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {draft.timed && draft.repeat.preset === "weekly" && (
-                <div className="event-weekdays" role="group" aria-label="提醒重复星期">
-                  {["一", "二", "三", "四", "五", "六", "日"].map((label, index) => (
-                    <Button
-                      type="button"
-                      key={label}
-                      disabled={generated}
-                      size="sm"
-                      variant={draft.repeat.weekdays.includes(index) ? "default" : "outline"}
-                      aria-pressed={draft.repeat.weekdays.includes(index)}
-                      aria-label={`星期${label}`}
-                      onClick={() =>
-                        repeat({
-                          weekdays: draft.repeat.weekdays.includes(index)
-                            ? draft.repeat.weekdays.filter((day) => day !== index)
-                            : [...draft.repeat.weekdays, index].sort(),
-                        })
-                      }
-                    >
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-              )}
-              {draft.timed && draft.repeat.preset !== "none" && (
-                <div className="event-field-row">
-                  <label className="event-field">
-                    结束重复
-                    <select
-                      disabled={generated}
-                      value={draft.repeat.end}
-                      onChange={(event) =>
-                        repeat({ end: event.target.value as ReminderFormDraft["repeat"]["end"] })
-                      }
-                    >
-                      <option value="never">永不</option>
-                      <option value="until">到某日</option>
-                      <option value="count">共 N 次</option>
-                    </select>
-                  </label>
-                  {draft.repeat.end === "until" && (
-                    <label className="event-field">
-                      截止日期
-                      <input
-                        required
-                        type="date"
-                        value={draft.repeat.until}
-                        readOnly={generated}
-                        onChange={(event) => repeat({ until: event.target.value })}
-                      />
-                    </label>
-                  )}
-                  {draft.repeat.end === "count" && (
-                    <label className="event-field">
-                      总次数
-                      <input
-                        required
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={draft.repeat.count}
-                        readOnly={generated}
-                        onChange={(event) => repeat({ count: event.target.value })}
-                      />
-                    </label>
-                  )}
-                </div>
-              )}
+            <ReminderFields
+              draft={draft}
+              onChange={setDraft}
+              disabled={busy}
+              generated={generated}
+              autoFocus
+            >
               {item && (
                 <Button
                   type="button"
@@ -330,7 +190,7 @@ function ReminderEditor({
                   删除提醒
                 </Button>
               )}
-            </fieldset>
+            </ReminderFields>
           </form>
         ))}
     </Dialog>
@@ -340,9 +200,11 @@ function ReminderEditor({
 export function RemindersPage({
   focus,
   createRequested = false,
+  visible = true,
 }: {
   focus?: ReminderTarget | null;
   createRequested?: boolean;
+  visible?: boolean;
 }) {
   const [items, setItems] = useState<ReminderItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -590,6 +452,7 @@ export function RemindersPage({
       </div>
       {(newOpen || active) && (
         <ReminderEditor
+          visible={visible}
           key={newOpen ? "new" : active!.key}
           item={newOpen ? undefined : active}
           onClose={close}

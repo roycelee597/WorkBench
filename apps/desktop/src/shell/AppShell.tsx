@@ -25,7 +25,10 @@ import {
   generalApi,
   configureHostServices,
   onAutostartOffer,
+  generalAiActions,
+  openAiTarget,
 } from "@workbench/general";
+import { aiRegistry } from "../core/ai/registry";
 import { cn, Button, Dialog } from "@workbench/ui";
 import { FinanceBackfillDialog, FinanceSettings, financeApi } from "@workbench/finance";
 import { AiSettings, configureAiHostServices } from "@workbench/ai";
@@ -36,6 +39,7 @@ const FinanceWorkbench = lazy(() =>
 const AiWorkbench = lazy(() =>
   import("@workbench/ai/page").then((module) => ({ default: module.AiWorkbench })),
 );
+if (!aiRegistry.get("reminders_create")) aiRegistry.register(generalAiActions);
 const builtinWorkbenches = [
   { id: "general", name: "综合工作台", icon: "workspace", component: GeneralWorkbench },
   { id: "finance", name: "金融指标", icon: "workspace", component: FinanceWorkbench },
@@ -143,6 +147,21 @@ export function AppShell() {
         return aiShortcutController.getStatus();
       },
       setShortcut: (value) => aiShortcutController.configure(value),
+      openTarget: (target) =>
+        queue(async () => {
+          await workspace.flush();
+          await openAiTarget(target);
+          setActiveWorkbench("general");
+        }),
+      openCreateForm: (actionName, draft) =>
+        queue(async () => {
+          if (workspace.useWorkspace.getState().createDraft)
+            throw new Error("请先保存或关闭已打开的新建表单");
+          await workspace.flush();
+          await workspace.useWorkspace.getState().openCreateDraft(actionName, draft);
+          ensureWorkspaceNavigation();
+          setActiveWorkbench("general");
+        }),
     });
     void initializeQuickHost().catch(() =>
       workspace.useWorkspace.setState({ shortcutError: "快速新建服务未能启动，请重启应用。" }),
@@ -366,6 +385,7 @@ export function AppShell() {
         )}
         <div className={activeWorkbench === "general" ? "contents" : "hidden"}>
           <GeneralWorkbench
+            active={activeWorkbench === "general"}
             settingsExtra={
               <>
                 <AiSettings />

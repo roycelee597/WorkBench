@@ -11,6 +11,7 @@ import type {
 } from "../../../apps/desktop/src/core/repositories/models";
 import {
   expandEvents,
+  seriesStarts,
   type TimeRange,
   type EventOccurrence,
 } from "../../../apps/desktop/src/core/calendar/recurrence";
@@ -242,6 +243,9 @@ export function createGeneralApi(
     async createMemo() {
       return (await getData()).memos.create();
     },
+    async createMemoWith(draft: MemoDraft) {
+      return (await getData()).memos.create({ ...draft, tags: normalizeTags(draft.tags) });
+    },
     async saveMemo(id: string, draft: MemoDraft) {
       return (await getData()).memos.update(id, { ...draft, tags: normalizeTags(draft.tags) });
     },
@@ -278,6 +282,31 @@ export function createGeneralApi(
       const result = await (await getData()).events.create(input);
       await prompt(result.remind_before_minutes !== null);
       return result;
+    },
+    // 仅用于本地页面定位；不作为 AI 读取工具暴露。
+    async eventTarget(id: string, originalStart: number | null = null): Promise<EventOccurrence> {
+      const row = await (await getData()).events.get(id);
+      if (!row || row.deleted_at !== null || row.purged_at !== null)
+        throw new Error("日程已不存在");
+      const start =
+        originalStart ?? seriesStarts(row, row.start_at, row.start_at + 370 * 86_400_000, 1)[0];
+      if (start === undefined) throw new Error("日程没有可定位的实例");
+      const target = expandEvents([row], { start, end: start + 1 }).find(
+        (item) => item.original_start_at === start,
+      );
+      if (!target) throw new Error("这次日程已不存在");
+      return target;
+    },
+    async reminderRecordTarget(id: string, occurrenceId?: string): Promise<ReminderTarget> {
+      const data = await getData();
+      const row = await data.reminders.get(id);
+      if (!row || row.deleted_at !== null || row.purged_at !== null)
+        throw new Error("提醒已不存在");
+      if (occurrenceId) {
+        const occurrence = await data.occurrences.get(occurrenceId);
+        if (!occurrence || occurrence.reminder_id !== id) throw new Error("这次提醒已不存在");
+      }
+      return { reminderId: id, ...(occurrenceId ? { occurrenceId } : {}) };
     },
     async updateEvent(id: string, patch: SeriesPatch) {
       const result = await (await getData()).events.update(id, patch);

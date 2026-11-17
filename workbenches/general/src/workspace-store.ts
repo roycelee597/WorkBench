@@ -12,6 +12,7 @@ import {
   type EventOccurrence,
 } from "./api";
 import { MemoAutosave, type SaveStatus } from "./memo-autosave";
+import { parseAiCreateDraft, type AiCreateDraft } from "./ai-create-model";
 
 export type Page = "today" | "memos" | "calendar" | "reminders" | "settings" | "trash";
 interface WorkspaceState {
@@ -26,6 +27,7 @@ interface WorkspaceState {
   deletedReminders: Reminder[];
   reminderTarget: ReminderTarget | null;
   calendarTarget: EventOccurrence | null;
+  createDraft: AiCreateDraft | null;
   calendarNavigationVersion: number;
   reminderCreate: boolean;
   reminderNavigationVersion: number;
@@ -54,6 +56,7 @@ interface WorkspaceState {
   openMemo: (id: string) => Promise<void>;
   openReminder: (target: ReminderTarget) => Promise<void>;
   newReminder: () => Promise<void>;
+  openCreateDraft: (actionName: string, value: unknown) => Promise<void>;
   openMissed: (count: number) => Promise<void>;
   refreshTrash: () => Promise<void>;
   setTheme: (theme: Theme) => Promise<void>;
@@ -110,6 +113,7 @@ export function createWorkspace(api: GeneralApi) {
       deletedReminders: [],
       reminderTarget: null,
       calendarTarget: null,
+      createDraft: null,
       calendarNavigationVersion: 0,
       reminderCreate: false,
       reminderNavigationVersion: 0,
@@ -264,6 +268,32 @@ export function createWorkspace(api: GeneralApi) {
             page: "reminders",
             reminderTarget: null,
             reminderCreate: true,
+            reminderNavigationVersion: state.reminderNavigationVersion + 1,
+          }));
+        }),
+      openCreateDraft: (actionName, value) =>
+        action(async () => {
+          if (get().createDraft) throw new Error("请先保存或关闭已打开的新建表单");
+          const draft = parseAiCreateDraft(value);
+          const names = {
+            event: "calendar_create_event",
+            reminder: "reminders_create",
+            memo: "memos_create",
+          };
+          if (names[draft.type] !== actionName) throw new Error("草稿与新建操作不一致");
+          await queue.flush();
+          set((state) => ({
+            createDraft: structuredClone(draft),
+            page:
+              draft.type === "event"
+                ? "calendar"
+                : draft.type === "reminder"
+                  ? "reminders"
+                  : "memos",
+            calendarTarget: null,
+            reminderTarget: null,
+            reminderCreate: false,
+            calendarNavigationVersion: state.calendarNavigationVersion + 1,
             reminderNavigationVersion: state.reminderNavigationVersion + 1,
           }));
         }),
