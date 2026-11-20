@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { createActionFixture } from "./ai-create-fixtures.mjs";
+import { createQueryFixture, queryRequestSummary } from "./ai-query-fixtures.mjs";
 
 // 在仓库忽略目录运行的离线联调夹具；不记录 Authorization 或正文。
 const folder = path.resolve(process.argv[2] ?? "dist/ai-a1-check");
@@ -20,8 +21,13 @@ const server = http.createServer(async (request, response) => {
   }
   const configured = JSON.parse(fs.readFileSync(configuration, "utf8").replace(/^\uFEFF/, ""));
   const scenario = { ...configured };
-  const toolCalls =
-    configured.create_actions && request.url === "/chat/completions"
+  const queryReply =
+    configured.query_actions && request.url === "/chat/completions"
+      ? createQueryFixture(value)
+      : null;
+  const toolCalls = queryReply?.tool_calls.length
+    ? queryReply.tool_calls
+    : configured.create_actions && request.url === "/chat/completions"
       ? createActionFixture(value.messages?.at(-1)?.content)
       : null;
   if (configured.scripted && request.url === "/chat/completions") {
@@ -43,6 +49,7 @@ const server = http.createServer(async (request, response) => {
       tool_names: Array.isArray(value.tools)
         ? value.tools.map((item) => item?.function?.name).filter((name) => typeof name === "string")
         : [],
+      tool_results: queryRequestSummary(value),
       max_tokens: value.max_tokens,
       stream: value.stream,
       thinking: value.thinking,
@@ -68,7 +75,10 @@ const server = http.createServer(async (request, response) => {
                     finish_reason: toolCalls ? "tool_calls" : "stop",
                     message: toolCalls
                       ? { role: "assistant", content: null, tool_calls: toolCalls }
-                      : { role: "assistant", content: "这是本机模拟服务的测试回复。" },
+                      : {
+                          role: "assistant",
+                          content: queryReply?.content ?? "这是本机模拟服务的测试回复。",
+                        },
                   },
                 ],
                 usage: { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 },
