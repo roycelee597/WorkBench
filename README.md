@@ -4,6 +4,9 @@ WorkBench 是一个以本地数据为中心的模块化桌面工作台，使用 
 项目先支持 Windows，内置综合工作台，后续按架构计划加入沙盒分工作台。
 
 当前进入 **Phase 1：综合工作台**，已提供 SQLite 数据层、主框架、Tiptap 备忘录、月／周／日日程、日程提前提醒、提醒事项与调度器、软件内通知条、托盘、自启设置和三类内容回收站；今天页提供日程、提醒和置顶备忘录汇总，支持全局快捷键快速新建；SDK 与插件运行时将在后续阶段实现。
+
+内置 AI 助手通过 DeepSeek 查询日程和提醒，生成待确认的操作卡片，并支持本地对话记录。
+
 项目的唯一设计依据是 [ARCHITECTURE.md](ARCHITECTURE.md)，开发规则见 [AGENTS.md](AGENTS.md)。
 
 ![Windows 备忘录运行截图](docs/screenshots/memos-light.jpg)

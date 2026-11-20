@@ -297,7 +297,7 @@ export interface AiActionGroup {
 
 - `when`：`"YYYY-MM-DDTHH:mm"` 或 `"YYYY-MM-DD"`。本地用 `ctx.timezone` 转毫秒；非法日期（2 月 30 日）报错，不纠正。
 - `repeat`（可选）：`{ preset: "daily" | "workdays" | "weekly" | "monthly" | "yearly", weekdays?: number[] /* 1=周一…7=周日，仅 weekly */, end?: { type: "never" | "until" | "count", until?: "YYYY-MM-DD", count?: 1–999 } }`。本地转成 `calendar-model.ts` 的 `RepeatDraft`（weekdays 减 1，对应 rrule 的 0=周一），再用现有 `buildRule` 生成 RRULE。**模型不直接写 RRULE。**
-- `duration_minutes`（日程，可选）：正整数，最多 **10080 分钟（7 天）**；有显式 `end` 时以 `end` 为准，超限参数本地拒绝。
+- `duration_minutes`（新建日程，可选）：正整数，最多 **10080 分钟（7 天）**。新建或修改日程时间时，显式 `end` 优先，最终时长也必须符合上限。全天按本地日期最多 7 天；已有超长日程可以只修改其他字段。
 - `remind_before_minutes`（日程，可选）：只能是 `reminderChoices` 里的值 `0 / 5 / 10 / 15 / 30 / 60 / 1440`；说了别的值（如 20 分钟）时取「不超过它的最近一档」并在卡片上标黄提示，Royce 可在卡片里改。没说就用设置里的「日程默认提前提醒」。
 - `refs`（修改、删除）：`string[]`，1–20 个，必须是本条对话里读取结果发出过的 ref（§8.3）。
 
@@ -397,7 +397,7 @@ export interface AiActionGroup {
   - 强制写入 `max_tokens = 4000`、`stream = false`、`thinking = disabled`，前端传了也覆盖。
   - 同时只允许 1 个请求在途，第二个直接返回 `BUSY`。
   - 本地调用限额按**模型调用次数**计，**默认关闭**；启用时默认每日 300 次、每分钟 20 次，均可配置为 1–4294967295 的整数，按北京时间自然日和分钟窗口计数，超出返回 `LOCAL_LIMIT`。限额保存在应用数据目录的独立 `ai-config.json`（`{ enabled, daily, per_minute }`），通过 `ai_get_call_limits` / `ai_set_call_limits` 读取和保存，不经 settings 或 `workbench.db`。步数限制由前端编排器处理（默认 6 次、异常硬上限 20 次），Rust 只管总调用计数和可选限额。
-  - Rust 独立维护并持久化用量到应用数据目录的 `ai-usage.json`，启动时恢复，不经 `workbench.db`。字段包括北京时间日期、当日调用数、分钟窗口及调用数、输入/输出 token；设置页经 `ai_key_status` 读取非敏感统计。实际发出的请求计数（含失败和超时），本地校验拦截、未发出的不计。用量文件损坏时按当前每日限额的一半保守恢复（默认 150 次），分钟窗口同样按配置的一半恢复且不超过当天计数，并写不含正文和密钥的日志。`ai-config.json` 损坏时恢复为启用的默认 300/20 限额并审计。请求发出前计数写盘失败则停止发送；上游已成功返回而 token 累计写盘失败时只审计，照常返回回复。
+  - Rust 独立维护并持久化用量到应用数据目录的 `ai-usage.json`，启动时恢复，不经 `workbench.db`。字段包括北京时间日期、当日调用数、分钟窗口及调用数、输入/输出 token；设置页经 `ai_key_status` 读取非敏感统计。实际发出的请求计数（含失败和超时），本地校验拦截、未发出的不计。用量文件损坏时按当前每日限额的一半保守恢复（默认 150 次），分钟窗口同样按配置的一半恢复且不超过当天计数，并写不含正文和密钥的日志。`ai-config.json` 损坏时原子写回默认关闭的 300/20 配置，成功后记录一次审计。请求发出前计数写盘失败则停止发送；上游已成功返回而 token 累计写盘失败时只审计，照常返回回复。
   - 超时：连接 10 秒、总计 30 秒。
   - **不自动重试**（任何错误都直接返回给前端，由 Royce 决定是否再发）。
 - 出参：规范化的 `{ content, tool_calls, usage }`；HTTP 错误按 §14 映射成错误码 + 中文说明。
@@ -420,11 +420,11 @@ CREATE INDEX idx_ai_messages_created ON ai_messages(created_at) WHERE deleted_at
 ```
 
 - 仓库 `core/repositories/ai-messages.ts`（UUID v7、软删除，沿用 base-repository）。
-- 页面只加载最近 200 条；更早的不显示。
+- 页面只显示最近 200 条。重启加载的记录仅供查看，新的模型请求从本次会话开始取上下文。
 - **清空对话**：二次确认后，对所有记录写 `deleted_at` + `purged_at` 并清空 `text`/`payload`（墓碑，符合「禁止真删除」）。不进回收站。
 - **自动清理**：沿用回收站清理的时机（启动时 + 每天一次），把 30 天前的对话记录同样清空内容。
 - 对话记录不参与以后的同步（在 ARCHITECTURE.md §8 注明 `ai_messages` 为本地专用表）。
-- 卡片的「待确认」草稿只在内存；重启后显示为「已失效」。
+- 卡片的「待确认」草稿只在内存；重启后显示为「已失效」。读取结果只保留固定提示，旧短引用按普通文字显示。
 
 ### 11.2 settings 新增键
 
