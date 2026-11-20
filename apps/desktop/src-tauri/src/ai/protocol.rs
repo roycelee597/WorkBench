@@ -2,7 +2,7 @@ use super::{AiError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const MAX_REQUEST: usize = 128 * 1024;
+pub const MAX_REQUEST: usize = 2 * 1024 * 1024;
 pub const MAX_RESPONSE: usize = 512 * 1024;
 pub const MODELS: [&str; 2] = ["deepseek-flash", "deepseek-v4-pro"];
 
@@ -90,7 +90,7 @@ pub fn request_body(value: Value) -> Result<(String, Vec<u8>)> {
     let messages: Vec<Message> =
         serde_json::from_value(value.get("messages").cloned().ok_or_else(AiError::bad)?)
             .map_err(|_| AiError::bad())?;
-    if messages.is_empty() || messages.len() > 40 {
+    if messages.is_empty() || messages.len() > 128 {
         return Err(AiError::large());
     }
     for message in &messages {
@@ -124,7 +124,12 @@ pub fn request_body(value: Value) -> Result<(String, Vec<u8>)> {
                 Some(content)
             }
         };
-        if content.is_some_and(|c| c.chars().count() > 8_000) {
+        let max_chars = if matches!(message, Message::Tool { .. }) {
+            30_000
+        } else {
+            8_000
+        };
+        if content.is_some_and(|c| c.chars().count() > max_chars) {
             return Err(AiError::large());
         }
     }
@@ -149,7 +154,7 @@ pub fn request_body(value: Value) -> Result<(String, Vec<u8>)> {
         }
     }
     let mut body = json!({ "model": model, "messages": messages,
-        "max_tokens": 800, "stream": false, "thinking": { "type": "disabled" } });
+        "max_tokens": 4000, "stream": false, "thinking": { "type": "disabled" } });
     // 空登记表时不发 tools / tool_choice，兼容 A2 只有文字的对话。
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools).map_err(|_| AiError::bad())?;

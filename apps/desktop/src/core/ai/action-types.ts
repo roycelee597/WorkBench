@@ -17,7 +17,7 @@ export interface AiContext {
 }
 
 export interface RefTable {
-  issue(target: AiTarget, snapshot: { updatedAt: number }): string;
+  issue(target: AiTarget, snapshot: Pick<RefEntry, "updatedAt" | "related">): string;
   resolve(ref: string, kind: AiTarget["kind"]): RefEntry | null;
   clear(): void;
 }
@@ -26,6 +26,7 @@ export interface RefEntry {
   ref: string;
   target: AiTarget;
   updatedAt: number;
+  related?: readonly { id: string; updatedAt: number }[];
   issuedAt: number;
 }
 
@@ -63,7 +64,14 @@ export interface Candidate extends ResultRef {
 export type DiffRow = { field: string; label: string; before: string; after: string };
 
 export type Prepared<D> =
-  | { type: "proposal"; draft: D; diff?: DiffRow[]; needsScope?: boolean; note?: string }
+  | {
+      type: "proposal";
+      draft: D;
+      diff?: DiffRow[];
+      needsScope?: boolean;
+      note?: string;
+      selections?: Array<{ id: string; title: string; when: string }>;
+    }
   | {
       type: "choose";
       candidates: Candidate[];
@@ -72,7 +80,7 @@ export type Prepared<D> =
     }
   | { type: "results"; items: ResultItem[]; empty: string }
   | { type: "data"; payload: DataPayload; items: ResultItem[] }
-  | { type: "error"; message: string; fallback?: "manual" | "settings" };
+  | { type: "error"; message: string; fallback?: "manual" | "settings"; target?: AiTarget };
 
 export type SeriesScope = "this" | "following" | "all";
 
@@ -81,12 +89,14 @@ export interface PreviewProps<D> {
   onChange: (draft: D) => void;
   readOnly: boolean;
   errors: string[];
+  scope?: SeriesScope;
 }
 
 export interface AiActionDefinition<A, D = A> {
   name: string;
   workbenchId: string;
   kind: "read" | "write";
+  requiresRead?: boolean;
   description: string;
   parameters: JsonSchemaObject;
   args: z.ZodType<A>;
@@ -94,6 +104,7 @@ export interface AiActionDefinition<A, D = A> {
   prepare(args: A, ctx: AiContext): Promise<Prepared<D>>;
   Preview?: ComponentType<PreviewProps<D>>;
   validate?(draft: D): string[];
+  select?(draft: D, ids: string[]): D;
   execute?(draft: D, scope?: SeriesScope): Promise<{ message: string; target?: AiTarget }>;
 }
 

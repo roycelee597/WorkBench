@@ -10,6 +10,30 @@ use std::{
 pub const DAILY_LIMIT: u32 = 300;
 pub const MINUTE_LIMIT: u32 = 20;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CallLimits {
+    pub enabled: bool,
+    pub daily: u32,
+    pub per_minute: u32,
+}
+
+impl Default for CallLimits {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            daily: DAILY_LIMIT,
+            per_minute: MINUTE_LIMIT,
+        }
+    }
+}
+
+impl CallLimits {
+    fn valid(self) -> bool {
+        self.daily > 0 && self.per_minute > 0
+    }
+}
+
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -67,28 +91,40 @@ impl Usage {
     }
 
     fn valid(&self) -> bool {
-        self.date == beijing_date(self.minute.saturating_mul(60))
-            && self.calls <= DAILY_LIMIT
-            && self.minute_calls <= MINUTE_LIMIT
-            && self.minute_calls <= self.calls
+        self.date == beijing_date(self.minute.saturating_mul(60)) && self.minute_calls <= self.calls
     }
 }
 
 pub struct UsageStore {
     path: PathBuf,
     value: Usage,
+    limits: CallLimits,
 }
 
 impl UsageStore {
     pub fn load(directory: &Path, seconds: u64) -> Result<Self> {
         let path = directory.join("ai-usage.json");
+        let limits: CallLimits = match fs::read(directory.join("ai-config.json")) {
+            Ok(bytes) => serde_json::from_slice::<CallLimits>(&bytes)
+                .ok()
+                .filter(|value| value.valid())
+                .unwrap_or_else(|| {
+                    audit(directory, "call_limits_recovered");
+                    CallLimits {
+                        enabled: true,
+                        ..CallLimits::default()
+                    }
+                }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => CallLimits::default(),
+            Err(_) => return Err(AiError::storage()),
+        };
         let (mut value, corrupt) = match fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<Usage>(&bytes) {
                 Ok(value) if value.valid() => (value, false),
                 _ => (
                     Usage {
-                        calls: DAILY_LIMIT / 2,
-                        minute_calls: MINUTE_LIMIT / 2,
+                        calls: limits.daily / 2,
+                        minute_calls: (limits.per_minute / 2).min(limits.daily / 2),
                         ..Usage::empty(seconds)
                     },
                     true,
@@ -100,25 +136,36 @@ impl UsageStore {
             Err(_) => return Err(AiError::storage()),
         };
         value.refresh(seconds);
-        let store = Self { path, value };
+        let store = Self {
+            path,
+            value,
+            limits,
+        };
         if corrupt {
-            audit(directory, "usage_recovered calls=150");
+            audit(
+                directory,
+                &format!("usage_recovered calls={}", store.value.calls),
+            );
             store.persist(&store.value)?;
         }
         Ok(store)
     }
 
     fn persist(&self, value: &Usage) -> Result<()> {
-        fs::create_dir_all(self.path.parent().ok_or_else(AiError::storage)?)
-            .map_err(|_| AiError::storage())?;
-        let temporary = self.path.with_extension("json.tmp");
-        let bytes = serde_json::to_vec(value).map_err(|_| AiError::storage())?;
-        let mut file = fs::File::create(&temporary).map_err(|_| AiError::storage())?;
-        file.write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|_| AiError::storage())?;
-        drop(file);
-        fs::rename(&temporary, &self.path).map_err(|_| AiError::storage())
+        persist_json(&self.path, value)
+    }
+
+    pub fn limits(&self) -> CallLimits {
+        self.limits
+    }
+
+    pub fn set_limits(&mut self, limits: CallLimits) -> Result<()> {
+        if !limits.valid() {
+            return Err(AiError::bad());
+        }
+        persist_json(&self.path.with_file_name("ai-config.json"), &limits)?;
+        self.limits = limits;
+        Ok(())
     }
 
     pub fn snapshot(&mut self, seconds: u64) -> Usage {
@@ -128,14 +175,16 @@ impl UsageStore {
 
     pub fn charge(&mut self, seconds: u64) -> Result<()> {
         let mut next = self.snapshot(seconds);
-        if next.calls >= DAILY_LIMIT || next.minute_calls >= MINUTE_LIMIT {
+        if self.limits.enabled
+            && (next.calls >= self.limits.daily || next.minute_calls >= self.limits.per_minute)
+        {
             return Err(AiError::new(
                 "LOCAL_LIMIT",
-                "已达到每分钟 20 次或每天 300 次调用上限，请稍后再试或手动新建",
+                "已达到设置中的每分钟或每日调用上限，请稍后再试或手动新建",
             ));
         }
-        next.calls += 1;
-        next.minute_calls += 1;
+        next.calls = next.calls.saturating_add(1);
+        next.minute_calls = next.minute_calls.saturating_add(1);
         // 先落盘再交给 HTTP 发送；写盘失败不发送，不能产生未记录的计费调用。
         self.persist(&next)?;
         self.value = next;
@@ -148,6 +197,19 @@ impl UsageStore {
         self.value.completion_tokens = self.value.completion_tokens.saturating_add(completion);
         self.persist(&self.value)
     }
+}
+
+fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    fs::create_dir_all(path.parent().ok_or_else(AiError::storage)?)
+        .map_err(|_| AiError::storage())?;
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(value).map_err(|_| AiError::storage())?;
+    let mut file = fs::File::create(&temporary).map_err(|_| AiError::storage())?;
+    file.write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| AiError::storage())?;
+    drop(file);
+    fs::rename(&temporary, path).map_err(|_| AiError::storage())
 }
 
 pub fn audit(directory: &Path, entry: &str) {

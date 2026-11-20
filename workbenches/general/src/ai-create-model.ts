@@ -45,7 +45,7 @@ export const eventCreateArgsSchema = z
     notes: z.string().optional(),
     start: when,
     end: when.optional(),
-    duration_minutes: z.number().int().positive().safe().optional(),
+    duration_minutes: z.number().int().min(1).max(10_080).optional(),
     all_day: z.boolean().optional(),
     repeat: aiRepeatSchema.optional(),
     remind_before_minutes: z.number().int().nonnegative().safe().nullable().optional(),
@@ -111,7 +111,7 @@ const aiCreateDraftSchema = z.discriminatedUnion("type", [
           timed: z.boolean(),
           due: z.string(),
           zone: z.string(),
-          priority: z.number(),
+          priority: z.number().int().min(0).max(3),
           repeat: repeatDraftSchema,
         })
         .strict(),

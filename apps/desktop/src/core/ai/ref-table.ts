@@ -12,7 +12,7 @@ export class MemoryRefTable implements RefTable {
     this.now = now;
   }
 
-  issue(target: AiTarget, snapshot: { updatedAt: number }): string {
+  issue(target: AiTarget, snapshot: Pick<RefEntry, "updatedAt" | "related">): string {
     const issuedAt = this.now();
     if (
       !Number.isSafeInteger(issuedAt) ||
@@ -28,7 +28,7 @@ export class MemoryRefTable implements RefTable {
     this.entries.set(ref, {
       ref,
       target: structuredClone(target),
-      updatedAt: snapshot.updatedAt,
+      ...structuredClone(snapshot),
       issuedAt,
     });
     return ref;

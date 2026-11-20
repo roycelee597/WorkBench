@@ -5,6 +5,10 @@ const createLabels: Record<string, { title: string; icon: string }> = {
   calendar_create_event: { title: "新建日程", icon: "日" },
   reminders_create: { title: "新建提醒", icon: "提" },
   memos_create: { title: "新建备忘录", icon: "备" },
+  calendar_update_event: { title: "修改日程", icon: "改" },
+  reminders_update: { title: "修改提醒", icon: "改" },
+  calendar_delete_event: { title: "删除日程", icon: "删" },
+  reminders_delete: { title: "删除提醒", icon: "删" },
 };
 const statusLabels = {
   pending: "待确认",
@@ -14,6 +18,7 @@ const statusLabels = {
   cancelled: "已取消",
   transferring: "正在打开表单…",
   transferred: "已转到表单",
+  expired: "已失效",
 };
 
 export function ProposalCard({ id, store }: { id: string; store: AiStore }) {
@@ -24,6 +29,10 @@ export function ProposalCard({ id, store }: { id: string; store: AiStore }) {
   const label = createLabels[proposal.actionName] ?? { title: "操作提案", icon: "待" };
   const editable = proposal.status === "pending" || proposal.status === "failed";
   const busy = proposal.status === "saving" || proposal.status === "transferring";
+  const deleting = proposal.actionName.includes("delete");
+  const creating = ["calendar_create_event", "reminders_create", "memos_create"].includes(
+    proposal.actionName,
+  );
   return (
     <section
       className="space-y-4 rounded-xl border border-border bg-background p-4"
@@ -52,9 +61,59 @@ export function ProposalCard({ id, store }: { id: string; store: AiStore }) {
           onChange={(draft: unknown) => store.getState().editProposal(id, draft)}
           readOnly={!editable}
           errors={[]}
+          {...(proposal.scope ? { scope: proposal.scope } : {})}
         />
       ) : (
         <p className="text-destructive">此操作当前不可用，请重新发起或手动新建。</p>
+      )}
+      {proposal.selections && (
+        <fieldset disabled={!editable} className="space-y-2">
+          <legend>选择要删除的项目（已选 {proposal.selectedIds.length} 项）</legend>
+          {proposal.selections.map((item) => (
+            <label key={item.id} className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={proposal.selectedIds.includes(item.id)}
+                onChange={(event) =>
+                  store
+                    .getState()
+                    .selectProposal(
+                      id,
+                      event.target.checked
+                        ? [...proposal.selectedIds, item.id]
+                        : proposal.selectedIds.filter((value) => value !== item.id),
+                    )
+                }
+              />
+              <span>
+                {item.when} · {item.title}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {proposal.needsScope && (
+        <fieldset disabled={!editable} className="space-y-2">
+          <legend>重复日程的操作范围（请选择）</legend>
+          {(
+            [
+              { value: "this", label: "仅这次" },
+              { value: "following", label: "这次及以后" },
+              { value: "all", label: "全部" },
+            ] as const
+          ).map((option) => (
+            <label key={option.value} className="mr-4 inline-flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name={`scope-${id}`}
+                value={option.value}
+                checked={proposal.scope === option.value}
+                onChange={() => store.getState().setProposalScope(id, option.value)}
+              />
+              {option.label}
+            </label>
+          ))}
+        </fieldset>
       )}
       {proposal.errors.length > 0 && (
         <div className="space-y-1 text-sm text-destructive" role="alert">
@@ -72,14 +131,24 @@ export function ProposalCard({ id, store }: { id: string; store: AiStore }) {
       {(editable || busy) && (
         <div className="flex flex-wrap gap-2">
           <Button
-            disabled={busy || !Preview}
+            variant={deleting ? "destructive" : "default"}
+            disabled={
+              busy ||
+              !Preview ||
+              (proposal.needsScope && !proposal.scope) ||
+              Boolean(proposal.selections && !proposal.selectedIds.length)
+            }
             onClick={() => void store.getState().confirmProposal(id)}
           >
             {proposal.status === "saving"
               ? "正在保存…"
               : proposal.status === "failed"
                 ? "重试保存"
-                : "确认"}
+                : deleting
+                  ? proposal.selections
+                    ? `确认删除 ${proposal.selectedIds.length} 项`
+                    : "确认删除"
+                  : "确认"}
           </Button>
           <Button
             variant="outline"
@@ -88,13 +157,15 @@ export function ProposalCard({ id, store }: { id: string; store: AiStore }) {
           >
             取消
           </Button>
-          <Button
-            variant="outline"
-            disabled={busy}
-            onClick={() => void store.getState().transferProposal(id)}
-          >
-            {proposal.status === "transferring" ? "正在打开表单…" : "在表单中打开"}
-          </Button>
+          {creating && (
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => void store.getState().transferProposal(id)}
+            >
+              {proposal.status === "transferring" ? "正在打开表单…" : "在表单中打开"}
+            </Button>
+          )}
         </div>
       )}
       {proposal.status === "saved" && proposal.result?.target && (

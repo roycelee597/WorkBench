@@ -83,6 +83,8 @@ pub fn run() {
             ai::ai_key_clear,
             ai::ai_key_test,
             ai::ai_chat,
+            ai::ai_get_call_limits,
+            ai::ai_set_call_limits,
             ai::ai_open_platform,
             finance::finance_token_status,
             finance::finance_token_clear,

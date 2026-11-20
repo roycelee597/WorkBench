@@ -6,7 +6,13 @@ import {
 } from "../../../apps/desktop/src/core/ai/orchestrator";
 import { MemoryRefTable } from "../../../apps/desktop/src/core/ai/ref-table";
 import { aiRegistry, type AiRegistry } from "../../../apps/desktop/src/core/ai/registry";
-import type { AiTarget, RegisteredAction } from "../../../apps/desktop/src/core/ai/action-types";
+import type {
+  AiTarget,
+  Prepared,
+  RegisteredAction,
+  ResultItem,
+  SeriesScope,
+} from "../../../apps/desktop/src/core/ai/action-types";
 import {
   aiError,
   AiClientError,
@@ -15,6 +21,7 @@ import {
   type AiModel,
 } from "../../../apps/desktop/src/core/ai/llm-client";
 import { aiApi, type AiApi } from "./api";
+import { aiReadPolicy } from "./ai-preferences";
 
 export type AiDisplayEvent = Exclude<OrchestratorEvent, { type: "status" }>;
 export type AiMessage = { id: string; createdAt: number } & (
@@ -24,16 +31,42 @@ type ConversationApi = Pick<AiApi, "keyStatus" | "loadModel" | "chat"> &
   Partial<{
     openTarget: (target: AiTarget) => Promise<void>;
     openCreateForm: (actionName: string, draft: unknown) => Promise<void>;
+    loadReadEnabled: () => Promise<boolean>;
+    loadStepLimitEnabled: () => Promise<boolean>;
   }>;
+export interface AiReadPolicy {
+  isAllowed: () => boolean;
+  subscribe: (listener: (allowed: boolean) => void) => () => void;
+}
 export interface AiProposal {
   actionName: string;
   draft: unknown;
-  status: "pending" | "saving" | "saved" | "failed" | "cancelled" | "transferring" | "transferred";
+  status:
+    | "pending"
+    | "saving"
+    | "saved"
+    | "failed"
+    | "cancelled"
+    | "transferring"
+    | "transferred"
+    | "expired";
   errors: string[];
   note?: string;
   result?: { message: string; target?: AiTarget };
   navigationError: string | null;
   openingTarget: boolean;
+  needsScope: boolean;
+  scope?: SeriesScope;
+  selections?: Array<{ id: string; title: string; when: string }>;
+  selectedIds: string[];
+  readGeneration: number;
+}
+export interface AiChoice {
+  actionName: string;
+  prepared: Extract<Prepared<unknown>, { type: "choose" }>;
+  status: "pending" | "choosing" | "chosen" | "expired";
+  errors: string[];
+  target?: AiTarget;
 }
 const editable = (proposal: AiProposal) => ["pending", "failed"].includes(proposal.status);
 const localFailure = (error: unknown, fallback: string) =>
@@ -49,6 +82,11 @@ interface AiState {
   activity: string;
   connectionError: Extract<OrchestratorEvent, { type: "error" }> | null;
   proposals: Record<string, AiProposal>;
+  choices: Record<string, AiChoice>;
+  refItems: Record<string, ResultItem>;
+  navigationErrors: Record<string, string>;
+  openingReference: string | null;
+  readEnabled: boolean;
   proposalBusy: boolean;
   getProposalAction: (id: string) => RegisteredAction | undefined;
   editProposal: (id: string, draft: unknown) => void;
@@ -56,6 +94,13 @@ interface AiState {
   cancelProposal: (id: string) => void;
   transferProposal: (id: string) => Promise<void>;
   openProposalTarget: (id: string) => Promise<void>;
+  setProposalScope: (id: string, scope: SeriesScope) => void;
+  selectProposal: (id: string, ids: string[]) => void;
+  pickCandidate: (id: string, candidateId: string) => Promise<void>;
+  openReference: (ref: string) => Promise<void>;
+  openLocalTarget: (target: AiTarget, key: string) => Promise<void>;
+  invalidateRead: () => void;
+  dispose: () => void;
   refresh: () => Promise<void>;
   setDraft: (text: string) => void;
   send: () => Promise<void>;
@@ -64,12 +109,20 @@ interface AiState {
 
 export function createAiStore(
   api: ConversationApi = aiApi,
-  options: { now?: () => number; newId?: () => string; registry?: AiRegistry } = {},
+  options: {
+    now?: () => number;
+    newId?: () => string;
+    registry?: AiRegistry;
+    readPolicy?: AiReadPolicy;
+  } = {},
 ) {
   const now = options.now ?? Date.now;
   const newId = options.newId ?? (() => crypto.randomUUID());
   const refs = new MemoryRefTable({ now });
   const registry = options.registry ?? aiRegistry;
+  const policy = options.readPolicy ?? aiReadPolicy;
+  let readGeneration = 0;
+  let unsubscribe = () => undefined as void;
   const orchestrator = new AiOrchestrator({
     client: { chat: api.chat },
     registry,
@@ -77,7 +130,18 @@ export function createAiStore(
     now,
   });
   let refreshVersion = 0;
-  return create<AiState>((set, get) => {
+  const store = create<AiState>((set, get) => {
+    const requiresRead = (name: string) =>
+      registry.get(name)?.requiresRead === true ||
+      [
+        "calendar_update_event",
+        "calendar_delete_event",
+        "reminders_update",
+        "reminders_delete",
+      ].includes(name);
+    const busyState = (proposals: Record<string, AiProposal>, choices = get().choices) =>
+      Object.values(proposals).some((item) => ["saving", "transferring"].includes(item.status)) ||
+      Object.values(choices).some((item) => item.status === "choosing");
     function updateProposal(id: string, patch: Partial<AiProposal>) {
       set((state) => {
         const proposal = state.proposals[id];
@@ -85,11 +149,40 @@ export function createAiStore(
         const proposals = { ...state.proposals, [id]: { ...proposal, ...patch } };
         return {
           proposals,
-          proposalBusy: Object.values(proposals).some((item) =>
-            ["saving", "transferring"].includes(item.status),
-          ),
+          proposalBusy: busyState(proposals),
         };
       });
+    }
+    function preparedState(id: string, actionName: string, prepared: Prepared<unknown>) {
+      if (prepared.type === "proposal") {
+        const proposal: AiProposal = {
+          actionName,
+          draft: prepared.draft,
+          status: "pending",
+          errors: [],
+          ...(prepared.note ? { note: prepared.note } : {}),
+          navigationError: null,
+          openingTarget: false,
+          needsScope: prepared.needsScope === true,
+          ...(prepared.selections ? { selections: prepared.selections } : {}),
+          selectedIds: prepared.selections?.map((item) => item.id) ?? [],
+          readGeneration,
+        };
+        return { proposals: { ...get().proposals, [id]: proposal } };
+      }
+      if (prepared.type === "choose")
+        return {
+          choices: {
+            ...get().choices,
+            [id]: {
+              actionName,
+              prepared,
+              status: "pending" as const,
+              errors: [],
+            },
+          },
+        };
+      return {};
     }
     function append(event: OrchestratorEvent) {
       if (event.type === "status") {
@@ -98,21 +191,17 @@ export function createAiStore(
       }
       const id = newId();
       set((state) => {
-        const proposal: AiProposal | undefined =
-          event.type === "prepared" && event.prepared.type === "proposal"
-            ? {
-                actionName: event.actionName,
-                draft: event.prepared.draft,
-                status: "pending",
-                errors: [],
-                ...(event.prepared.note ? { note: event.prepared.note } : {}),
-                navigationError: null,
-                openingTarget: false,
-              }
-            : undefined;
         return {
           messages: [...state.messages, { id, createdAt: now(), role: "assistant", event }],
-          ...(proposal ? { proposals: { ...state.proposals, [id]: proposal } } : {}),
+          ...(event.type === "prepared" ? preparedState(id, event.actionName, event.prepared) : {}),
+          ...(event.type === "results"
+            ? {
+                refItems: {
+                  ...state.refItems,
+                  ...Object.fromEntries(event.items.map((item) => [item.id, item])),
+                },
+              }
+            : {}),
         };
       });
     }
@@ -127,7 +216,158 @@ export function createAiStore(
       activity: "",
       connectionError: null,
       proposals: {},
+      choices: {},
+      refItems: {},
+      navigationErrors: {},
+      openingReference: null,
+      readEnabled: policy.isAllowed(),
       proposalBusy: false,
+      dispose: () => unsubscribe(),
+      invalidateRead: () => {
+        readGeneration++;
+        refs.clear();
+        orchestrator.invalidateRead();
+        const message = "你已关闭 AI 读取，依赖读取结果的操作已失效，请重新开启后查询。";
+        set((state) => {
+          const proposals = Object.fromEntries(
+            Object.entries(state.proposals).map(([id, proposal]) => [
+              id,
+              requiresRead(proposal.actionName) && editable(proposal)
+                ? { ...proposal, status: "expired" as const, errors: [message] }
+                : proposal,
+            ]),
+          );
+          const choices = Object.fromEntries(
+            Object.entries(state.choices).map(([id, choice]) => [
+              id,
+              choice.status === "pending" || choice.status === "choosing"
+                ? { ...choice, status: "expired" as const, errors: [message] }
+                : choice,
+            ]),
+          );
+          return {
+            readEnabled: false,
+            history: [],
+            refItems: {},
+            proposals,
+            choices,
+            proposalBusy: busyState(proposals, choices),
+          };
+        });
+      },
+      setProposalScope: (id, scope) => {
+        const proposal = get().proposals[id];
+        if (proposal && editable(proposal) && ["this", "following", "all"].includes(scope))
+          updateProposal(id, { scope, errors: [] });
+      },
+      selectProposal: (id, selectedIds) => {
+        const proposal = get().proposals[id];
+        const action = proposal && registry.get(proposal.actionName);
+        if (!proposal || !editable(proposal) || !proposal.selections || !action?.select) return;
+        const allowed = new Set(proposal.selections.map((item) => item.id));
+        const ids = [...new Set(selectedIds)].filter((value) => allowed.has(value));
+        try {
+          updateProposal(id, {
+            selectedIds: ids,
+            draft: action.select(proposal.draft, ids),
+            errors: [],
+          });
+        } catch (error) {
+          updateProposal(id, { errors: [localFailure(error, "选择无效，请重试。")] });
+        }
+      },
+      pickCandidate: async (id, candidateId) => {
+        const current = get().choices[id];
+        if (
+          !current ||
+          current.status !== "pending" ||
+          !current.prepared.candidates.some((item) => item.id === candidateId)
+        )
+          return;
+        const choice: AiChoice = {
+          actionName: current.actionName,
+          prepared: current.prepared,
+          status: "pending",
+          errors: [],
+        };
+        const generation = readGeneration;
+        set((state) => ({
+          choices: { ...state.choices, [id]: { ...choice, status: "choosing", errors: [] } },
+          proposalBusy: true,
+        }));
+        try {
+          const prepared = await choice.prepared.pick(candidateId);
+          if (generation !== readGeneration || !get().readEnabled || !policy.isAllowed()) return;
+          if (prepared.type === "error") {
+            set((state) => {
+              const choices = {
+                ...state.choices,
+                [id]: {
+                  ...choice,
+                  status: "pending" as const,
+                  errors: [prepared.message],
+                  ...(prepared.target ? { target: prepared.target } : {}),
+                },
+              };
+              return { choices, proposalBusy: busyState(state.proposals, choices) };
+            });
+            return;
+          }
+          set((state) => {
+            const choices = { ...state.choices, [id]: { ...choice, status: "chosen" as const } };
+            const next = preparedState(id, choice.actionName, prepared);
+            return {
+              ...next,
+              choices,
+              proposalBusy: busyState(next.proposals ?? state.proposals, choices),
+            };
+          });
+        } catch (error) {
+          if (generation === readGeneration)
+            set((state) => {
+              const choices = {
+                ...state.choices,
+                [id]: {
+                  ...choice,
+                  status: "pending" as const,
+                  errors: [localFailure(error, "无法选择此项，请重新查询。")],
+                },
+              };
+              return { choices, proposalBusy: busyState(state.proposals, choices) };
+            });
+        }
+      },
+      openLocalTarget: async (target, key) => {
+        set({ openingReference: key });
+        set((state) => ({ navigationErrors: { ...state.navigationErrors, [key]: "" } }));
+        try {
+          if (!api.openTarget) throw new Error("暂时无法打开，请到对应工作台查看。");
+          await api.openTarget(target);
+        } catch (error) {
+          set((state) => ({
+            navigationErrors: {
+              ...state.navigationErrors,
+              [key]: localFailure(error, "无法打开，请重新查询。"),
+            },
+          }));
+        } finally {
+          if (get().openingReference === key) set({ openingReference: null });
+        }
+      },
+      openReference: async (ref) => {
+        const kind = ref.startsWith("e") ? "event" : "reminder";
+        const entry = get().readEnabled && policy.isAllowed() && refs.resolve(ref, kind);
+        if (!entry || !get().refItems[ref]) {
+          set((state) => ({
+            navigationErrors: {
+              ...state.navigationErrors,
+              [ref]: "引用已过期或读取已关闭，请重新查询。",
+            },
+          }));
+          return;
+        }
+        await get().openLocalTarget(entry.target, ref);
+      },
       getProposalAction: (id) => {
         const proposal = get().proposals[id];
         return proposal ? registry.get(proposal.actionName) : undefined;
@@ -140,10 +380,30 @@ export function createAiStore(
       confirmProposal: async (id) => {
         const proposal = get().proposals[id];
         if (!proposal || !editable(proposal)) return;
+        if (proposal.needsScope && !proposal.scope) return;
+        if (proposal.selections && !proposal.selectedIds.length) return;
+        const readDependent = requiresRead(proposal.actionName);
+        if (
+          readDependent &&
+          (!get().readEnabled || !policy.isAllowed() || proposal.readGeneration !== readGeneration)
+        ) {
+          updateProposal(id, {
+            status: "expired",
+            errors: ["读取已关闭或目标已失效，请重新查询。"],
+          });
+          return;
+        }
         // 在任何异步步骤前锁住卡片，双击、重挂载和其他按钮都不能重复写入。
         updateProposal(id, { status: "saving", errors: [], navigationError: null });
         await Promise.resolve();
         try {
+          if (
+            readDependent &&
+            (proposal.readGeneration !== readGeneration || !policy.isAllowed())
+          ) {
+            updateProposal(id, { status: "expired", errors: ["你已关闭 AI 读取，此操作已失效。"] });
+            return;
+          }
           const action = registry.get(proposal.actionName);
           if (action?.kind !== "write" || !action.validate || !action.execute)
             throw new Error("此操作当前不可用，请重新发起或手动新建。");
@@ -152,7 +412,9 @@ export function createAiStore(
             updateProposal(id, { status: "pending", errors });
             return;
           }
-          const result = await action.execute(proposal.draft);
+          const result = proposal.scope
+            ? await action.execute(proposal.draft, proposal.scope)
+            : await action.execute(proposal.draft);
           updateProposal(id, { status: "saved", result });
         } catch (error) {
           updateProposal(id, {
@@ -168,7 +430,7 @@ export function createAiStore(
       },
       transferProposal: async (id) => {
         const proposal = get().proposals[id];
-        if (!proposal || !editable(proposal)) return;
+        if (!proposal || !editable(proposal) || requiresRead(proposal.actionName)) return;
         updateProposal(id, { status: "transferring", navigationError: null });
         await Promise.resolve();
         try {
@@ -202,9 +464,16 @@ export function createAiStore(
       setDraft: (draft) => set({ draft }),
       refresh: async () => {
         const version = ++refreshVersion;
+        const generation = readGeneration;
         set({ checking: true, connectionError: null });
         try {
-          const [key, model] = await Promise.all([api.keyStatus(), api.loadModel()]);
+          const [key, model, readEnabled] = await Promise.all([
+            api.keyStatus(),
+            api.loadModel(),
+            api.loadReadEnabled?.() ?? policy.isAllowed(),
+          ]);
+          if (generation === readGeneration && !readEnabled && get().readEnabled)
+            get().invalidateRead();
           if (version === refreshVersion) set({ key, model });
         } catch (failure) {
           const error = aiError(failure);
@@ -242,16 +511,45 @@ export function createAiStore(
           messages: [...state.messages, { id: newId(), createdAt: now(), role: "user", text }],
         }));
         try {
-          const [key, model] = await Promise.all([api.keyStatus(), api.loadModel()]);
+          const configGeneration = readGeneration;
+          const [key, model, readEnabled, stepLimitEnabled] = await Promise.all([
+            api.keyStatus(),
+            api.loadModel(),
+            api.loadReadEnabled?.() ?? policy.isAllowed(),
+            api.loadStepLimitEnabled?.() ?? true,
+          ]);
+          if (configGeneration === readGeneration && !readEnabled && get().readEnabled)
+            get().invalidateRead();
           set({ key, model });
           if (!key.configured) throw new AiClientError("KEY_MISSING");
+          const generation = readGeneration;
+          const allowed = get().readEnabled && policy.isAllowed();
           const result = await orchestrator.run({
             text,
             history: get().history,
             model,
-            onEvent: append,
+            readEnabled: allowed,
+            stepLimitEnabled,
+            isReadAllowed: () =>
+              generation === readGeneration && get().readEnabled && policy.isAllowed(),
+            onEvent: (event) => {
+              if (
+                generation !== readGeneration &&
+                (event.type === "results" ||
+                  event.type === "text" ||
+                  (event.type === "prepared" && requiresRead(event.actionName)))
+              )
+                return;
+              append(event);
+            },
           });
-          set((state) => ({ history: [...state.history, result.turn] }));
+          if (generation === readGeneration)
+            set((state) => ({
+              history: [
+                ...state.history.map((turn) => ({ ...turn, exchanges: [] })),
+                result.turn,
+              ].slice(-6),
+            }));
         } catch (failure) {
           const error = aiError(failure);
           append({
@@ -268,10 +566,23 @@ export function createAiStore(
       clear: () => {
         if (get().pending || get().proposalBusy) return;
         refs.clear();
-        set({ messages: [], history: [], proposals: {}, connectionError: null });
+        set({
+          messages: [],
+          history: [],
+          proposals: {},
+          choices: {},
+          refItems: {},
+          navigationErrors: {},
+          connectionError: null,
+        });
       },
     };
   });
+  unsubscribe = policy.subscribe((allowed) => {
+    if (allowed) store.setState({ readEnabled: true });
+    else store.getState().invalidateRead();
+  });
+  return store;
 }
 export type AiStore = ReturnType<typeof createAiStore>;
 export const useAiStore = createAiStore();

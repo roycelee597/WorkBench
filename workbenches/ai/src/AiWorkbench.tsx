@@ -9,8 +9,8 @@ import { ErrorCard } from "./components/ErrorCard";
 
 const examples = [
   "明天下午三点提醒我交实验报告",
-  "每个工作日早上 8 点提醒我背单词",
-  "下周三下午三点到四点和导师开会，提前半小时提醒",
+  "明天有什么安排",
+  "这周还有哪些没完成的提醒",
   "记一下：实验室门禁找张老师",
 ];
 
@@ -86,7 +86,7 @@ export function AiWorkbench({
               ✦
             </span>
             <h2>从一句话开始</h2>
-            <p>把想记住的事告诉 AI 助手，核对卡片并确认后保存。</p>
+            <p>查询安排，或提出修改；所有写入都要核对卡片并确认。</p>
             <div className="ai-examples">
               {examples.map((example) => (
                 <button

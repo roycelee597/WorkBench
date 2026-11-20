@@ -66,6 +66,8 @@ fn only_main_is_allowed_and_permissions_exclude_quick_create() {
         "ai_key_clear",
         "ai_key_test",
         "ai_chat",
+        "ai_get_call_limits",
+        "ai_set_call_limits",
         "ai_open_platform",
     ] {
         let section = source
@@ -114,7 +116,7 @@ fn request_forces_options_and_only_forwards_allowed_fields() {
     let (model, bytes) = request_body(value).unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(model, "deepseek-flash");
-    assert_eq!(body["max_tokens"], 800);
+    assert_eq!(body["max_tokens"], 4000);
     assert_eq!(body["thinking"], json!({"type":"disabled"}));
     assert_eq!(body["stream"], false);
     assert!(body.get("tools").is_none());
@@ -167,7 +169,7 @@ fn models_roles_tools_and_limits_are_validated_before_sending() {
     value["messages"][0]["content"] = json!("中".repeat(8_001));
     invalids.push(value);
     let mut value = request();
-    value["messages"] = json!(vec![json!({"role":"user","content":"x"}); 41]);
+    value["messages"] = json!(vec![json!({"role":"user","content":"x"}); 129]);
     invalids.push(value);
     let mut value = request();
     value["tools"] = json!(vec![tool(); 33]);
@@ -178,7 +180,7 @@ fn models_roles_tools_and_limits_are_validated_before_sending() {
     let mut value = request();
     value["messages"] = json!(vec![
         json!({"role":"user","content":"中".repeat(8_000)});
-        6
+        88
     ]);
     invalids.push(value);
     for value in invalids {
@@ -348,6 +350,12 @@ fn beijing_day_minute_limits_and_restart_recovery() {
     assert_eq!(usage::beijing_date(time + 1), "1970-01-02");
     assert_eq!(usage::beijing_date(951_840_000), "2000-03-01");
     let mut store = UsageStore::load(&directory.0, time).unwrap();
+    store
+        .set_limits(CallLimits {
+            enabled: true,
+            ..CallLimits::default()
+        })
+        .unwrap();
     for _ in 0..20 {
         store.charge(time).unwrap();
     }
@@ -374,6 +382,57 @@ fn beijing_day_minute_limits_and_restart_recovery() {
         "LOCAL_LIMIT"
     );
     assert_eq!(store.snapshot(time - 60).calls, 300);
+}
+
+#[test]
+fn configurable_call_limits_count_while_off_and_restore_settings() {
+    let directory = Scratch::new();
+    let time = 100_000;
+    let mut store = UsageStore::load(&directory.0, time).unwrap();
+    assert_eq!(store.limits(), CallLimits::default());
+    for _ in 0..301 {
+        store.charge(time).unwrap();
+    }
+    drop(store);
+    let mut store = UsageStore::load(&directory.0, time).unwrap();
+    assert_eq!(store.snapshot(time).calls, 301);
+    assert_eq!(store.snapshot(time).minute_calls, 301);
+    let limits = CallLimits {
+        enabled: true,
+        daily: 303,
+        per_minute: 1,
+    };
+    store.set_limits(limits).unwrap();
+    assert_eq!(store.charge(time).unwrap_err().code, "LOCAL_LIMIT");
+    store.charge(time + 60).unwrap();
+    assert_eq!(store.charge(time + 60).unwrap_err().code, "LOCAL_LIMIT");
+    store.charge(time + 120).unwrap();
+    assert_eq!(store.charge(time + 180).unwrap_err().code, "LOCAL_LIMIT");
+    assert!(store.set_limits(CallLimits { daily: 0, ..limits }).is_err());
+    drop(store);
+    let mut store = UsageStore::load(&directory.0, time + 180).unwrap();
+    assert_eq!(store.limits(), limits);
+    store
+        .set_limits(CallLimits {
+            enabled: false,
+            ..limits
+        })
+        .unwrap();
+    store.charge(time + 180).unwrap();
+    assert_eq!(store.snapshot(time + 180).calls, 304);
+}
+
+#[test]
+fn tool_messages_allow_thirty_thousand_characters() {
+    let mut value = request();
+    value["messages"] = json!([
+        {"role":"user","content":"查询日程"},
+        {"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"calendar_list_events","arguments":"{}"}}]},
+        {"role":"tool","content":"中".repeat(30_000),"tool_call_id":"call_1"}
+    ]);
+    assert!(request_body(value.clone()).is_ok());
+    value["messages"][2]["content"] = json!("中".repeat(30_001));
+    assert_eq!(request_body(value).unwrap_err().code, "TOO_LARGE");
 }
 
 #[test]

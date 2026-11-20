@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@workbench/ui";
 import { aiApi, type AiApi } from "./api";
 import { AiShortcutSettings } from "./AiShortcutSettings";
+import { AiLimitsSettings } from "./AiLimitsSettings";
 import {
   aiError,
   aiModelSchema,
@@ -162,8 +163,7 @@ export function AiSettings({ api = aiApi }: { api?: AiApi } = {}) {
             : "暂未读取用量"}
         </p>
         <p className="text-muted-foreground">
-          每分钟最多 20 次、每天最多 300
-          次模型调用。请求发出后即计数，失败和超时也会计入；测试连接不计模型调用。
+          请求发出后即计数，失败和超时也会计入。测试连接不计模型调用。
         </p>
         <Button
           type="button"
@@ -186,6 +186,7 @@ export function AiSettings({ api = aiApi }: { api?: AiApi } = {}) {
         </p>
       )}
       <AiShortcutSettings api={api} />
+      <AiLimitsSettings api={api} />
     </section>
   );
 }
