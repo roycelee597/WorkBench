@@ -152,6 +152,41 @@ describe("AI 修改与删除的本地目标边界", () => {
     });
   });
 
+  it("日程换结束时间最多七天，卡片编辑同样校验，原有长日程可换标题", async () => {
+    const f = await setup();
+    const row = await f.event();
+    const ref = await f.eventRef(row);
+    const invalid = { refs: [ref], changes: { end: "2026-11-27T15:01" } };
+    expect(await f.action("calendar_update_event").prepare(invalid, f.ctx)).toMatchObject({
+      type: "error",
+      message: "日程最长 7 天",
+    });
+
+    const { action, draft } = await f.proposal("calendar_update_event", {
+      refs: [ref],
+      changes: { end: "2026-11-27T15:00" },
+    });
+    if (draft.next?.type !== "event") throw new Error("缺少日程草稿");
+    draft.next.form.end = invalid.changes.end;
+    expect(action.validate!(draft)).toEqual(["日程最长 7 天"]);
+    await expect(action.execute!(draft)).rejects.toThrow("日程最长 7 天");
+    expect((await f.data.events.get(row.id))?.end_at).toBe(at(20, 16));
+    draft.next.form.end = "2026-11-27T15:00";
+    await action.execute!(draft);
+    expect((await f.data.events.get(row.id))?.end_at).toBe(at(27));
+
+    const long = await f.event({ end_at: at(28) });
+    const titleOnly = await f.proposal("calendar_update_event", {
+      refs: [await f.eventRef(long)],
+      changes: { title: "原有长日程换标题" },
+    });
+    await titleOnly.action.execute!(titleOnly.draft);
+    expect(await f.data.events.get(long.id)).toMatchObject({
+      title: "原有长日程换标题",
+      end_at: at(28),
+    });
+  });
+
   it("多个目标只出候选，本地标题/时间不可用模型替换，超过10个拒绝", async () => {
     const f = await setup();
     const refs: string[] = [];

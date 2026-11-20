@@ -341,7 +341,11 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
     if (plan.original.next) {
       if (draft.next?.type !== plan.original.next.type || draft.selectedIds.length !== 1)
         return ["修改草稿类型无效"];
-      const errors = validateAiCreateDraft(draft.next);
+      const initial = plan.original.initial;
+      const errors = validateAiCreateDraft(
+        draft.next,
+        initial?.type === "event" ? initial.form : undefined,
+      );
       if (errors.length) return errors;
       if (!aiMutationDiff(draft).length) return ["没有需要修改的字段"];
     } else if (draft.next !== undefined) return ["删除卡片不允许修改项目内容"];
@@ -550,7 +554,11 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
         if (changes.remind_before_minutes !== undefined)
           form.reminder = nearestAiReminder(changes.remind_before_minutes);
         const next: AiCreateDraft = { type: "event", form };
-        parseAiCreateDraft(next);
+        const errors = validateAiCreateDraft(
+          next,
+          changes.end === undefined ? initial.form : undefined,
+        );
+        if (errors.length) throw new MutationError(errors[0]!);
         const note =
           changes.remind_before_minutes !== undefined &&
           changes.remind_before_minutes !== form.reminder
@@ -665,7 +673,7 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
     ...base("event-update"),
     name: "calendar_update_event",
     description:
-      "用真实读取ref生成日程修改差异卡片。多个目标时由用户选择；重复日程必须由用户选择范围。start改动且没有end时保持原时长；全天end是不含结束当天边界。",
+      "用真实读取ref生成日程修改差异卡片。多个目标时由用户选择；重复日程必须由用户选择范围。start改动且没有end时保持原时长；修改时间后日程最长7天。全天end是不含结束当天边界。",
     args: eventUpdateArgsSchema,
     parameters: parameters({
       title: { type: "string", minLength: 1 },

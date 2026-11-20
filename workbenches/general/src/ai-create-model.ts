@@ -12,6 +12,10 @@ import {
 } from "./calendar-model";
 import { reminderFields, type ReminderFormDraft } from "./reminder-model";
 
+export const MAX_AI_EVENT_DURATION_MINUTES = 10_080;
+const MINUTE_MS = 60_000;
+const DAY_MS = 24 * 60 * MINUTE_MS;
+
 const when = z.string().refine((value) => {
   try {
     parseLocalTime(value, "UTC");
@@ -45,7 +49,7 @@ export const eventCreateArgsSchema = z
     notes: z.string().optional(),
     start: when,
     end: when.optional(),
-    duration_minutes: z.number().int().min(1).max(10_080).optional(),
+    duration_minutes: z.number().int().min(1).max(MAX_AI_EVENT_DURATION_MINUTES).optional(),
     all_day: z.boolean().optional(),
     repeat: aiRepeatSchema.optional(),
     remind_before_minutes: z.number().int().nonnegative().safe().nullable().optional(),
@@ -165,7 +169,7 @@ function validateRepeat(draft: RepeatDraft, zone: string): void {
 }
 
 /** 只接受已知表单字段；转交手动表单和确认写入前都重新检查。 */
-export function parseAiCreateDraft(value: unknown): AiCreateDraft {
+export function parseAiCreateDraft(value: unknown, unchangedTimingOf?: EventDraft): AiCreateDraft {
   const draft = aiCreateDraftSchema.parse(value);
   if (draft.type === "memo") {
     if (!draft.form.content.trim()) throw new Error("请填写备忘录正文");
@@ -182,7 +186,20 @@ export function parseAiCreateDraft(value: unknown): AiCreateDraft {
       throw new Error("请填写日程开始和结束时间");
     parseLocalTime(event.start, event.zone);
     parseLocalTime(event.end, event.zone);
-    draftFields(event);
+    const { start_at, end_at } = draftFields(event);
+    // 已有的长日程仍可修改非时间字段。全天用当地日期计算，避免夏令时改变天数。
+    if (
+      !unchangedTimingOf ||
+      event.start !== unchangedTimingOf.start ||
+      event.end !== unchangedTimingOf.end ||
+      event.allDay !== unchangedTimingOf.allDay ||
+      event.zone !== unchangedTimingOf.zone
+    ) {
+      const duration = event.allDay
+        ? Date.parse(event.end) - Date.parse(event.start) + DAY_MS
+        : end_at - start_at;
+      if (duration > MAX_AI_EVENT_DURATION_MINUTES * MINUTE_MS) throw new Error("日程最长 7 天");
+    }
   } else {
     if (draft.form.timed) parseLocalTime(draft.form.due, draft.form.zone);
     reminderFields(draft.form);
@@ -190,9 +207,9 @@ export function parseAiCreateDraft(value: unknown): AiCreateDraft {
   return draft;
 }
 
-export function validateAiCreateDraft(value: unknown): string[] {
+export function validateAiCreateDraft(value: unknown, unchangedTimingOf?: EventDraft): string[] {
   try {
-    parseAiCreateDraft(value);
+    parseAiCreateDraft(value, unchangedTimingOf);
     return [];
   } catch (failure) {
     return [

@@ -423,6 +423,22 @@ fn configurable_call_limits_count_while_off_and_restore_settings() {
 }
 
 #[test]
+fn corrupt_call_limits_write_back_defaults_and_audit_only_once() {
+    let directory = Scratch::new();
+    let config = directory.0.join("ai-config.json");
+    fs::write(&config, b"broken").unwrap();
+    for _ in 0..2 {
+        let store = UsageStore::load(&directory.0, 100_000).unwrap();
+        assert_eq!(store.limits(), CallLimits::default());
+        let persisted: CallLimits = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        assert_eq!(persisted, CallLimits::default());
+    }
+    assert!(!config.with_extension("json.tmp").exists());
+    let log = fs::read_to_string(directory.0.join("ai-client.log")).unwrap();
+    assert_eq!(log.matches("call_limits_recovered").count(), 1);
+}
+
+#[test]
 fn tool_messages_allow_thirty_thousand_characters() {
     let mut value = request();
     value["messages"] = json!([
