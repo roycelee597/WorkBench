@@ -83,7 +83,9 @@ function environment(steps: Array<LlmResponse | Error>, client?: LlmClient) {
     draft: { recordId: "private-write-id", notes: "private-write-notes" },
   }));
   const writeAction: AiActionDefinition<ReadArgs, { recordId: string; notes: string }> = {
-    ...readAction,
+    workbenchId,
+    parameters: readAction.parameters,
+    args: argsSchema,
     name: "calendar_update_event",
     kind: "write",
     description: "生成测试提案",
@@ -149,24 +151,49 @@ describe("AI 编排器的有界工具循环", () => {
     expect(JSON.stringify(f.mock.requests)).not.toContain("private-");
     expect(f.execute).not.toHaveBeenCalled();
     expect(observed).toContain("results");
+    expect(result.events.filter((event) => event.type === "status")).toEqual([
+      { type: "status", message: "正在理解…" },
+      { type: "status", message: "正在查看相关日程…" },
+    ]);
     expect(result.turn.readDerived).toBe(true);
     expect(JSON.stringify(result.turn)).not.toContain("private-");
   });
 
-  it("第三次仍然读取时直接展示结果，不进行第四次调用", async () => {
-    const f = environment([
-      tools(call()),
-      tools(call("calendar_list_events", "call_2")),
-      tools(call("calendar_list_events", "call_3")),
-    ]);
+  it("默认第六步仍然读取时展示结果，第七步不调用", async () => {
+    const f = environment(
+      Array.from({ length: 7 }, (_, i) => tools(call("calendar_list_events", `call_${i}`))),
+    );
     const result = await f.orchestrator.run({ text: "查查安排" });
-    expect(f.mock.requests).toHaveLength(3);
-    expect(f.read).toHaveBeenCalledTimes(3);
-    expect(result.events.filter((event) => event.type === "results")).toHaveLength(3);
+    expect(f.mock.requests).toHaveLength(6);
+    expect(f.read).toHaveBeenCalledTimes(6);
+    expect(result.events.filter((event) => event.type === "results")).toHaveLength(6);
     expect(result.events).toContainEqual({
       type: "warning",
-      message: "AI 没能在 3 步内给出结论，这是查到的内容",
+      message: "AI 没能在 6 步内给出结论，这是查到的内容",
     });
+  });
+
+  it("关闭步数设置后继续到第20步并报告异常", async () => {
+    const f = environment(
+      Array.from({ length: 21 }, (_, i) => tools(call("calendar_list_events", `call_${i}`))),
+    );
+    const result = await f.orchestrator.run({ text: "查查安排", stepLimitEnabled: false });
+    expect(f.mock.requests).toHaveLength(20);
+    expect(result.events).toContainEqual({ type: "warning", message: "已停止：步数异常" });
+  });
+
+  it("读取进行中关开隐私设置仍停止旧循环，并清除晚到的短引用", async () => {
+    const f = environment([tools(call()), answer()]);
+    const original = f.read.getMockImplementation()!;
+    f.read.mockImplementationOnce(async (args, ctx) => {
+      f.orchestrator.invalidateRead();
+      return original(args, ctx);
+    });
+    const result = await f.orchestrator.run({ text: "查询", isReadAllowed: () => true });
+    expect(f.mock.requests).toHaveLength(1);
+    expect(result.events.some((event) => event.type === "results")).toBe(false);
+    expect(result.turn.exchanges).toEqual([]);
+    expect(f.refs.resolve("e1", "event")).toBeNull();
   });
 
   it("含写入的响应是最后一轮；读调用仅展示，提案从不 execute", async () => {
@@ -266,26 +293,27 @@ describe("AI 编排器的有界工具循环", () => {
     f.read.mockImplementationOnce(async (args, ctx) => {
       const item = await original(args, ctx);
       if (item.type !== "data") throw new Error("缺少测试数据");
-      item.payload.items = Array.from({ length: 70 }, () => ({
+      item.payload.items = Array.from({ length: 540 }, () => ({
         ...item.payload.items[0]!,
         title: "长".repeat(80),
         repeat: "重复".repeat(100),
       }));
-      item.payload.total = 70;
+      item.payload.total = 540;
       return item;
     });
     await f.orchestrator.run({ text: "预算" });
     const output = f.mock.requests[1]!.messages.find((item) => item.role === "tool");
     if (output?.role !== "tool") throw new Error("没有读取输出");
-    expect(output.content.length).toBeLessThanOrEqual(6000);
+    expect(output.content.length).toBeLessThanOrEqual(30_000);
+    expect(output.content.length).toBeGreaterThan(8_000);
     const payload = JSON.parse(output.content) as {
       items: { title: string }[];
       total: number;
       truncated: boolean;
     };
-    expect(payload.items.length).toBeLessThanOrEqual(60);
+    expect(payload.items.length).toBeLessThanOrEqual(500);
     expect(Array.from(payload.items[0]!.title)).toHaveLength(60);
-    expect(payload.total).toBe(70);
+    expect(payload.total).toBe(540);
     expect(payload.truncated).toBe(true);
   });
 });

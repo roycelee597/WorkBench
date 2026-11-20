@@ -3,11 +3,13 @@ import {
   AiClientError,
   aiKeyStatusSchema,
   aiModelSchema,
+  aiCallLimitsSchema,
   DEFAULT_AI_MODEL,
   invokeAi,
   TauriLlmClient,
   type AiInvoker,
   type AiModel,
+  type AiCallLimits,
   type LlmRequest,
 } from "../../../apps/desktop/src/core/ai/llm-client";
 import type { SettingsRepository } from "../../../apps/desktop/src/core/repositories/settings";
@@ -17,12 +19,24 @@ import {
 } from "../../../apps/desktop/src/core/shortcut-controller";
 import { aiHostServices } from "./host-services";
 import type { AiTarget } from "../../../apps/desktop/src/core/ai/action-types";
+import { aiReadPolicy, publishReadPolicy } from "./ai-preferences";
 
 export function createAiApi(
   getSettings: () => Promise<Pick<SettingsRepository, "getValue" | "setValue">>,
   call: AiInvoker = invokeAi,
 ) {
   const client = new TauriLlmClient(call);
+  // 保存关闭失败时，本进程继续阻止读取，直到用户明确开启或成功重试。
+  let privacyRevision = 0;
+  async function readLimits(command: string, args?: Record<string, unknown>) {
+    try {
+      const parsed = aiCallLimitsSchema.safeParse(await call(command, args));
+      if (!parsed.success) throw new AiClientError("BAD_RESPONSE");
+      return parsed.data;
+    } catch (error) {
+      throw aiError(error);
+    }
+  }
   async function status(command = "ai_key_status", args?: Record<string, unknown>) {
     try {
       const result = aiKeyStatusSchema.safeParse(await call(command, args));
@@ -34,6 +48,36 @@ export function createAiApi(
   }
   return {
     chat: (request: LlmRequest) => client.chat(request),
+    loadCallLimits: () => readLimits("ai_get_call_limits"),
+    async saveCallLimits(limits: AiCallLimits) {
+      if (!aiCallLimitsSchema.safeParse(limits).success) throw new AiClientError("BAD_RESPONSE");
+      return readLimits("ai_set_call_limits", { limits });
+    },
+    async loadReadEnabled() {
+      const revision = privacyRevision;
+      const value = await (await getSettings()).getValue("ai.read_data_enabled");
+      if (revision === privacyRevision && !privacyRevision) publishReadPolicy(value !== false);
+      return aiReadPolicy.isAllowed() && (value !== false || revision !== 0);
+    },
+    async saveReadEnabled(value: boolean) {
+      const revision = ++privacyRevision;
+      if (!value) publishReadPolicy(false);
+      await (await getSettings()).setValue("ai.read_data_enabled", value);
+      if (revision === privacyRevision) publishReadPolicy(value);
+    },
+    async loadStepLimitEnabled() {
+      return (await (await getSettings()).getValue("ai.step_limit_enabled")) !== false;
+    },
+    async saveStepLimitEnabled(value: boolean) {
+      await (await getSettings()).setValue("ai.step_limit_enabled", value);
+    },
+    async openPrivacyPolicy() {
+      try {
+        await call("ai_open_platform", { privacy: true });
+      } catch (error) {
+        throw aiError(error);
+      }
+    },
     openTarget: (target: AiTarget) => aiHostServices.openTarget(target),
     openCreateForm: (actionName: string, draft: unknown) =>
       aiHostServices.openCreateForm(actionName, draft),

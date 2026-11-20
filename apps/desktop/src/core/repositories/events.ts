@@ -15,6 +15,21 @@ import { eventDefinition, reminderDefinition, reminderOccurrenceDefinition } fro
 import { encodeFields, insertStatement, updateStatement } from "./sql-statements";
 import { eventReminderStatements } from "./event-reminder-sync";
 
+export interface EventExpected {
+  updatedAt: number;
+  related?: ReadonlyArray<{ id: string; updatedAt: number }>;
+}
+
+function expectedGuards(id: string, expected?: EventExpected): SqlStatement[] {
+  if (!expected) return [];
+  return [{ id, updatedAt: expected.updatedAt }, ...(expected.related ?? [])].map((entry) => ({
+    query:
+      'UPDATE "events" SET "id" = "id" WHERE id = ? AND updated_at = ? AND deleted_at IS NULL AND purged_at IS NULL',
+    values: [entry.id, entry.updatedAt],
+    expectedRows: 1,
+  }));
+}
+
 export class EventsRepository extends BaseRepository<CalendarEvent, EventFields> {
   constructor(db: SqlDatabase, context: RepositoryContext) {
     super(db, context, eventDefinition);
@@ -61,7 +76,11 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
     await this.commitChanges({ created: [event], updated }, parent ? [parent] : []);
     return this.requireActive(event.id);
   }
-  async update(id: string, patch: Partial<EventFields>): Promise<CalendarEvent> {
+  async update(
+    id: string,
+    patch: Partial<EventFields>,
+    expected?: EventExpected,
+  ): Promise<CalendarEvent> {
     const current = await this.requireActive(id);
     encodeFields(patch, this.definition.columns);
     const fields = { ...current, ...patch };
@@ -74,6 +93,7 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
         updated: [{ ...fields, updated_at: this.context.now(), device_id: this.context.deviceId }],
       },
       [current],
+      expectedGuards(id, expected),
     );
     return this.requireActive(id);
   }
@@ -121,8 +141,12 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
       expectedRows: 1,
     };
   }
-  private async commitChanges(changes: EventChangeSet, originals: CalendarEvent[]): Promise<void> {
-    const statements: SqlStatement[] = [];
+  private async commitChanges(
+    changes: EventChangeSet,
+    originals: CalendarEvent[],
+    guards: SqlStatement[] = [],
+  ): Promise<void> {
+    const statements: SqlStatement[] = [...guards];
     const snapshot = new Map(originals.map((event) => [event.id, event]));
     const now = this.context.now();
     const temporaryGroup = this.context.newId();
@@ -220,25 +244,59 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
     originalStart: number,
     scope: SeriesScope,
     patch: SeriesPatch,
+    expected?: EventExpected,
   ): Promise<void> {
+    await this.editOccurrenceChecked(id, originalStart, scope, patch, expected);
+  }
+  async editOccurrenceChecked(
+    id: string,
+    originalStart: number,
+    scope: SeriesScope,
+    patch: SeriesPatch,
+    expected?: EventExpected,
+  ): Promise<CalendarEvent> {
     const state = await this.seriesState(id, originalStart);
     const changes = editSeries(state, originalStart, scope, patch, {
       now: this.context.now(),
       deviceId: this.context.deviceId,
       newId: this.context.newId(),
     });
-    await this.commitChanges(changes, [state.series, ...state.exceptions]);
+    await this.commitChanges(
+      changes,
+      [state.series, ...state.exceptions],
+      expectedGuards(id, expected),
+    );
+    return (
+      changes.created.find((row) => row.recurrence_id === null) ??
+      changes.updated.find((row) => row.id === id) ??
+      state.series
+    );
   }
   async deleteOccurrence(id: string, originalStart: number, scope: SeriesScope): Promise<void> {
+    await this.deleteOccurrenceChecked(id, originalStart, scope);
+  }
+  // 返回本事务生成的父快照，批量逐项删除同一系列时不把外部并发误当成自己的修改。
+  async deleteOccurrenceChecked(
+    id: string,
+    originalStart: number,
+    scope: SeriesScope,
+    expected?: EventExpected,
+  ): Promise<CalendarEvent | null> {
     const state = await this.seriesState(id, originalStart);
     const changes = deleteSeries(state, originalStart, scope, {
       now: this.context.now(),
       deviceId: this.context.deviceId,
       newId: this.context.newId(),
     });
-    await this.commitChanges(changes, [state.series, ...state.exceptions]);
+    await this.commitChanges(
+      changes,
+      [state.series, ...state.exceptions],
+      expectedGuards(id, expected),
+    );
+    const parent = changes.updated.find((row) => row.id === id) ?? state.series;
+    return parent.deleted_at === null ? parent : null;
   }
-  override async softDelete(id: string): Promise<boolean> {
+  override async softDelete(id: string, expected?: EventExpected): Promise<boolean> {
     if (!(await this.get(id))) return false;
     const now = this.context.now();
     const group = this.context.newId();
@@ -248,7 +306,9 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
       device_id: this.context.deviceId,
       deletion_group_id: group,
     };
+    const guards = expectedGuards(id, expected);
     const result = await this.db.batch([
+      ...guards,
       updateStatement("events", fields, "(id = ? OR recurrence_id = ?) AND deleted_at IS NULL", [
         id,
         id,
@@ -266,7 +326,7 @@ export class EventsRepository extends BaseRepository<CalendarEvent, EventFields>
         [group],
       ),
     ]);
-    return (result[0] ?? 0) > 0;
+    return (result[guards.length] ?? 0) > 0;
   }
   override async restore(id: string): Promise<boolean> {
     const record = await this.findAny(id);

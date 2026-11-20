@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { AiMessage, AiStore } from "../ai-store";
 import { ErrorCard } from "./ErrorCard";
-import { ProposalCard } from "./ProposalCard";
+import { CandidateCard } from "./CandidateCard";
+import { ReadResults, ReferencedText } from "./ReadResults";
 
 export function MessageList({
   messages,
@@ -19,6 +20,7 @@ export function MessageList({
   store: AiStore;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
+  const navigationErrors = store((state) => state.navigationErrors);
   useEffect(() => {
     bottom.current?.scrollIntoView?.({ block: "end" });
   }, [messages.length, activity]);
@@ -42,26 +44,28 @@ export function MessageList({
                 openSettings={openSettings}
                 manualCreate={manualCreate}
                 openPlatform={openPlatform}
+                {...(event.target
+                  ? {
+                      openTarget: () =>
+                        void store.getState().openLocalTarget(event.target!, message.id),
+                    }
+                  : {})}
               />
             ) : event.type === "text" ? (
-              <p>{event.text}</p>
+              <ReferencedText text={event.text} store={store} />
             ) : event.type === "warning" ? (
               <p className="ai-message-note">{event.message}</p>
             ) : event.type === "results" ? (
-              <div>
-                <p>{event.items.length ? "查到的内容" : event.empty}</p>
-                <ul>
-                  {event.items.map((item) => (
-                    <li key={item.id}>
-                      {item.when} · {item.title}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : event.prepared.type === "proposal" ? (
-              <ProposalCard id={message.id} store={store} />
+              <ReadResults items={event.items} empty={event.empty} store={store} />
+            ) : event.prepared.type === "proposal" || event.prepared.type === "choose" ? (
+              <CandidateCard id={message.id} store={store} />
             ) : (
               <p className="ai-message-note">已生成操作提案，尚未保存。</p>
+            )}
+            {navigationErrors[message.id] && (
+              <p className="text-sm text-destructive" role="alert">
+                {navigationErrors[message.id]}
+              </p>
             )}
           </article>
         );

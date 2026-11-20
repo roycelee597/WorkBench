@@ -6,6 +6,7 @@ import { AiSettings } from "../../../workbenches/ai/src/AiSettings";
 import { createAiApi } from "../../../workbenches/ai/src/api";
 import type { JsonValue } from "../src/core/repositories/models";
 import type { AiInvoker } from "../src/core/ai/llm-client";
+import { aiReadPolicy, publishReadPolicy } from "../../../workbenches/ai/src/ai-preferences";
 
 const usage = {
   date: "2026-11-14",
@@ -20,14 +21,27 @@ let container: HTMLDivElement;
 let saved: Map<string, JsonValue>;
 let call: ReturnType<typeof vi.fn<AiInvoker>>;
 let configured: boolean;
+let keyReadFailure: boolean;
 beforeEach(() => {
+  publishReadPolicy(true);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   saved = new Map();
   configured = false;
-  call = vi.fn<AiInvoker>(async (command: string) => {
+  keyReadFailure = false;
+  let limits = { enabled: false, daily: 300, per_minute: 20 };
+  call = vi.fn<AiInvoker>(async (command: string, args) => {
+    if (command === "ai_key_status" && keyReadFailure) {
+      keyReadFailure = false;
+      throw { code: "STORAGE_ERROR" };
+    }
+    if (command === "ai_get_call_limits") return limits;
+    if (command === "ai_set_call_limits") {
+      limits = args?.limits as typeof limits;
+      return limits;
+    }
     if (command === "ai_key_set") configured = true;
     if (command === "ai_key_clear") {
       configured = false;
@@ -72,8 +86,42 @@ async function saveKey() {
 }
 
 describe("AI 设置及唯一数据入口", () => {
+  it("默认启用读取和六步限制，调用限额独立通过 Rust 设置", async () => {
+    const value = await render();
+    const checkbox = (title: string) =>
+      Array.from(container.querySelectorAll("label"))
+        .find((label) => label.textContent?.trim() === title)
+        ?.querySelector<HTMLInputElement>("input");
+    expect(checkbox("允许 AI 读取日程和提醒")?.checked).toBe(true);
+    expect(checkbox("限制每条消息的 AI 步数")?.checked).toBe(true);
+    expect(checkbox("启用调用限额")?.checked).toBe(false);
+    await act(async () => checkbox("启用调用限额")?.click());
+    expect(call).toHaveBeenCalledWith("ai_set_call_limits", {
+      limits: { enabled: true, daily: 300, per_minute: 20 },
+    });
+    await value.saveCallLimits({ enabled: true, daily: 10, per_minute: 2 });
+    expect(await value.loadCallLimits()).toEqual({ enabled: true, daily: 10, per_minute: 2 });
+    expect(saved.size).toBe(0);
+  });
+
+  it("关闭读取在持久化前生效，磁盘错误后也不恢复读取", async () => {
+    const write = vi.fn(async () => {
+      throw new Error("数据库暂时不可写");
+    });
+    const value = createAiApi(
+      async () => ({
+        getValue: async () => true,
+        setValue: write,
+      }),
+      call,
+    );
+    const attempt = value.saveReadEnabled(false);
+    expect(aiReadPolicy.isAllowed()).toBe(false);
+    await expect(attempt).rejects.toThrow();
+    expect(await value.loadReadEnabled()).toBe(false);
+  });
   it("状态读取失败时不误报未设置，仍允许清除系统凭据", async () => {
-    call.mockRejectedValueOnce({ code: "STORAGE_ERROR" });
+    keyReadFailure = true;
     await render();
     expect(container.textContent).toContain("无法读取凭据状态");
     expect(container.textContent).not.toContain("尚未设置");

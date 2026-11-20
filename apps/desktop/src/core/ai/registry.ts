@@ -59,7 +59,7 @@ export class AiRegistry {
 
   tools({ allowRead = true }: { allowRead?: boolean } = {}): LlmRequest["tools"] {
     return [...this.actions.values()]
-      .filter((action) => allowRead || action.kind !== "read")
+      .filter((action) => allowRead || (action.kind !== "read" && !action.requiresRead))
       .map((action) => ({
         type: "function",
         function: {
@@ -78,5 +78,5 @@ export class AiRegistry {
   }
 }
 
-// A2 的正式登记表保持为空；测试在各自实例中登记假操作。
+// 正式操作由 AppShell 登记；测试使用独立实例。
 export const aiRegistry = new AiRegistry();

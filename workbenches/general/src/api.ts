@@ -1,4 +1,5 @@
 import type { DataLayer } from "../../../apps/desktop/src/core/repositories";
+import type { EventExpected } from "../../../apps/desktop/src/core/repositories/events";
 import { FINANCE_WORKBENCH } from "../../../apps/desktop/src/core/finance/finance-target";
 import type {
   Memo,
@@ -127,6 +128,33 @@ export function createGeneralApi(
     } catch (error) {
       console.error("自启提示状态保存失败，可在设置页手动开启", error);
     }
+  }
+  async function eventState(id: string, originalStart: number | null) {
+    const events = await (await getData()).events.list();
+    const series = events.find((row) => row.id === id);
+    if (!series || series.recurrence_id !== null) throw new Error("这条已经不存在了");
+    const start = originalStart ?? series.start_at;
+    const exception = events.find(
+      (row) => row.recurrence_id === id && row.original_start_at === start,
+    );
+    const effectiveStart = exception?.start_at ?? start;
+    const occurrence = expandEvents(
+      events.filter((row) => row.id === id || row.recurrence_id === id),
+      {
+        start: effectiveStart,
+        end:
+          effectiveStart +
+          Math.max(1, (exception ?? series).end_at - (exception ?? series).start_at),
+      },
+    ).find((row) => row.series_id === id && row.original_start_at === start);
+    if (!occurrence || (series.rrule !== null && originalStart === null))
+      throw new Error("这条已经不存在了");
+    return {
+      series,
+      occurrence,
+      exceptions: events.filter((row) => row.recurrence_id === id),
+      related: exception ? [{ id: exception.id, updatedAt: exception.updated_at }] : [],
+    };
   }
   return {
     async quickPreferences(): Promise<QuickPreferences> {
@@ -285,17 +313,31 @@ export function createGeneralApi(
     },
     // 仅用于本地页面定位；不作为 AI 读取工具暴露。
     async eventTarget(id: string, originalStart: number | null = null): Promise<EventOccurrence> {
-      const row = await (await getData()).events.get(id);
-      if (!row || row.deleted_at !== null || row.purged_at !== null)
-        throw new Error("日程已不存在");
+      const events = await (await getData()).events.list();
+      const row = events.find((event) => event.id === id);
+      if (!row) throw new Error("日程已不存在");
+      const series = row.recurrence_id
+        ? events.find((event) => event.id === row.recurrence_id)
+        : row;
+      if (!series) throw new Error("日程已不存在");
       const start =
-        originalStart ?? seriesStarts(row, row.start_at, row.start_at + 370 * 86_400_000, 1)[0];
+        originalStart ??
+        row.original_start_at ??
+        (series.rrule
+          ? seriesStarts(series, series.start_at, series.start_at + 370 * 86_400_000).find(
+              (start) =>
+                !series.exdates.includes(start) ||
+                events.some(
+                  (event) => event.recurrence_id === series.id && event.original_start_at === start,
+                ),
+            )
+          : series.start_at);
       if (start === undefined) throw new Error("日程没有可定位的实例");
-      const target = expandEvents([row], { start, end: start + 1 }).find(
-        (item) => item.original_start_at === start,
-      );
-      if (!target) throw new Error("这次日程已不存在");
-      return target;
+      try {
+        return (await eventState(series.id, start)).occurrence;
+      } catch (error) {
+        throw new Error("这次日程已不存在", { cause: error });
+      }
     },
     async reminderRecordTarget(id: string, occurrenceId?: string): Promise<ReminderTarget> {
       const data = await getData();
@@ -308,8 +350,29 @@ export function createGeneralApi(
       }
       return { reminderId: id, ...(occurrenceId ? { occurrenceId } : {}) };
     },
-    async updateEvent(id: string, patch: SeriesPatch) {
-      const result = await (await getData()).events.update(id, patch);
+    aiEventState: eventState,
+    async aiReminderState(id: string, occurrenceId: string | null) {
+      const data = await getData();
+      const reminder = await data.reminders.get(id);
+      if (!reminder) throw new Error("这条已经不存在了");
+      const occurrence = occurrenceId ? await data.occurrences.get(occurrenceId) : null;
+      if (occurrenceId && (!occurrence || occurrence.reminder_id !== id))
+        throw new Error("这条已经不存在了");
+      const linked = reminder.event_id ? await data.events.get(reminder.event_id) : null;
+      return {
+        reminder,
+        occurrence,
+        linkedTarget: linked
+          ? {
+              kind: "event" as const,
+              eventId: linked.recurrence_id ?? linked.id,
+              originalStart: linked.recurrence_id ? linked.original_start_at : null,
+            }
+          : undefined,
+      };
+    },
+    async updateEvent(id: string, patch: SeriesPatch, expected?: EventExpected) {
+      const result = await (await getData()).events.update(id, patch, expected);
       await prompt(result.remind_before_minutes !== null);
       return result;
     },
@@ -318,8 +381,9 @@ export function createGeneralApi(
       originalStart: number,
       scope: SeriesScope,
       patch: SeriesPatch,
+      expected?: EventExpected,
     ) {
-      await (await getData()).events.editOccurrence(id, originalStart, scope, patch);
+      await (await getData()).events.editOccurrence(id, originalStart, scope, patch, expected);
       await prompt(
         patch.remind_before_minutes !== undefined
           ? patch.remind_before_minutes !== null
@@ -329,8 +393,29 @@ export function createGeneralApi(
     async deleteEventOccurrence(id: string, originalStart: number, scope: SeriesScope) {
       await (await getData()).events.deleteOccurrence(id, originalStart, scope);
     },
-    async deleteEvent(id: string) {
-      return (await getData()).events.softDelete(id);
+    async editEventOccurrenceChecked(
+      id: string,
+      originalStart: number,
+      scope: SeriesScope,
+      patch: SeriesPatch,
+      expected: EventExpected,
+    ) {
+      const result = await (
+        await getData()
+      ).events.editOccurrenceChecked(id, originalStart, scope, patch, expected);
+      await prompt(result.remind_before_minutes !== null);
+      return result;
+    },
+    async deleteEventOccurrenceChecked(
+      id: string,
+      originalStart: number,
+      scope: SeriesScope,
+      expected: EventExpected,
+    ) {
+      return (await getData()).events.deleteOccurrenceChecked(id, originalStart, scope, expected);
+    },
+    async deleteEvent(id: string, expected?: EventExpected) {
+      return (await getData()).events.softDelete(id, expected);
     },
     async listDeletedEvents() {
       return (await getData()).events.listDeleted();
@@ -378,7 +463,7 @@ export function createGeneralApi(
       const patch: Partial<ReminderFields> = {};
       for (const key of ["title", "notes", "due_at", "rrule", "priority", "timezone"] as const)
         if (current[key] !== draft[key]) Object.assign(patch, { [key]: draft[key] });
-      const saved = await data.reminders.update(id, patch);
+      const saved = await data.reminders.update(id, patch, expected);
       await prompt(saved.due_at !== null);
       return saved;
     },
@@ -388,8 +473,8 @@ export function createGeneralApi(
     async snoozeReminder(target: ReminderTarget) {
       await snoozeReminder(await getData(), target);
     },
-    async deleteReminder(id: string) {
-      return (await getData()).reminders.softDelete(id);
+    async deleteReminder(id: string, expected?: Reminder) {
+      return (await getData()).reminders.softDelete(id, expected);
     },
     async listDeletedReminders() {
       return (await getData()).reminders.listDeleted();

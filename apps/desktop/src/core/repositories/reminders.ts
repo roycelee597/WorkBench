@@ -37,7 +37,7 @@ export class RemindersRepository extends BaseRepository<Reminder, ReminderFields
     await this.validateParent(fields);
     return this.prepareInsert(fields);
   }
-  async update(id: string, patch: Partial<ReminderFields>): Promise<Reminder> {
+  async update(id: string, patch: Partial<ReminderFields>, expected?: Reminder): Promise<Reminder> {
     const current = await this.requireActive(id);
     encodeFields(
       patch,
@@ -76,6 +76,7 @@ export class RemindersRepository extends BaseRepository<Reminder, ReminderFields
     await this.validateParent(fields);
     const guard = encodeFields(current, Object.keys(current));
     const writes: SqlStatement[] = [
+      ...this.expectedGuards(id, expected),
       {
         ...updateStatement(
           "reminders",
@@ -108,6 +109,20 @@ export class RemindersRepository extends BaseRepository<Reminder, ReminderFields
       );
     await this.db.batch(writes);
     return this.requireActive(id);
+  }
+  private expectedGuards(id: string, expected?: Reminder): SqlStatement[] {
+    if (!expected) return [];
+    if (expected.id !== id) throw new Error("提醒快照与目标不一致");
+    const fields = encodeFields(expected, Object.keys(expected));
+    return [
+      {
+        query: `UPDATE "reminders" SET "id" = "id" WHERE ${Object.keys(fields)
+          .map((key) => `"${key}" IS ?`)
+          .join(" AND ")}`,
+        values: Object.values(fields),
+        expectedRows: 1,
+      },
+    ];
   }
   private validate(fields: ReminderFields): void {
     if (
@@ -179,10 +194,11 @@ export class RemindersRepository extends BaseRepository<Reminder, ReminderFields
     ]);
     return (result[0] ?? 0) > 0;
   }
-  override async softDelete(id: string): Promise<boolean> {
+  override async softDelete(id: string, expected?: Reminder): Promise<boolean> {
     if (!(await this.get(id))) return false;
-    const result = await this.db.batch(retireReminder(id, this.context));
-    return (result[0] ?? 0) > 0;
+    const guards = this.expectedGuards(id, expected);
+    const result = await this.db.batch([...guards, ...retireReminder(id, this.context)]);
+    return (result[guards.length] ?? 0) > 0;
   }
   override async purgeContent(id: string): Promise<boolean> {
     const row = await this.findAny(id);

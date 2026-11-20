@@ -76,7 +76,7 @@ describe("AI 客户端协议", () => {
     await expect(
       client.chat({
         ...request,
-        messages: Array.from({ length: 6 }, () => ({
+        messages: Array.from({ length: 90 }, () => ({
           role: "user" as const,
           content: "中".repeat(8_000),
         })),

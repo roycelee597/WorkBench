@@ -6,11 +6,13 @@ export function ErrorCard({
   openSettings,
   manualCreate,
   openPlatform,
+  openTarget,
 }: {
   error: Extract<OrchestratorEvent, { type: "error" }>;
   openSettings: () => void;
   manualCreate: () => void;
   openPlatform: () => void;
+  openTarget?: () => void;
 }) {
   return (
     <div className="ai-error-card" role="alert">
@@ -22,6 +24,11 @@ export function ErrorCard({
           error.code === "KEY_MISSING") && (
           <Button variant="outline" size="sm" onClick={openSettings}>
             去设置
+          </Button>
+        )}
+        {error.target && openTarget && (
+          <Button variant="outline" size="sm" onClick={openTarget}>
+            {error.target.kind === "event" ? "在日程中打开" : "在提醒中打开"}
           </Button>
         )}
         {error.code === "INSUFFICIENT_BALANCE" && (

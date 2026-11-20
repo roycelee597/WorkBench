@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
+import { MAX_AI_MESSAGES, MAX_AI_REQUEST_BYTES, MAX_READ_CHARS } from "./limits";
 
 export const aiModelSchema = z.enum(["deepseek-flash", "deepseek-v4-pro"]);
 export type AiModel = z.infer<typeof aiModelSchema>;
@@ -8,13 +9,22 @@ const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const aiUsageSchema = z
   .object({
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    calls: count.max(300),
+    calls: count,
     minute: count,
-    minute_calls: count.max(20),
+    minute_calls: count,
     prompt_tokens: count,
     completion_tokens: count,
   })
+  .strict()
+  .refine((value) => value.minute_calls <= value.calls);
+export const aiCallLimitsSchema = z
+  .object({
+    enabled: z.boolean(),
+    daily: count.min(1).max(4_294_967_295),
+    per_minute: count.min(1).max(4_294_967_295),
+  })
   .strict();
+export type AiCallLimits = z.infer<typeof aiCallLimitsSchema>;
 export type AiUsage = z.infer<typeof aiUsageSchema>;
 export const aiKeyStatusSchema = z
   .object({
@@ -51,7 +61,7 @@ const messageSchema = z.discriminatedUnion("role", [
   z
     .object({
       role: z.literal("tool"),
-      content: z.string().max(8_000),
+      content: z.string().max(MAX_READ_CHARS),
       tool_call_id: z.string().min(1).max(200),
     })
     .strict(),
@@ -81,7 +91,7 @@ const toolSchema = z
 export const llmRequestSchema = z
   .object({
     model: aiModelSchema,
-    messages: z.array(messageSchema).min(1).max(40),
+    messages: z.array(messageSchema).min(1).max(MAX_AI_MESSAGES),
     tools: z.array(toolSchema).max(32),
   })
   .strict();
@@ -114,7 +124,7 @@ export const aiErrorMessages = {
   KEY_INVALID: "API key 无效，请到设置中检查",
   INSUFFICIENT_BALANCE: "DeepSeek 账户余额不足，请到开放平台充值",
   RATE_LIMITED: "请求太频繁，请稍后再试",
-  LOCAL_LIMIT: "已达到每分钟 20 次或每天 300 次调用上限，请稍后再试或手动新建",
+  LOCAL_LIMIT: "已达到设置中的每分钟或每日调用上限，请稍后再试或手动新建",
   NETWORK: "网络连接失败，请手动新建",
   TIMEOUT: "DeepSeek 响应超时，请手动新建",
   UPSTREAM: "DeepSeek 服务暂时不可用，请手动新建",
@@ -165,7 +175,7 @@ export class TauriLlmClient implements LlmClient {
   async chat(request: LlmRequest): Promise<LlmResponse> {
     const parsed = llmRequestSchema.safeParse(request);
     if (!parsed.success) throw new AiClientError("BAD_RESPONSE");
-    if (new TextEncoder().encode(JSON.stringify(parsed.data)).length > 128 * 1024)
+    if (new TextEncoder().encode(JSON.stringify(parsed.data)).length > MAX_AI_REQUEST_BYTES)
       throw new AiClientError("TOO_LARGE");
     try {
       const response = llmResponseSchema.safeParse(

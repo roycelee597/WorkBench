@@ -325,6 +325,10 @@ describe("综合工作台 AI 新建操作", () => {
     ],
     ["reminders_create", { title: "没有时间的重复", due: null, repeat: { preset: "daily" } }],
     ["reminders_create", { title: "优先级", due: null, priority: 4 }],
+    [
+      "calendar_create_event",
+      { title: "超过七天", start: "2026-11-18T10:00", duration_minutes: 10_081 },
+    ],
     ["reminders_create", { title: "多余字段", due: null, source: "event" }],
     ["memos_create", { content: "正文", tags: [1] }],
     ["memos_create", { content: "   " }],
@@ -360,6 +364,12 @@ describe("综合工作台 AI 新建操作", () => {
       repeat: { preset: "daily" },
     });
     if (reminder.draft.type !== "reminder") throw new Error("测试类型错误");
+    for (const priority of [1.5, -1, 4]) {
+      const invalidPriority = { ...reminder.draft, form: { ...reminder.draft.form, priority } };
+      expect(validateAiCreateDraft(invalidPriority)).not.toEqual([]);
+      await expect(reminder.action.execute!(invalidPriority)).rejects.toThrow();
+    }
+    await assertEmpty(data);
     reminder.draft.form.timed = false;
     expect(validateAiCreateDraft(reminder.draft)).toEqual([]);
     expect(reminderFields(reminder.draft.form).rrule).toBeNull();

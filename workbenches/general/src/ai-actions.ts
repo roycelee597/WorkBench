@@ -11,6 +11,8 @@ import { generalApi, normalizeTags, type GeneralApi } from "./api";
 import { draftFields, shiftDay } from "./calendar-model";
 import { reminderFields } from "./reminder-model";
 import { AiCreatePreview } from "./components/AiCreatePreview";
+import { createAiReadActions } from "./ai-read-actions";
+import { createAiMutationActions } from "./ai-mutation-actions";
 import {
   aiRepeatDraft,
   defaultAiEventColor,
@@ -121,7 +123,7 @@ export function createGeneralAiActions(api: GeneralApi = generalApi): AiActionGr
           description:
             "必须晚于start；全天时为不含结束当天的日期边界，例如11月18日全天的end填11月19日",
         },
-        duration_minutes: { type: "integer", minimum: 1 },
+        duration_minutes: { type: "integer", minimum: 1, maximum: 10_080 },
         all_day: { type: "boolean" },
         repeat: repeatParameter,
         remind_before_minutes: {
@@ -301,4 +303,12 @@ export function createGeneralAiActions(api: GeneralApi = generalApi): AiActionGr
   return { workbenchId: GENERAL_WORKBENCH, label: "综合工作台", actions: [event, reminder, memo] };
 }
 
-export const generalAiActions = createGeneralAiActions();
+const creates = createGeneralAiActions();
+export const generalAiActions: AiActionGroup = {
+  ...creates,
+  actions: [
+    ...creates.actions,
+    ...createAiReadActions(generalApi),
+    ...createAiMutationActions(generalApi),
+  ],
+};
