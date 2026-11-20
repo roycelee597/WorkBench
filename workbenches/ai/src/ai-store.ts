@@ -20,14 +20,18 @@ import {
   type AiKeyStatus,
   type AiModel,
 } from "../../../apps/desktop/src/core/ai/llm-client";
+import type { AiMessageRecord } from "../../../apps/desktop/src/core/repositories/ai-messages";
 import { aiApi, type AiApi } from "./api";
 import { aiReadPolicy } from "./ai-preferences";
+import { historyCard, historyInput } from "./ai-history";
 
-export type AiDisplayEvent = Exclude<OrchestratorEvent, { type: "status" }>;
+export type AiDisplayEvent =
+  Exclude<OrchestratorEvent, { type: "status" }> | { type: "archived"; record: AiMessageRecord };
 export type AiMessage = { id: string; createdAt: number } & (
   { role: "user"; text: string } | { role: "assistant"; event: AiDisplayEvent }
 );
 type ConversationApi = Pick<AiApi, "keyStatus" | "loadModel" | "chat"> &
+  Partial<Pick<AiApi, "loadHistory" | "appendHistory" | "updateHistoryCard" | "clearHistory">> &
   Partial<{
     openTarget: (target: AiTarget) => Promise<void>;
     openCreateForm: (actionName: string, draft: unknown) => Promise<void>;
@@ -75,6 +79,8 @@ interface AiState {
   draft: string;
   messages: AiMessage[];
   history: ConversationTurn[];
+  historyError: string;
+  clearingHistory: boolean;
   key: AiKeyStatus | null;
   model: AiModel;
   checking: boolean;
@@ -104,7 +110,7 @@ interface AiState {
   refresh: () => Promise<void>;
   setDraft: (text: string) => void;
   send: () => Promise<void>;
-  clear: () => void;
+  clear: () => Promise<boolean>;
 }
 
 export function createAiStore(
@@ -130,7 +136,64 @@ export function createAiStore(
     now,
   });
   let refreshVersion = 0;
+  let historyReady = false;
+  let historyLoading: Promise<void> | undefined;
+  let historyQueue = Promise.resolve();
+  const savedIds = new Map<string, string>();
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const next = historyQueue.then(operation);
+    historyQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
   const store = create<AiState>((set, get) => {
+    function loadHistory() {
+      const load = api.loadHistory;
+      if (!load || historyReady) return;
+      historyLoading ??= enqueue(async () => {
+        const records = await load();
+        const known = new Set(savedIds.values());
+        const restored = records
+          .filter(({ id }) => !known.has(id))
+          .map((record): AiMessage => {
+            const base = { id: record.id, createdAt: record.created_at };
+            return record.role === "user"
+              ? { ...base, role: "user", text: record.text }
+              : { ...base, role: "assistant", event: { type: "archived", record } };
+          });
+        historyReady = true;
+        set((state) => ({
+          messages: [...restored, ...state.messages].slice(-200),
+          historyError: "",
+        }));
+      })
+        .catch(() => set({ historyError: "无法读取本机对话记录，仍可继续对话。" }))
+        .finally(() => {
+          historyLoading = undefined;
+        });
+      return historyLoading;
+    }
+    function saveMessage(message: AiMessage) {
+      const appendHistory = api.appendHistory;
+      if (!appendHistory) return;
+      const input = historyInput(message);
+      if (!input) return;
+      void enqueue(async () => {
+        const saved = await appendHistory(input);
+        if (saved) savedIds.set(message.id, saved.id);
+      }).catch(() => set({ historyError: "无法保存本机对话记录，仍可继续对话。" }));
+    }
+    function saveCard(id: string, proposal: AiProposal) {
+      const update = api.updateHistoryCard;
+      if (!update) return;
+      const patch = historyCard(proposal);
+      void enqueue(async () => {
+        const saved = savedIds.get(id);
+        if (saved) await update(saved, patch);
+      }).catch(() => set({ historyError: "无法更新本机卡片记录，实际操作结果见卡片。" }));
+    }
     const requiresRead = (name: string) =>
       registry.get(name)?.requiresRead === true ||
       [
@@ -143,15 +206,17 @@ export function createAiStore(
       Object.values(proposals).some((item) => ["saving", "transferring"].includes(item.status)) ||
       Object.values(choices).some((item) => item.status === "choosing");
     function updateProposal(id: string, patch: Partial<AiProposal>) {
+      const proposal = get().proposals[id];
+      if (!proposal) return;
+      const updated = { ...proposal, ...patch };
       set((state) => {
-        const proposal = state.proposals[id];
-        if (!proposal) return state;
-        const proposals = { ...state.proposals, [id]: { ...proposal, ...patch } };
+        const proposals = { ...state.proposals, [id]: updated };
         return {
           proposals,
           proposalBusy: busyState(proposals),
         };
       });
+      if (patch.status && patch.status !== proposal.status) saveCard(id, updated);
     }
     function preparedState(id: string, actionName: string, prepared: Prepared<unknown>) {
       if (prepared.type === "proposal") {
@@ -190,9 +255,10 @@ export function createAiStore(
         return;
       }
       const id = newId();
+      const message: AiMessage = { id, createdAt: now(), role: "assistant", event };
       set((state) => {
         return {
-          messages: [...state.messages, { id, createdAt: now(), role: "assistant", event }],
+          messages: [...state.messages, message].slice(-200),
           ...(event.type === "prepared" ? preparedState(id, event.actionName, event.prepared) : {}),
           ...(event.type === "results"
             ? {
@@ -204,11 +270,14 @@ export function createAiStore(
             : {}),
         };
       });
+      saveMessage(message);
     }
     return {
       draft: "",
       messages: [],
       history: [],
+      historyError: "",
+      clearingHistory: false,
       key: null,
       model: DEFAULT_AI_MODEL,
       checking: false,
@@ -277,6 +346,7 @@ export function createAiStore(
         }
       },
       pickCandidate: async (id, candidateId) => {
+        if (get().clearingHistory) return;
         const current = get().choices[id];
         if (
           !current ||
@@ -378,6 +448,7 @@ export function createAiStore(
           updateProposal(id, { draft, errors: [], navigationError: null });
       },
       confirmProposal: async (id) => {
+        if (get().clearingHistory) return;
         const proposal = get().proposals[id];
         if (!proposal || !editable(proposal)) return;
         if (proposal.needsScope && !proposal.scope) return;
@@ -421,6 +492,8 @@ export function createAiStore(
             status: "failed",
             errors: [localFailure(error, "保存未完成，请重试。")],
           });
+        } finally {
+          await historyQueue;
         }
       },
       cancelProposal: (id) => {
@@ -429,6 +502,7 @@ export function createAiStore(
           updateProposal(id, { status: "cancelled", errors: [], navigationError: null });
       },
       transferProposal: async (id) => {
+        if (get().clearingHistory) return;
         const proposal = get().proposals[id];
         if (!proposal || !editable(proposal) || requiresRead(proposal.actionName)) return;
         updateProposal(id, { status: "transferring", navigationError: null });
@@ -463,6 +537,7 @@ export function createAiStore(
       },
       setDraft: (draft) => set({ draft }),
       refresh: async () => {
+        const history = loadHistory();
         const version = ++refreshVersion;
         const generation = readGeneration;
         set({ checking: true, connectionError: null });
@@ -488,11 +563,12 @@ export function createAiStore(
               },
             });
         } finally {
+          await history;
           if (version === refreshVersion) set({ checking: false });
         }
       },
       send: async () => {
-        if (get().pending) return;
+        if (get().pending || get().clearingHistory) return;
         const text = get().draft.trim();
         if (!text) return;
         if (Array.from(text).length > 1_000) {
@@ -503,13 +579,16 @@ export function createAiStore(
           });
           return;
         }
-        set((state) => ({
+        set({
           pending: true,
           activity: "正在理解…",
           draft: "",
           connectionError: null,
-          messages: [...state.messages, { id: newId(), createdAt: now(), role: "user", text }],
-        }));
+        });
+        await loadHistory();
+        const message: AiMessage = { id: newId(), createdAt: now(), role: "user", text };
+        set((state) => ({ messages: [...state.messages, message].slice(-200) }));
+        saveMessage(message);
         try {
           const configGeneration = readGeneration;
           const [key, model, readEnabled, stepLimitEnabled] = await Promise.all([
@@ -560,21 +639,35 @@ export function createAiStore(
               error.code === "KEY_MISSING" || error.code === "KEY_INVALID" ? "settings" : "manual",
           });
         } finally {
+          await historyQueue;
           set({ pending: false, activity: "" });
         }
       },
-      clear: () => {
-        if (get().pending || get().proposalBusy) return;
-        refs.clear();
-        set({
-          messages: [],
-          history: [],
-          proposals: {},
-          choices: {},
-          refItems: {},
-          navigationErrors: {},
-          connectionError: null,
-        });
+      clear: async () => {
+        if (get().pending || get().proposalBusy || get().clearingHistory) return false;
+        set({ clearingHistory: true, historyError: "" });
+        try {
+          if (api.clearHistory) await enqueue(api.clearHistory);
+          historyReady = true;
+          savedIds.clear();
+          refs.clear();
+          set({
+            messages: [],
+            history: [],
+            proposals: {},
+            choices: {},
+            refItems: {},
+            navigationErrors: {},
+            connectionError: null,
+            historyError: "",
+          });
+          return true;
+        } catch {
+          set({ historyError: "无法清空本机对话记录，请重试。" });
+          return false;
+        } finally {
+          set({ clearingHistory: false });
+        }
       },
     };
   });

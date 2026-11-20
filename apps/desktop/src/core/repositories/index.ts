@@ -10,6 +10,7 @@ import { createChangeSignal } from "./change-signal";
 import { ReminderOccurrencesRepository } from "./reminder-occurrences";
 import { FinanceThresholdsRepository } from "./finance-thresholds";
 import { FinanceAlertStatesRepository } from "./finance-alert-states";
+import { AiMessagesRepository } from "./ai-messages";
 
 export async function createDataLayer(
   db: SqlDatabase,
@@ -43,6 +44,8 @@ export async function createDataLayer(
     occurrences: new ReminderOccurrencesRepository(database, context),
     financeThresholds: new FinanceThresholdsRepository(database, context),
     financeAlertStates: new FinanceAlertStatesRepository(database, context),
+    // 对话记录变动不刷新日程页面，也不唤醒提醒调度。
+    aiMessages: new AiMessagesRepository(db, context),
     settings,
     trash: new TrashCleaner(database, context, settings),
   };

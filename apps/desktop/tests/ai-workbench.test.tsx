@@ -38,7 +38,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 function button(text: string) {
-  const value = [...container.querySelectorAll("button")].find(
+  const value = [...document.querySelectorAll("button")].find(
     (item) => item.textContent?.trim() === text,
   );
   if (!value) throw new Error(`找不到按钮：${text}`);
@@ -169,6 +169,11 @@ describe("AI 助手对话页", () => {
     await click("发送");
     await type("保留这句草稿");
     await click("清空对话");
+    expect(container.querySelector('[role="log"]')).not.toBeNull();
+    await click("取消");
+    expect(container.querySelector('[role="log"]')).not.toBeNull();
+    await click("清空对话");
+    await click("确认清空");
     expect(container.querySelector('[role="log"]')).toBeNull();
     expect(store.getState().history).toEqual([]);
     expect(input().value).toBe("保留这句草稿");

@@ -13,6 +13,11 @@ import {
   type LlmRequest,
 } from "../../../apps/desktop/src/core/ai/llm-client";
 import type { SettingsRepository } from "../../../apps/desktop/src/core/repositories/settings";
+import type {
+  AiCardPatch,
+  AiMessageInput,
+  AiMessagesRepository,
+} from "../../../apps/desktop/src/core/repositories/ai-messages";
 import {
   DEFAULT_AI_SHORTCUT,
   normalizeShortcut,
@@ -24,6 +29,9 @@ import { aiReadPolicy, publishReadPolicy } from "./ai-preferences";
 export function createAiApi(
   getSettings: () => Promise<Pick<SettingsRepository, "getValue" | "setValue">>,
   call: AiInvoker = invokeAi,
+  getMessages?: () => Promise<
+    Pick<AiMessagesRepository, "listRecent" | "append" | "updateCard" | "clear">
+  >,
 ) {
   const client = new TauriLlmClient(call);
   // 保存关闭失败时，本进程继续阻止读取，直到用户明确开启或成功重试。
@@ -48,6 +56,17 @@ export function createAiApi(
   }
   return {
     chat: (request: LlmRequest) => client.chat(request),
+    loadHistory: async () => (await getMessages?.())?.listRecent() ?? [],
+    appendHistory: async (input: AiMessageInput) => (await getMessages?.())?.append(input) ?? null,
+    updateHistoryCard: async (id: string, patch: AiCardPatch) =>
+      (await getMessages?.())?.updateCard(id, patch) ?? false,
+    clearHistory: async () => (await getMessages?.())?.clear() ?? 0,
+    async loadHistoryEnabled() {
+      return (await (await getSettings()).getValue("ai.history_enabled")) !== false;
+    },
+    async saveHistoryEnabled(value: boolean) {
+      await (await getSettings()).setValue("ai.history_enabled", value);
+    },
     loadCallLimits: () => readLimits("ai_get_call_limits"),
     async saveCallLimits(limits: AiCallLimits) {
       if (!aiCallLimitsSchema.safeParse(limits).success) throw new AiClientError("BAD_RESPONSE");
@@ -136,8 +155,13 @@ export function createAiApi(
   };
 }
 export type AiApi = ReturnType<typeof createAiApi>;
-export const aiApi = createAiApi(async () => {
+async function getData() {
   const { initializeDataLayer } =
     await import("../../../apps/desktop/src/core/repositories/initialize");
-  return (await initializeDataLayer()).settings;
-});
+  return initializeDataLayer();
+}
+export const aiApi = createAiApi(
+  async () => (await getData()).settings,
+  invokeAi,
+  async () => (await getData()).aiMessages,
+);

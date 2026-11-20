@@ -6,6 +6,7 @@ import { aiError } from "../../../apps/desktop/src/core/ai/llm-client";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
 import { ErrorCard } from "./components/ErrorCard";
+import { ClearHistoryDialog } from "./components/ClearHistoryDialog";
 
 const examples = [
   "明天下午三点提醒我交实验报告",
@@ -28,6 +29,7 @@ export function AiWorkbench({
   const state = store();
   const textarea = useRef<HTMLTextAreaElement>(null);
   const [platformError, setPlatformError] = useState("");
+  const [confirmClear, setConfirmClear] = useState(false);
   const refresh = state.refresh;
   useEffect(() => {
     void refresh();
@@ -50,8 +52,10 @@ export function AiWorkbench({
         <div className="flex gap-2">
           <Button
             variant="ghost"
-            disabled={state.pending || state.proposalBusy || !state.messages.length}
-            onClick={state.clear}
+            disabled={
+              state.pending || state.proposalBusy || state.clearingHistory || !state.messages.length
+            }
+            onClick={() => setConfirmClear(true)}
           >
             清空对话
           </Button>
@@ -61,6 +65,11 @@ export function AiWorkbench({
         </div>
       </header>
       <div className="ai-chat-surface">
+        {state.historyError && (
+          <p role="alert" className="text-destructive">
+            {state.historyError}
+          </p>
+        )}
         {state.connectionError && (
           <ErrorCard
             error={state.connectionError}
@@ -133,7 +142,9 @@ export function AiWorkbench({
           value={state.draft}
           onChange={state.setDraft}
           send={() => void state.send()}
-          disabled={state.pending || state.checking || !state.key?.configured}
+          disabled={
+            state.pending || state.checking || state.clearingHistory || !state.key?.configured
+          }
           pending={state.pending}
           activity={state.activity}
           inputRef={textarea}
@@ -143,6 +154,7 @@ export function AiWorkbench({
           可能理解有误，请核对回复。
         </p>
       </div>
+      <ClearHistoryDialog store={store} open={confirmClear} setOpen={setConfirmClear} />
     </section>
   );
 }

@@ -3,6 +3,7 @@ import type { AiMessage, AiStore } from "../ai-store";
 import { ErrorCard } from "./ErrorCard";
 import { CandidateCard } from "./CandidateCard";
 import { ReadResults, ReferencedText } from "./ReadResults";
+import { ArchivedMessage } from "./ArchivedMessage";
 
 export function MessageList({
   messages,
@@ -38,7 +39,9 @@ export function MessageList({
         return (
           <article className="ai-message ai-assistant-message" key={message.id}>
             <span className="ai-message-author">AI 助手</span>
-            {event.type === "error" ? (
+            {event.type === "archived" ? (
+              <ArchivedMessage record={event.record} store={store} />
+            ) : event.type === "error" ? (
               <ErrorCard
                 error={event}
                 openSettings={openSettings}
