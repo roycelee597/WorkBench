@@ -17,7 +17,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_plugin_shell::ShellExt;
-use usage::{Usage, UsageStore, audit, now};
+use usage::{CallLimits, Usage, UsageStore, audit, now};
 
 const BASE_URL: &str = "https://api.deepseek.com";
 type Result<T> = std::result::Result<T, AiError>;
@@ -180,6 +180,25 @@ pub fn ai_key_status(window: WebviewWindow) -> Result<KeyStatus> {
 }
 
 #[tauri::command]
+pub fn ai_get_call_limits(window: WebviewWindow) -> Result<CallLimits> {
+    main_only(window.label())?;
+    window
+        .state::<AiState>()
+        .with_usage(window.app_handle(), |store| Ok(store.limits()))
+}
+
+#[tauri::command]
+pub fn ai_set_call_limits(window: WebviewWindow, limits: CallLimits) -> Result<CallLimits> {
+    main_only(window.label())?;
+    window
+        .state::<AiState>()
+        .with_usage(window.app_handle(), |store| {
+            store.set_limits(limits)?;
+            Ok(store.limits())
+        })
+}
+
+#[tauri::command]
 pub fn ai_key_clear(window: WebviewWindow) -> Result<()> {
     main_only(window.label())?;
     match credential(window.app_handle())?.delete_credential() {
@@ -189,14 +208,21 @@ pub fn ai_key_clear(window: WebviewWindow) -> Result<()> {
 }
 
 #[tauri::command]
-pub fn ai_open_platform(window: WebviewWindow) -> Result<()> {
+pub fn ai_open_platform(window: WebviewWindow, privacy: Option<bool>) -> Result<()> {
     main_only(window.label())?;
     // 固定地址，不接受来自前端的任意 URL；复用现有 shell 插件，不添加依赖。
     #[allow(deprecated)]
     window
         .app_handle()
         .shell()
-        .open("https://platform.deepseek.com/", None)
+        .open(
+            if privacy.unwrap_or(false) {
+                "https://cdn.deepseek.com/policies/zh-CN/deepseek-open-platform-privacy-policy.html"
+            } else {
+                "https://platform.deepseek.com/"
+            },
+            None,
+        )
         .map_err(|_| AiError::new("NETWORK", "无法打开系统浏览器，请稍后重试"))
 }
 
