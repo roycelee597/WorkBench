@@ -112,7 +112,7 @@ export function createGeneralAiActions(api: GeneralApi = generalApi): AiActionGr
     workbenchId: GENERAL_WORKBENCH,
     kind: "write",
     description:
-      "生成待确认的新建日程。没有结束时间默认1小时；全天默认当天。end必须晚于start，日程最长7天，全天end为不含结束当天的日期边界；end优先于duration_minutes。提前提醒未给时用用户设置，非标准值向下取最近档。",
+      "必须调用本工具生成待确认的新建日程卡片；调用只提出草稿，不能用文字宣称已写入。没有结束时间默认1小时；全天默认当天。end必须晚于start，日程最长7天，全天end为不含结束当天的日期边界；end优先于duration_minutes。提前提醒未给时用用户设置，非标准值向下取最近档。",
     args: eventCreateArgsSchema,
     parameters: parameters(
       {
@@ -206,7 +206,7 @@ export function createGeneralAiActions(api: GeneralApi = generalApi): AiActionGr
     workbenchId: GENERAL_WORKBENCH,
     kind: "write",
     description:
-      "生成待确认的新建提醒。due为null表示无时间待办；重复提醒必须给出due；priority为0无、1低、2中、3高。",
+      "必须调用本工具生成待确认的新建提醒卡片；调用只提出草稿，不能用文字宣称已写入。due为null表示无时间待办，用户明确不设时间时填null；重复提醒必须给出due；priority为0无、1低、2中、3高。",
     args: reminderCreateArgsSchema,
     parameters: parameters(
       {
@@ -264,7 +264,7 @@ export function createGeneralAiActions(api: GeneralApi = generalApi): AiActionGr
     workbenchId: GENERAL_WORKBENCH,
     kind: "write",
     description:
-      "生成待确认的新建备忘录，正文只能来自用户这句话的内容，不读取已有备忘录。可提供标题和标签。",
+      "必须调用本工具生成待确认的新建备忘录卡片；调用只提出草稿，不能用文字宣称已写入。正文只能来自用户这句话的内容，不读取已有备忘录。可提供标题和标签。",
     args: memoCreateArgsSchema,
     parameters: parameters(
       {
