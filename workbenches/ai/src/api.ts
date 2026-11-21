@@ -10,6 +10,7 @@ import {
   type AiInvoker,
   type AiModel,
   type AiCallLimits,
+  type LlmChatOptions,
   type LlmRequest,
 } from "../../../apps/desktop/src/core/ai/llm-client";
 import type { SettingsRepository } from "../../../apps/desktop/src/core/repositories/settings";
@@ -55,7 +56,7 @@ export function createAiApi(
     }
   }
   return {
-    chat: (request: LlmRequest) => client.chat(request),
+    chat: (request: LlmRequest, options?: LlmChatOptions) => client.chat(request, options),
     loadHistory: async () => (await getMessages?.())?.listRecent() ?? [],
     appendHistory: async (input: AiMessageInput) => (await getMessages?.())?.append(input) ?? null,
     updateHistoryCard: async (id: string, patch: AiCardPatch) =>

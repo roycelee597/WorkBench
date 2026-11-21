@@ -8,6 +8,7 @@ import type {
   JsonSchemaObject,
   Prepared,
   RefEntry,
+  ResultItem,
   SeriesScope,
 } from "../../../apps/desktop/src/core/ai/action-types";
 import { formatLocalTime, parseLocalTime } from "../../../apps/desktop/src/core/ai/local-time";
@@ -26,6 +27,13 @@ import { draftPatch, occurrenceDraft, scopedPatch, shiftDay, toggleAllDay } from
 import { reminderFields, reminderForm } from "./reminder-model";
 import { AiMutationPreview } from "./components/AiMutationPreview";
 import {
+  eventDeleteIntent,
+  eventTimeIntent,
+  linkedReminderIntent,
+  localTimeChange,
+  mutationDateSelector,
+} from "./ai-mutation-intent";
+import {
   aiMutationDiff,
   aiMutationWhen,
   type AiMutationDraft,
@@ -36,8 +44,7 @@ import {
 const refsSchema = z
   .array(z.string().regex(/^[er][1-9]\d*$/))
   .min(1)
-  .max(20)
-  .refine((refs) => new Set(refs).size === refs.length);
+  .max(20);
 const eventChanges = eventCreateArgsSchema
   .omit({ duration_minutes: true })
   .partial()
@@ -87,6 +94,9 @@ class MutationError extends Error {
 }
 const changed = () => new MutationError("内容已变化，请重新说一次");
 const missingRef = () => new MutationError("AI 指向了不存在的项目，请重新说一次");
+const missingDay = () => new MutationError("没有找到符合所指定日期的项目，请重新确认日期");
+const linkedReminder = (target?: AiTarget) =>
+  new MutationError("这条提醒由日程生成，请修改对应日程", target);
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const fail = (error: unknown): Prepared<AiMutationDraft> => ({
   type: "error",
@@ -163,6 +173,7 @@ function parameters(changes?: Record<string, unknown>): JsonSchemaObject {
         minItems: 1,
         maxItems: 20,
         uniqueItems: true,
+        description: "使用读取结果中的真实短引用；同一目标不要重复，重复日程按实例区分",
       },
       ...(changes
         ? {
@@ -177,6 +188,26 @@ function parameters(changes?: Record<string, unknown>): JsonSchemaObject {
     },
     required: ["refs", changes ? "changes" : "mode"],
   };
+}
+
+function targetKey(target: AiTarget): string {
+  switch (target.kind) {
+    case "event":
+      return JSON.stringify([target.eventId, target.originalStart]);
+    case "reminder":
+      return target.reminderId;
+    case "memo":
+      return target.memoId;
+  }
+}
+
+function distinctTargets<T extends { target: AiTarget }>(items: readonly T[]): T[] {
+  const targets = new Map<string, T>();
+  for (const item of items) {
+    const key = targetKey(item.target);
+    if (!targets.has(key)) targets.set(key, item);
+  }
+  return [...targets.values()];
 }
 
 /** 所有目标、原值和并发快照仅在本地闭包中保存；模型参数不能指定真实记录 ID。 */
@@ -238,10 +269,6 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
       throw new MutationError("这条已经不存在了");
     }
     if (state.reminder.updated_at !== entry.updatedAt) throw changed();
-    if (state.reminder.source === "event")
-      throw new MutationError("这条提醒由日程生成，请修改对应日程", state.linkedTarget);
-    if (isFinanceReminder(state.reminder))
-      throw new MutationError("金融提醒只能查询，不能通过 AI 修改或删除");
     const value = state.occurrence?.due_at ?? state.reminder.due_at;
     return {
       ref: entry,
@@ -262,12 +289,83 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
       },
     };
   }
+  function requireWritableReminder(item: ReminderItem): void {
+    if (item.state.reminder.source === "event") throw linkedReminder(item.state.linkedTarget);
+    if (isFinanceReminder(item.state.reminder))
+      throw new MutationError("金融提醒只能查询，不能通过 AI 修改或删除");
+  }
   async function resolveAll(refs: string[], kind: "event" | "reminder", ctx: AiContext) {
     // 先检查全部 ref，再读取全部目标；任何一项无效都不生成候选或部分卡片。
-    for (const ref of refs) reference(ref, kind, ctx);
+    const distinct = [...new Set(refs)];
+    for (const ref of distinct) reference(ref, kind, ctx);
     return kind === "event"
-      ? Promise.all(refs.map((ref) => eventItem(ref, ctx)))
-      : Promise.all(refs.map((ref) => reminderItem(ref, ctx)));
+      ? Promise.all(distinct.map((ref) => eventItem(ref, ctx)))
+      : Promise.all(distinct.map((ref) => reminderItem(ref, ctx)));
+  }
+  async function exactSeriesDay(items: EventItem[], day: string, ctx: AiContext) {
+    const anchor = items[0];
+    if (
+      !anchor?.state.series.rrule ||
+      !items.every((item) => item.state.series.id === anchor.state.series.id)
+    )
+      return;
+    const { occurrences } = await api.loadCalendar({
+      start: parseLocalTime(day, ctx.timezone),
+      end: parseLocalTime(shiftDay(day, 1), ctx.timezone),
+    });
+    const matching = occurrences.filter(
+      (item) =>
+        item.series_id === anchor.state.series.id &&
+        formatLocalTime(item.start_at, ctx.timezone, true) === day,
+    );
+    if (matching.length !== 1) return;
+    const occurrence = matching[0]!;
+    const target: AiTarget = {
+      kind: "event",
+      eventId: anchor.state.series.id,
+      originalStart: occurrence.original_start_at,
+    };
+    const resolved: RefEntry = {
+      ...anchor.ref,
+      target,
+      related: occurrence.is_exception
+        ? [{ id: occurrence.event.id, updatedAt: occurrence.event.updated_at }]
+        : [],
+    };
+    // 补查结果仅在本卡片内使用。沿用初始短引用的有效期、撤销和父日程版本。
+    const localContext: AiContext = {
+      ...ctx,
+      refs: {
+        issue: ctx.refs.issue.bind(ctx.refs),
+        clear: ctx.refs.clear.bind(ctx.refs),
+        resolve(ref, kind) {
+          const live = ctx.refs.resolve(ref, kind);
+          return live && ref === anchor.ref.ref && kind === "event" ? resolved : live;
+        },
+      },
+    };
+    return { item: await eventItem(anchor.ref.ref, localContext), ctx: localContext };
+  }
+  async function resolveCandidates(refs: string[], kind: "event" | "reminder", ctx: AiContext) {
+    const resolved = await resolveAll(refs, kind, ctx);
+    const dates = mutationDateSelector(ctx);
+    const candidates = resolved.filter((item) =>
+      dates.matches(
+        "series" in item.state
+          ? item.state.occurrence.start_at
+          : (item.state.occurrence?.due_at ?? item.state.reminder.due_at),
+      ),
+    );
+    if (!candidates.length) {
+      if (kind === "event" && dates.exactDay) {
+        const exact = await exactSeriesDay(resolved as EventItem[], dates.exactDay, ctx);
+        if (exact) return { items: [exact.item], ctx: exact.ctx };
+      }
+      throw missingDay();
+    }
+    const targets = distinctTargets(candidates.map((item) => item.display));
+    const ids = new Set(targets.map((target) => target.id));
+    return { items: candidates.filter((item) => ids.has(item.display.id)), ctx };
   }
   function savePlan(
     kind: AiMutationKind,
@@ -377,6 +475,7 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
     for (const item of reminders) {
       if (plan.completed.has(item.display.id)) continue;
       const fresh = await reminderItem(item.ref.ref, plan.ctx);
+      requireWritableReminder(fresh);
       if (!same(fresh.state.reminder, item.state.reminder)) throw changed();
     }
     try {
@@ -490,18 +589,44 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
     kind: "event-update" | "reminder-update",
     raw: unknown,
     ctx: AiContext,
+    picked = false,
   ): Promise<Prepared<AiMutationDraft>> {
     try {
       const args =
         kind === "event-update"
           ? eventUpdateArgsSchema.parse(raw)
           : reminderUpdateArgsSchema.parse(raw);
-      if (args.refs.length > 10) throw new MutationError("可能的目标太多，说得具体一点");
-      const resolved = await resolveAll(
-        args.refs,
-        kind === "event-update" ? "event" : "reminder",
+      const targetKind = kind === "event-update" ? "event" : "reminder";
+      for (const ref of args.refs) reference(ref, targetKind, ctx);
+      if (linkedReminderIntent(ctx.userText ?? "")) {
+        const callerItems = await resolveAll(args.refs, targetKind, ctx);
+        const items: ResultItem[] = callerItems.map((item) => ({
+          ...item.display,
+          badges:
+            "series" in item.state
+              ? item.state.occurrence.event.remind_before_minutes !== null
+                ? ["remind"]
+                : []
+              : item.state.reminder.source === "event"
+                ? ["event-linked"]
+                : [],
+        }));
+        return (await recoverLinkedReminder([...(ctx.readItems ?? []), ...items], ctx))!;
+      }
+      const intent = kind === "event-update" ? eventTimeIntent(ctx.userText ?? "") : undefined;
+      const refs = new Set(args.refs);
+      if (!picked && intent && mutationDateSelector(ctx).constrained) {
+        const matching = readCandidates(ctx.readItems ?? [], "event", intent.title, ctx);
+        if (matching.some((item) => refs.has(item.id)))
+          for (const item of matching) refs.add(item.id);
+      }
+      const { items: resolved, ctx: localContext } = await resolveCandidates(
+        [...refs],
+        targetKind,
         ctx,
       );
+      if (resolved.length > 10) throw new MutationError("可能的目标太多，说得具体一点");
+      if (kind === "reminder-update") (resolved as ReminderItem[]).forEach(requireWritableReminder);
       if (resolved.length > 1)
         return {
           type: "choose",
@@ -511,13 +636,19 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
           })),
           prompt: "请选择要修改的项目",
           pick: async (id) =>
-            args.refs.includes(id)
-              ? prepareUpdate(kind, { ...args, refs: [id] }, ctx)
+            resolved.some((item) => item.display.id === id)
+              ? prepareUpdate(kind, { ...args, refs: [id] }, localContext, true)
               : fail(missingRef()),
         };
       if (kind === "event-update") {
         const item = resolved[0] as EventItem;
-        const changes = eventUpdateArgsSchema.parse(raw).changes;
+        const dates = mutationDateSelector(localContext);
+        const changes =
+          intent && item.display.title.includes(intent.title)
+            ? {
+                start: localTimeChange(item.state.occurrence.start_at, ctx.timezone, intent.timing),
+              }
+            : eventUpdateArgsSchema.parse(raw).changes;
         const initial: AiCreateDraft = {
           type: "event",
           form: occurrenceDraft(item.state.occurrence, item.state.series),
@@ -559,12 +690,23 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
           changes.end === undefined ? initial.form : undefined,
         );
         if (errors.length) throw new MutationError(errors[0]!);
-        const note =
+        const notes: string[] = [];
+        if (
           changes.remind_before_minutes !== undefined &&
           changes.remind_before_minutes !== form.reminder
-            ? `提前提醒已调整为 ${form.reminder ?? "不提醒"} 分钟，可在卡片中修改。`
-            : undefined;
-        return savePlan(kind, ctx, [item], [], initial, next, note);
+        )
+          notes.push(`提前提醒已调整为 ${form.reminder ?? "不提醒"} 分钟，可在卡片中修改。`);
+        if (dates.following && item.display.repeating)
+          notes.push("如需从这个实例起修改，请选择「这次及以后」。");
+        return savePlan(
+          kind,
+          localContext,
+          [item],
+          [],
+          initial,
+          next,
+          notes.join(" ") || undefined,
+        );
       }
       const item = resolved[0] as ReminderItem;
       const changes = reminderUpdateArgsSchema.parse(raw).changes;
@@ -594,7 +736,7 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
       parseAiCreateDraft(next);
       return savePlan(
         kind,
-        ctx,
+        localContext,
         [],
         [item],
         initial,
@@ -612,32 +754,146 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
   ): Promise<Prepared<AiMutationDraft>> {
     try {
       const args = aiDeleteArgsSchema.parse(raw);
-      if (args.mode === "pick_one" && args.refs.length > 10)
-        throw new MutationError("可能的目标太多，说得具体一点");
-      const items = await resolveAll(
+      const { items, ctx: localContext } = await resolveCandidates(
         args.refs,
         kind === "event-delete" ? "event" : "reminder",
         ctx,
       );
-      if (args.mode === "pick_one" && items.length > 1)
+      if (kind === "reminder-delete") (items as ReminderItem[]).forEach(requireWritableReminder);
+      const pickOne =
+        args.mode === "pick_one" ||
+        (kind === "event-delete" &&
+          mutationDateSelector(ctx).constrained &&
+          eventDeleteIntent(ctx.userText ?? "") !== undefined);
+      if (pickOne && items.length > 10) throw new MutationError("可能的目标太多，说得具体一点");
+      if (pickOne && items.length > 1)
         return {
           type: "choose",
           candidates: items.map((item) => item.display),
           prompt: "请选择要删除的项目",
           pick: async (id) =>
-            args.refs.includes(id)
-              ? prepareDelete(kind, { refs: [id], mode: "pick_one" }, ctx)
+            items.some((item) => item.display.id === id)
+              ? prepareDelete(kind, { refs: [id], mode: "pick_one" }, localContext)
               : fail(missingRef()),
         };
       return savePlan(
         kind,
-        ctx,
+        localContext,
         kind === "event-delete" ? (items as EventItem[]) : [],
         kind === "reminder-delete" ? (items as ReminderItem[]) : [],
       );
     } catch (error) {
       return fail(error);
     }
+  }
+  function readCandidates(
+    items: readonly ResultItem[],
+    kind: "event" | "reminder",
+    title: string,
+    ctx: AiContext,
+  ): ResultItem[] {
+    return items.filter(
+      (item) =>
+        item.target.kind === kind &&
+        item.title.includes(title) &&
+        ctx.refs.resolve(item.id, kind) !== null,
+    );
+  }
+  async function recoverEventTime(
+    items: readonly ResultItem[],
+    ctx: AiContext,
+  ): Promise<Prepared<AiMutationDraft> | undefined> {
+    const intent = eventTimeIntent(ctx.userText ?? "");
+    if (!intent || /提醒|备忘录/u.test(intent.title)) return;
+    const refs = readCandidates(items, "event", intent.title, ctx).map((item) => item.id);
+    if (!refs.length) return;
+    try {
+      const { items, ctx: localContext } = await resolveCandidates(refs, "event", ctx);
+      const events = items as EventItem[];
+      const prepare = (item: EventItem) =>
+        prepareUpdate(
+          "event-update",
+          {
+            refs: [item.display.id],
+            changes: {
+              start: localTimeChange(item.state.occurrence.start_at, ctx.timezone, intent.timing),
+            },
+          },
+          localContext,
+          true,
+        );
+      if (events.length > 10) throw new MutationError("可能的目标太多，说得具体一点");
+      if (events.length === 1) return prepare(events[0]!);
+      return {
+        type: "choose",
+        candidates: events.map((item) => item.display),
+        prompt: "请选择要修改的项目",
+        pick: async (id) => {
+          const item = events.find((entry) => entry.display.id === id);
+          return item ? prepare(item) : fail(missingRef());
+        },
+      };
+    } catch (error) {
+      return fail(error);
+    }
+  }
+  async function recoverLinkedReminder(
+    items: readonly ResultItem[],
+    ctx: AiContext,
+  ): Promise<Prepared<AiMutationDraft> | undefined> {
+    const title = linkedReminderIntent(ctx.userText ?? "");
+    if (!title) return;
+    const reminders = distinctTargets(
+      readCandidates(items, "reminder", title, ctx).filter((item) =>
+        item.badges.includes("event-linked"),
+      ),
+    );
+    const events = distinctTargets(
+      readCandidates(items, "event", title, ctx).filter((item) => item.badges.includes("remind")),
+    );
+    try {
+      // 关联、目标实例与并发快照以综合工作台当下的记录为准。
+      if (reminders.length === 1) {
+        const item = await reminderItem(reminders[0]!.id, ctx);
+        if (item.state.reminder.source === "event")
+          return fail(linkedReminder(item.state.linkedTarget));
+      }
+      if (events.length === 1) {
+        const item = await eventItem(events[0]!.id, ctx);
+        if (item.state.occurrence.event.remind_before_minutes !== null)
+          return fail(linkedReminder(item.ref.target));
+      }
+      if (items.length === 0) {
+        // 即使上游没有发起读取，明确点名的关联提醒仍可在本地核对。这里不发短引用。
+        const dates = mutationDateSelector(ctx);
+        const matches = (await api.listReminders()).filter(
+          (item) =>
+            item.isCurrent &&
+            item.reminder.source === "event" &&
+            item.title === title &&
+            dates.matches(item.due_at),
+        );
+        if (matches.length === 1) {
+          const { reminder, occurrenceId } = matches[0]!;
+          const state = await api.aiReminderState(reminder.id, occurrenceId);
+          if (state.reminder.updated_at !== reminder.updated_at) throw changed();
+          if (state.reminder.source === "event") return fail(linkedReminder(state.linkedTarget));
+        }
+      }
+      return fail(linkedReminder());
+    } catch (error) {
+      return fail(error);
+    }
+  }
+  async function recoverEventDelete(
+    items: readonly ResultItem[],
+    ctx: AiContext,
+  ): Promise<Prepared<AiMutationDraft> | undefined> {
+    const title = eventDeleteIntent(ctx.userText ?? "");
+    if (!title || !mutationDateSelector(ctx).constrained) return;
+    const refs = readCandidates(items, "event", title, ctx).map((item) => item.id);
+    if (!refs.length) return;
+    return prepareDelete("event-delete", { refs, mode: "pick_one" }, ctx);
   }
   const base = (kind: AiMutationKind) => ({
     workbenchId: "com.royce.workbench.general",
@@ -673,7 +929,7 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
     ...base("event-update"),
     name: "calendar_update_event",
     description:
-      "用真实读取ref生成日程修改差异卡片。多个目标时由用户选择；重复日程必须由用户选择范围。start改动且没有end时保持原时长；修改时间后日程最长7天。全天end是不含结束当天边界。",
+      "必须调用本工具生成日程修改卡，不用文字模拟卡片或追问已查到的候选。按用户指定的日期、星期筛选后传入全部匹配的真实ref。说「从某天开始」时传入当天的重复实例，由用户选择范围。start改动且没有end时保留时长；日程最长7天。全天end是不含结束当天边界。",
     args: eventUpdateArgsSchema,
     parameters: parameters({
       title: { type: "string", minLength: 1 },
@@ -685,12 +941,13 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
       remind_before_minutes: { type: ["integer", "null"], minimum: 0 },
     }),
     prepare: (raw, ctx) => prepareUpdate("event-update", raw, ctx),
+    recoverFromRead: recoverEventTime,
   };
   const reminder: AiActionDefinition<z.infer<typeof reminderUpdateArgsSchema>, AiMutationDraft> = {
     ...base("reminder-update"),
     name: "reminders_update",
     description:
-      "用真实读取ref生成提醒修改差异卡片。重复提醒修改整个规则；日程生成和金融提醒禁止改动。",
+      "必须调用本工具生成提醒修改卡或本地拒绝，按用户指定日期筛选后传入全部匹配的真实ref。重复提醒修改整个规则；发现日程生成的提醒仍传入它的ref，由本地拒绝并提供原日程跳转。金融提醒禁止改动。",
     args: reminderUpdateArgsSchema,
     parameters: parameters({
       title: { type: "string", minLength: 1 },
@@ -700,6 +957,7 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
       priority: { type: "integer", minimum: 0, maximum: 3 },
     }),
     prepare: (raw, ctx) => prepareUpdate("reminder-update", raw, ctx),
+    recoverFromRead: recoverLinkedReminder,
   };
   const deletion = (
     kind: "event-delete" | "reminder-delete",
@@ -707,10 +965,11 @@ export function createAiMutationActions(api: GeneralApi = generalApi): AiActionG
     ...base(kind),
     name: kind === "event-delete" ? "calendar_delete_event" : "reminders_delete",
     description:
-      "只能用真实读取ref提出删除。pick_one让用户选一个，all_listed逐条勾选至多20项；日程生成和金融提醒禁止删除。",
+      "必须调用本工具提出删除。按用户指定的日期、星期筛选后传入全部匹配的真实ref。pick_one用卡片选择，不用文字追问；用户明确要求批量才用all_listed，逐条勾选至多20项。日程生成和金融提醒禁止删除。",
     args: aiDeleteArgsSchema,
     parameters: parameters(),
     prepare: (raw, ctx) => prepareDelete(kind, raw, ctx),
+    ...(kind === "event-delete" ? { recoverFromRead: recoverEventDelete } : {}),
     select: (draft, ids) => ({ ...draft, selectedIds: [...ids] }),
   });
   return [event, reminder, deletion("event-delete"), deletion("reminder-delete")];

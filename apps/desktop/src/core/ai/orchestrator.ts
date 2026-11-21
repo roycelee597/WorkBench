@@ -1,5 +1,6 @@
 import {
   DATA_NOTICE,
+  type AiContext,
   type DataPayload,
   type AiTarget,
   type Prepared,
@@ -8,6 +9,7 @@ import {
 } from "./action-types";
 import {
   aiError,
+  aiErrorMessages,
   AiClientError,
   DEFAULT_AI_MODEL,
   llmResponseSchema,
@@ -15,6 +17,7 @@ import {
   type AiModel,
   type LlmClient,
   type LlmRequest,
+  type LlmResponse,
 } from "./llm-client";
 import { buildSystemPrompt } from "./prompt";
 import type { AiRegistry } from "./registry";
@@ -32,6 +35,8 @@ type Assistant = Extract<Message, { role: "assistant" }>;
 type WireCall = NonNullable<Assistant["tool_calls"]>[number];
 const HISTORY_MS = 30 * 60 * 1000;
 const MAX_TOOLS = 5;
+const CARD_RETRY =
+  "上一条用户请求尚未生成卡片。必须调用对应的写入工具来提出操作，不能用文字假装生成卡片或宣称操作成功。";
 
 export interface ConversationTurn {
   createdAt: number;
@@ -306,6 +311,14 @@ export class AiOrchestrator {
       });
       summaries.push("（本轮未能完成，请重新说明或手动操作）");
     };
+    const showPrepared = (actionName: string, prepared: Prepared<unknown>) => {
+      if (prepared.type === "error") {
+        fail(prepared.message, prepared.fallback, undefined, prepared.target);
+        return;
+      }
+      emit({ type: "prepared", actionName, prepared });
+      summaries.push("（已生成 1 张操作卡片，尚未写入）");
+    };
     if (this.busy) {
       fail("上一句还在处理，请稍后再试", "manual", "BUSY");
       return complete();
@@ -331,6 +344,12 @@ export class AiOrchestrator {
     try {
       if (!readEnabled) this.ports.refs.clear();
       const tools = this.ports.registry.tools({ allowRead: readEnabled });
+      const writers = tools.flatMap(({ function: { name } }) => {
+        const action = this.ports.registry.get(name);
+        return action?.kind === "write" ? [action] : [];
+      });
+      const writeTools = writers.map((action) => action.name);
+      const recoverable = writers.filter((action) => action.requiresRead && action.recoverFromRead);
       const timezone = (
         this.ports.timezone ?? (() => Intl.DateTimeFormat().resolvedOptions().timeZone)
       )();
@@ -352,24 +371,70 @@ export class AiOrchestrator {
           (item) => item.readDerived && now >= item.createdAt && now - item.createdAt < HISTORY_MS,
         );
       const stepLimit = options.stepLimitEnabled === false ? HARD_AI_STEPS : DEFAULT_AI_STEPS;
+      let retriedCard = false;
       for (let step = 0; step < stepLimit; step++) {
         if (interrupted()) return stopReading();
         if (step === 0) emit({ type: "status", message: "正在理解…" });
         const request = fitRequest({ model: options.model ?? DEFAULT_AI_MODEL, messages, tools });
         const sentRefs = visibleRefs(request.messages);
         if (interrupted()) return stopReading();
-        const parsed = llmResponseSchema.safeParse(
-          await this.ports.client.chat(structuredClone(request)),
-        );
+        let response: LlmResponse;
+        try {
+          response = await this.ports.client.chat(structuredClone(request), { writeTools });
+        } catch (error) {
+          if (interrupted()) return stopReading();
+          if (aiError(error).code !== "CARD_REQUIRED") throw error;
+          if (retriedCard || step === stepLimit - 1) {
+            fail(aiErrorMessages.CARD_REQUIRED, "manual", "CARD_REQUIRED");
+            return complete();
+          }
+          retriedCard = true;
+          // 不转发被拦截的回复；纠正消息只在本轮使用，也占一个模型步数。
+          messages.push({ role: "user", content: CARD_RETRY });
+          continue;
+        }
         if (interrupted()) return stopReading();
+        const parsed = llmResponseSchema.safeParse(response);
         if (!parsed.success) throw new AiClientError("BAD_RESPONSE");
         const reply = parsed.data;
-        if (reply.content) {
+        const calls = reply.tool_calls.slice(0, MAX_TOOLS);
+        const refs = this.ports.refs;
+        const readItems = readResults.flatMap((result) =>
+          result.items.filter((item) => sentRefs.has(item.id)),
+        );
+        const context: AiContext = { now, timezone, refs, userText: turn.user };
+        const writeContext: AiContext = {
+          ...context,
+          readItems,
+          refs: {
+            issue: () => {
+              throw invalidData();
+            },
+            resolve: (ref, kind) => (sentRefs.has(ref) ? refs.resolve(ref, kind) : null),
+            clear: () => {
+              throw invalidData();
+            },
+          },
+        };
+        if (!calls.length) {
+          for (const action of recoverable) {
+            const recovered = await action.recoverFromRead?.(readItems, writeContext);
+            if (interrupted()) return stopReading();
+            if (!recovered) continue;
+            turn.readDerived = true;
+            showPrepared(action.name, recovered);
+            return complete();
+          }
+        }
+        if (retriedCard && !calls.some((call) => writeTools.includes(call.name))) {
+          fail(aiErrorMessages.CARD_REQUIRED, "manual", "CARD_REQUIRED");
+          return complete();
+        }
+        if (reply.content && !retriedCard) {
           emit({ type: "text", text: reply.content });
           summaries.push(reply.content);
         }
-        if (!reply.tool_calls.length) return complete();
-        const calls = reply.tool_calls.slice(0, MAX_TOOLS);
+        if (!calls.length) return complete();
         if (reply.tool_calls.length > MAX_TOOLS)
           emit({ type: "warning", message: "AI 返回的操作过多，本次只处理前 5 个操作" });
         const hasWrite = calls.some((call) => this.ports.registry.get(call.name)?.kind === "write");
@@ -413,25 +478,13 @@ export class AiOrchestrator {
               message: `正在查看${range ? ` ${range} 的` : "相关"}${action.name.startsWith("calendar_") ? "日程" : "提醒"}…`,
             });
           }
-          const refs = this.ports.refs;
-          const prepared: Prepared<unknown> = await action.prepare(args.data, {
-            now,
-            timezone,
-            refs: action.requiresRead
-              ? {
-                  issue: () => {
-                    throw invalidData();
-                  },
-                  resolve: (ref, kind) => (sentRefs.has(ref) ? refs.resolve(ref, kind) : null),
-                  clear: () => {
-                    throw invalidData();
-                  },
-                }
-              : refs,
-          });
+          const prepared: Prepared<unknown> = await action.prepare(
+            args.data,
+            action.requiresRead ? writeContext : context,
+          );
           if (interrupted()) return stopReading();
           if (prepared.type === "error") {
-            fail(prepared.message, prepared.fallback, undefined, prepared.target);
+            showPrepared(action.name, prepared);
             invalid = true;
             break;
           }
@@ -452,8 +505,7 @@ export class AiOrchestrator {
               content: JSON.stringify(payload),
             });
           } else {
-            emit({ type: "prepared", actionName: action.name, prepared });
-            summaries.push("（已生成 1 张操作卡片，尚未写入）");
+            showPrepared(action.name, prepared);
           }
         }
         if (completedCalls.length) {

@@ -14,6 +14,8 @@ export interface AiContext {
   now: number;
   timezone: string;
   refs: RefTable;
+  userText?: string;
+  readItems?: readonly ResultItem[];
 }
 
 export interface RefTable {
@@ -102,6 +104,8 @@ export interface AiActionDefinition<A, D = A> {
   args: z.ZodType<A>;
   // prepare 只能读取与生成草稿；所有写入只能在用户确认后经 execute 执行。
   prepare(args: A, ctx: AiContext): Promise<Prepared<D>>;
+  // 读取开启时，文字回复缺少工具调用可恢复待确认草稿或本地拒绝提示。
+  recoverFromRead?(items: readonly ResultItem[], ctx: AiContext): Promise<Prepared<D> | undefined>;
   Preview?: ComponentType<PreviewProps<D>>;
   validate?(draft: D): string[];
   select?(draft: D, ids: string[]): D;

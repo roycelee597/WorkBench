@@ -67,6 +67,32 @@ describe("AI 客户端协议", () => {
     const client = new TauriLlmClient(vi.fn().mockResolvedValue(bad));
     await expect(client.chat(request)).rejects.toMatchObject({ code: "BAD_RESPONSE" });
   });
+  it("写入工具名是 IPC 校验元数据，不加入发给上游的请求对象", async () => {
+    const call = vi.fn().mockRejectedValue({ code: "CARD_REQUIRED", message: "上游占位文字" });
+    const client = new TauriLlmClient(call);
+    const requestWithWrite: LlmRequest = {
+      ...request,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "reminders_create",
+            description: "生成提醒草稿",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        },
+      ],
+    };
+    await expect(
+      client.chat(requestWithWrite, { writeTools: ["reminders_create"] }),
+    ).rejects.toMatchObject({
+      message: "没有生成卡片，请重试",
+    });
+    expect(call).toHaveBeenCalledWith("ai_chat", {
+      request: requestWithWrite,
+      writeTools: ["reminders_create"],
+    });
+  });
   it("本地非法参数和 UTF-8 总体积超限不调用 Rust", async () => {
     const call = vi.fn();
     const client = new TauriLlmClient(call);
