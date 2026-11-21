@@ -1,4 +1,5 @@
 mod protocol;
+mod response_guard;
 #[cfg(test)]
 mod tests;
 mod usage;
@@ -401,10 +402,12 @@ pub async fn ai_chat(
     window: WebviewWindow,
     state: tauri::State<'_, AiState>,
     request: Value,
+    write_tools: Option<Vec<String>>,
 ) -> Result<ChatResponse> {
     main_only(window.label())?;
     let _flight = state.acquire()?;
-    let (model, body) = request_body(request)?;
+    let write_tools = write_tools.unwrap_or_default();
+    let (model, body) = request_body(request, &write_tools)?;
     let key = read_key(window.app_handle())?
         .ok_or_else(|| AiError::new("KEY_MISSING", "请先在设置中填写 DeepSeek API key"))?;
     let base = configured_url()?;
@@ -432,19 +435,8 @@ pub async fn ai_chat(
         .ok()
         .map(|r| (r.usage.prompt_tokens, r.usage.completion_tokens))
         .unwrap_or_default();
-    if let Ok(path) = data_directory(window.app_handle()) {
-        audit(
-            &path,
-            &format!(
-                "chat model={model} status={status} elapsed_ms={} prompt_tokens={} completion_tokens={} code={}",
-                started.elapsed().as_millis(),
-                tokens.0,
-                tokens.1,
-                result.as_ref().err().map(|e| e.code).unwrap_or("OK")
-            ),
-        );
-    }
-    finish_response(
+    let elapsed_ms = started.elapsed().as_millis();
+    let result = finish_response(
         result,
         |usage| {
             state.with_usage(window.app_handle(), |store| {
@@ -460,4 +452,17 @@ pub async fn ai_chat(
             }
         },
     )
+    .and_then(|reply| response_guard::filter_reply(reply, &write_tools));
+    if let Ok(path) = data_directory(window.app_handle()) {
+        audit(
+            &path,
+            &format!(
+                "chat model={model} status={status} elapsed_ms={elapsed_ms} prompt_tokens={} completion_tokens={} code={}",
+                tokens.0,
+                tokens.1,
+                result.as_ref().err().map(|e| e.code).unwrap_or("OK")
+            ),
+        );
+    }
+    result
 }

@@ -8,6 +8,7 @@ import {
   type AiActionDefinition,
   type AiContext,
   type Prepared,
+  type ResultItem,
 } from "../src/core/ai/action-types";
 import { AiClientError, type LlmClient, type LlmResponse } from "../src/core/ai/llm-client";
 import { MockLlmClient } from "./mock-llm-client";
@@ -28,8 +29,16 @@ const tools = (...calls: LlmResponse["tool_calls"]): LlmResponse => ({
   tool_calls: calls,
   usage,
 });
+const cardRequired = () => new AiClientError("CARD_REQUIRED");
 
-function environment(steps: Array<LlmResponse | Error>, client?: LlmClient) {
+function environment(
+  steps: Array<LlmResponse | Error>,
+  client?: LlmClient,
+  recoverFromRead?: AiActionDefinition<
+    ReadArgs,
+    { recordId: string; notes: string }
+  >["recoverFromRead"],
+) {
   const refs = new MemoryRefTable({ now: () => now });
   const read = vi.fn(async (_args: ReadArgs, ctx: AiContext): Promise<Prepared<ReadArgs>> => {
     const target = {
@@ -90,6 +99,7 @@ function environment(steps: Array<LlmResponse | Error>, client?: LlmClient) {
     kind: "write",
     description: "生成测试提案",
     prepare: prepareWrite,
+    ...(recoverFromRead ? { requiresRead: true, recoverFromRead } : {}),
     Preview: () => null,
     validate: () => [],
     execute,
@@ -180,6 +190,154 @@ describe("AI 编排器的有界工具循环", () => {
     const result = await f.orchestrator.run({ text: "查查安排", stepLimitEnabled: false });
     expect(f.mock.requests).toHaveLength(20);
     expect(result.events).toContainEqual({ type: "warning", message: "已停止：步数异常" });
+  });
+
+  it("原生拒绝假卡片后仅追加一条纠正消息，真实工具照常生成待确认提案", async () => {
+    const f = environment([
+      cardRequired(),
+      { ...tools(call("calendar_update_event", "write")), content: "已成功" },
+    ]);
+    const text = "把明天的会改到四点";
+    const result = await f.orchestrator.run({ text });
+    expect(f.mock.requests).toHaveLength(2);
+    expect(f.mock.requests[1]?.messages.slice(-2)).toEqual([
+      { role: "user", content: text },
+      { role: "user", content: expect.stringContaining("必须调用对应写入工具") },
+    ]);
+    expect(result.events.filter((event) => event.type === "text")).toEqual([]);
+    expect(result.events).toContainEqual({
+      type: "prepared",
+      actionName: "calendar_update_event",
+      prepared: expect.objectContaining({ type: "proposal" }),
+    });
+    expect(result.turn.user).toBe(text);
+    expect(JSON.stringify(result.turn)).not.toContain("必须调用对应写入工具");
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("查询回答误判后可显示纠正的正常文字，不生成操作卡片", async () => {
+    const text = "今天有哪些日程？";
+    const reply = "今天 15:00 有一项日程 [e1]。";
+    const f = environment([tools(call()), cardRequired(), answer(reply)]);
+    const result = await f.orchestrator.run({ text });
+    expect(f.mock.requests).toHaveLength(3);
+    expect(f.mock.requests[2]?.messages.at(-1)).toEqual({
+      role: "user",
+      content:
+        "如果用户要求新建、修改或删除，必须调用对应写入工具生成卡片；如果只是回答问题，直接回答，不要声称已写入。",
+    });
+    expect(result.events).toContainEqual({ type: "text", text: reply });
+    expect(result.turn.text).toBe(reply);
+    expect(result.events.some(({ type }) => type === "prepared" || type === "error")).toBe(false);
+    expect(f.read).toHaveBeenCalledOnce();
+    expect(f.prepareWrite).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([cardRequired(), answer("  "), tools(call())])(
+    "纠正既无正常文字也无写入工具时显示固定错误，不再请求模型",
+    async (retry) => {
+      const f = environment([cardRequired(), retry, answer("不能请求这一步")]);
+      const result = await f.orchestrator.run({ text: "先加个待办" });
+      expect(f.mock.requests).toHaveLength(2);
+      expect(result.events).toContainEqual({
+        type: "error",
+        code: "CARD_REQUIRED",
+        fallback: "manual",
+        message: "没有生成卡片，请重试",
+      });
+      expect(result.events.some(({ type }) => type === "text" || type === "prepared")).toBe(false);
+      expect(f.prepareWrite).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([true, false])("纠正次数计入步数上限（启用默认限制 %s）", async (stepLimitEnabled) => {
+    const limit = stepLimitEnabled ? 6 : 20;
+    const f = environment([
+      ...Array.from({ length: limit - 1 }, (_, i) =>
+        tools(call("calendar_list_events", `before_card_${i}`)),
+      ),
+      cardRequired(),
+      tools(call("calendar_update_event", "must_not_run")),
+    ]);
+    const result = await f.orchestrator.run({ text: "改一条日程", stepLimitEnabled });
+    expect(f.mock.requests).toHaveLength(limit);
+    expect(result.events).toContainEqual(
+      expect.objectContaining({ type: "error", message: "没有生成卡片，请重试" }),
+    );
+    expect(f.prepareWrite).not.toHaveBeenCalled();
+  });
+
+  it("文字追问走本轮读取兜底，只显示本地候选，不直接执行", async () => {
+    const recover = vi.fn(async (items: readonly ResultItem[], ctx: AiContext) => {
+      expect(ctx.userText).toBe("把明天的会改到四点");
+      expect(ctx.readItems).toEqual(items);
+      expect(ctx.refs.resolve(items[0]!.id, "event")).not.toBeNull();
+      expect(ctx.refs.resolve("e1", "event")).toBeNull();
+      return {
+        type: "choose" as const,
+        candidates: [...items],
+        prompt: "请选择目标",
+        pick: async () => ({ type: "error" as const, message: "测试取消" }),
+      };
+    });
+    const f = environment([tools(call()), answer("你要选哪一场？")], undefined, recover);
+    f.refs.issue(
+      { kind: "event", eventId: "visible-only-locally", originalStart: null },
+      {
+        updatedAt: now,
+      },
+    );
+    const result = await f.orchestrator.run({ text: "把明天的会改到四点" });
+    expect(recover).toHaveBeenCalledOnce();
+    expect(result.events).toContainEqual(
+      expect.objectContaining({
+        type: "prepared",
+        prepared: expect.objectContaining({ type: "choose" }),
+      }),
+    );
+    expect(result.events.some(({ type }) => type === "text")).toBe(false);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("读取规则变化时，进行中的本地拒绝提示也不暴露原日程目标", async () => {
+    const target = { kind: "event" as const, eventId: "local-target", originalStart: null };
+    const recover = vi.fn(async () => {
+      f.orchestrator.invalidateRead();
+      return { type: "error" as const, message: "这条提醒由日程生成", target };
+    });
+    const f = environment([tools(call()), answer("请修改日程")], undefined, recover);
+    const result = await f.orchestrator.run({ text: "把自动提醒改到六点" });
+    expect(recover).toHaveBeenCalledOnce();
+    expect(result.events).toContainEqual({
+      type: "error",
+      message: expect.stringContaining("已关闭"),
+      fallback: "settings",
+    });
+    expect(JSON.stringify(result)).not.toContain(target.eventId);
+  });
+
+  it("没有本轮读取时，不把上一轮的查询结果当作待选择目标", async () => {
+    const recover = vi.fn(async () => undefined);
+    const f = environment(
+      [tools(call()), answer("这是上一轮的日程"), answer("请确认日期")],
+      undefined,
+      recover,
+    );
+    const first = await f.orchestrator.run({ text: "查一下日程" });
+    expect(recover).toHaveBeenCalledOnce();
+    recover.mockClear();
+    const result = await f.orchestrator.run({ text: "把会改到四点", history: [first.turn] });
+    expect(f.mock.requests.at(-1)?.messages.some(({ role }) => role === "tool")).toBe(true);
+    expect(recover).toHaveBeenCalledExactlyOnceWith([], expect.objectContaining({ readItems: [] }));
+    expect(result.events).toContainEqual({ type: "text", text: "请确认日期" });
+  });
+
+  it("读取关闭时，文字回复不触发任何本地目标回退", async () => {
+    const recover = vi.fn(async () => undefined);
+    const f = environment([answer("请在设置里打开读取")], undefined, recover);
+    await f.orchestrator.run({ text: "把自动关联的提醒改到六点", readEnabled: false });
+    expect(recover).not.toHaveBeenCalled();
   });
 
   it("读取进行中关开隐私设置仍停止旧循环，并清除晚到的短引用", async () => {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fixture, type MemoryDatabase } from "./memory-database";
 import { createGeneralApi } from "../../../workbenches/general/src/api";
 import { createAiMutationActions } from "../../../workbenches/general/src/ai-mutation-actions";
+import { createAiReadActions } from "../../../workbenches/general/src/ai-read-actions";
 import {
   aiDeleteDestination,
   aiMutationDiff,
@@ -254,6 +255,209 @@ describe("AI 修改与删除的本地目标边界", () => {
       rrule: null,
       priority: 3,
     });
+  });
+});
+
+describe("AI 已读取的候选本地兜底", () => {
+  it("S11 模型只回文字也生成明天两场会的候选，点选以后才出现修改卡", async () => {
+    const f = await setup();
+    const project = await f.event({ title: "项目会", start_at: at(19, 11), end_at: at(19, 12) });
+    const group = await f.event({ title: "组会", start_at: at(19), end_at: at(19, 16) });
+    await f.event({ title: "其他会" });
+    const events = createAiReadActions(f.api).find(
+      (action) => action.name === "calendar_list_events",
+    )!;
+    const read = await events.prepare({ from: "2026-11-19", to: "2026-11-21" }, f.ctx);
+    if (read.type !== "data") throw new Error("缺少读取结果");
+    const action = f.action("calendar_update_event");
+    const ctx = { ...f.ctx, userText: "把明天的会改到四点" };
+    const result = await action.recoverFromRead!(read.items, ctx);
+    if (result?.type !== "choose") throw new Error("缺少候选卡");
+    expect(result.candidates.map((item) => item.title)).toEqual(["项目会", "组会"]);
+    const candidate = result.candidates.find((item) => item.title === "组会")!;
+    expect(await result.pick(candidate.id)).toMatchObject({
+      type: "proposal",
+      draft: { next: { form: { start: "2026-11-19T16:00", end: "2026-11-19T17:00" } } },
+    });
+    const single = await action.prepare(
+      { refs: [candidate.id], changes: { start: "2026-11-19T16:00" } },
+      { ...ctx, readItems: read.items },
+    );
+    expect(single).toMatchObject({
+      type: "choose",
+      candidates: expect.arrayContaining(result.candidates),
+    });
+    if (single.type !== "choose") throw new Error("缺少候选卡");
+    expect(single.candidates).toHaveLength(2);
+    expect(await single.pick(candidate.id)).toMatchObject({ type: "proposal" });
+    expect(await f.data.events.get(project.id)).toMatchObject({ start_at: at(19, 11) });
+    expect(await f.data.events.get(group.id)).toMatchObject({ start_at: at(19) });
+    expect(
+      await action.recoverFromRead!(read.items, { ...ctx, userText: "明天的会可以改到四点吗？" }),
+    ).toBeUndefined();
+  });
+
+  it("D18 按本地星期过滤工具候选，也可兜底纯文字删除请求；没有匹配时拒绝", async () => {
+    const f = await setup();
+    const mon = await f.event({ title: "健身", start_at: at(23), end_at: at(23, 16) });
+    const wed = await f.event({ title: "健身", start_at: at(25), end_at: at(25, 16) });
+    const monday = await f.eventRef(mon);
+    const wednesday = await f.eventRef(wed);
+    const ctx = { ...f.ctx, userText: "下周三的健身不要了。" };
+    const action = f.action("calendar_delete_event");
+    const expected = {
+      type: "proposal",
+      draft: { selectedIds: [wednesday] },
+    };
+    expect(
+      await action.prepare({ refs: [monday, wednesday], mode: "pick_one" }, ctx),
+    ).toMatchObject(expected);
+    expect(await action.prepare({ refs: [monday], mode: "pick_one" }, ctx)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("指定日期"),
+    });
+    const read = [mon, wed].map((row, index) => ({
+      id: index ? wednesday : monday,
+      target: { kind: "event" as const, eventId: row.id, originalStart: null },
+      title: row.title,
+      when: "",
+      badges: [],
+    }));
+    expect(await action.recoverFromRead!(read, ctx)).toMatchObject(expected);
+    const secondWed = await f.event({ title: "健身", start_at: at(25, 17), end_at: at(25, 18) });
+    const secondRef = await f.eventRef(secondWed);
+    const modelBatch = { refs: [monday, wednesday, secondRef], mode: "all_listed" };
+    expect(await action.prepare(modelBatch, ctx)).toMatchObject({
+      type: "choose",
+      candidates: [{ id: wednesday }, { id: secondRef }],
+    });
+    expect(
+      await action.prepare(modelBatch, { ...ctx, userText: "删掉下周三所有的健身。" }),
+    ).toMatchObject({ type: "proposal", draft: { selectedIds: [wednesday, secondRef] } });
+    expect(await f.data.events.listDeleted()).toEqual([]);
+  });
+
+  it("D19 从后天起修改，模型漏传当天且时间算错也锁定正确实例，仍需选择范围", async () => {
+    const f = await setup();
+    const row = await f.event({
+      title: "晨跑",
+      start_at: at(18, 7),
+      end_at: at(18, 8),
+      rrule: "FREQ=DAILY;COUNT=10",
+    });
+    const wrong = await f.eventRef(row, at(19, 7));
+    const ctx = { ...f.ctx, userText: "以后每天的晨跑都推后半小时，从后天开始。" };
+    const action = f.action("calendar_update_event");
+    const result: Prepared<AiMutationDraft> = await action.prepare(
+      { refs: [wrong], changes: { start: "2026-11-19T08:00", end: "2026-11-19T09:00" } },
+      ctx,
+    );
+    if (result.type !== "proposal") throw new Error("缺少范围卡");
+    expect(result).toMatchObject({
+      needsScope: true,
+      note: expect.stringContaining("这次及以后"),
+      draft: {
+        items: [{ target: { eventId: row.id, originalStart: at(20, 7) } }],
+        next: { form: { start: "2026-11-20T07:30", end: "2026-11-20T08:30" } },
+      },
+    });
+    const writes = vi.spyOn(f.api, "editEventOccurrenceChecked");
+    await expect(action.execute!(result.draft)).rejects.toThrow("请选择");
+    expect(writes).not.toHaveBeenCalled();
+    f.refs.clear();
+    await expect(action.execute!(result.draft, "following")).rejects.toThrow("不存在");
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it("D20 纯文字拒绝也附本地关联日程入口，普通提醒不伪造入口", async () => {
+    const f = await setup();
+    const event = await f.event({ title: "演示前准备", remind_before_minutes: 30 });
+    const reminder = (await f.data.reminders.list()).find((item) => item.event_id === event.id)!;
+    const ref = f.reminderRef(reminder);
+    const other = await f.reminder({ title: "演示前准备" });
+    const otherRef = f.reminderRef(other);
+    const action = f.action("reminders_update");
+    const ctx = { ...f.ctx, userText: "把演示前准备自动带出来的提醒改到六点。" };
+    const read = [
+      {
+        id: ref,
+        target: { kind: "reminder" as const, reminderId: reminder.id, occurrenceId: null },
+        title: reminder.title,
+        when: "",
+        badges: ["event-linked" as const],
+      },
+      {
+        id: otherRef,
+        target: { kind: "reminder" as const, reminderId: other.id, occurrenceId: null },
+        title: other.title,
+        when: "",
+        badges: [],
+      },
+    ];
+    expect(await action.recoverFromRead!(read, ctx)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("由日程生成"),
+      target: { kind: "event", eventId: event.id, originalStart: null },
+    });
+    const issue = vi.spyOn(f.refs, "issue");
+    expect(await action.recoverFromRead!([], ctx)).toMatchObject({
+      type: "error",
+      target: { kind: "event", eventId: event.id, originalStart: null },
+    });
+    expect(issue).not.toHaveBeenCalled();
+    await f.event({
+      title: "演示前准备",
+      start_at: at(21),
+      end_at: at(21, 16),
+      remind_before_minutes: 30,
+    });
+    expect(await action.recoverFromRead!([], ctx)).not.toHaveProperty("target");
+    expect(await action.recoverFromRead!(read.slice(1), ctx)).not.toHaveProperty("target");
+    const eventRef = await f.eventRef(event);
+    expect(
+      await f
+        .action("calendar_update_event")
+        .prepare({ refs: [eventRef], changes: { start: "2026-11-20T18:00" } }, ctx),
+    ).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("由日程生成"),
+      target: { kind: "event", eventId: event.id, originalStart: null },
+    });
+    expect(
+      await f
+        .action("calendar_update_event")
+        .prepare(
+          { refs: ["e999"], changes: { start: "2026-11-20T18:00" } },
+          { ...ctx, readItems: read },
+        ),
+    ).toMatchObject({ type: "error", message: expect.stringContaining("不存在") });
+    expect(await f.data.reminders.get(reminder.id)).toEqual(reminder);
+  });
+
+  it("相同记录的多个短引用按本地身份去重，同一系列真正不同的实例仍可选择", async () => {
+    const f = await setup();
+    const row = await f.event({ rrule: "FREQ=DAILY;COUNT=5" });
+    const first = await f.eventRef(row, at(20));
+    const alias = await f.eventRef(row, at(20));
+    const second = await f.eventRef(row, at(21));
+    const action = f.action("calendar_update_event");
+    const result = await action.prepare(
+      { refs: [first, first, alias, second], changes: { title: "新标题" } },
+      f.ctx,
+    );
+    expect(result).toMatchObject({
+      type: "choose",
+      candidates: [{ id: first }, { id: second }],
+    });
+    if (result.type !== "choose") throw new Error("缺少候选");
+    expect(await result.pick(alias)).toMatchObject({ type: "error" });
+    const reminder = await f.reminder();
+    const refA = f.reminderRef(reminder);
+    const refB = f.reminderRef(reminder);
+    const one = await f
+      .action("reminders_delete")
+      .prepare({ refs: [refA, refB], mode: "all_listed" }, f.ctx);
+    expect(one).toMatchObject({ type: "proposal", draft: { selectedIds: [refA] } });
   });
 });
 

@@ -94,11 +94,13 @@ describe("综合工作台 AI 新建操作", () => {
     expect(llmRequestSchema.safeParse(client.requests[0]).success).toBe(true);
     expect(registry.tools()).toHaveLength(3);
     for (const tool of registry.tools()) {
+      expect(tool.function.description).toContain("必须调用本工具生成待确认");
       expect(tool.function.parameters.additionalProperties).toBe(false);
       expect(tool.function.parameters.properties).not.toHaveProperty("refs");
       expect(tool.function.parameters.properties).not.toHaveProperty("rrule");
       expect(registry.get(tool.function.name)?.kind).toBe("write");
     }
+    expect(registry.get("reminders_create")?.description).toContain("用户明确不设时间时填null");
     expect(issue).not.toHaveBeenCalled();
     expect(resolve).not.toHaveBeenCalled();
     await assertEmpty(data);

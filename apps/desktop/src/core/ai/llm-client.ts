@@ -129,6 +129,7 @@ export const aiErrorMessages = {
   TIMEOUT: "DeepSeek 响应超时，请手动新建",
   UPSTREAM: "DeepSeek 服务暂时不可用，请手动新建",
   BAD_RESPONSE: "AI 返回的内容或请求参数无法解析，请手动新建或换个说法",
+  CARD_REQUIRED: "没有生成卡片，请重试",
   TOO_LARGE: "这句话或上下文太长了，请缩短",
   BUSY: "上一句还在处理，请稍后再试",
   CREDENTIAL_ERROR: "无法访问系统凭据，请检查 Windows 凭据管理器",
@@ -167,19 +168,25 @@ export function aiError(error: unknown): AiClientError {
 }
 export type AiInvoker = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 export const invokeAi: AiInvoker = (command, args) => invoke(command, args);
+export interface LlmChatOptions {
+  writeTools: readonly string[];
+}
 export interface LlmClient {
-  chat(request: LlmRequest): Promise<LlmResponse>;
+  chat(request: LlmRequest, options?: LlmChatOptions): Promise<LlmResponse>;
 }
 export class TauriLlmClient implements LlmClient {
   constructor(private readonly call: AiInvoker = invokeAi) {}
-  async chat(request: LlmRequest): Promise<LlmResponse> {
+  async chat(request: LlmRequest, options?: LlmChatOptions): Promise<LlmResponse> {
     const parsed = llmRequestSchema.safeParse(request);
     if (!parsed.success) throw new AiClientError("BAD_RESPONSE");
     if (new TextEncoder().encode(JSON.stringify(parsed.data)).length > MAX_AI_REQUEST_BYTES)
       throw new AiClientError("TOO_LARGE");
     try {
       const response = llmResponseSchema.safeParse(
-        await this.call("ai_chat", { request: parsed.data }),
+        await this.call("ai_chat", {
+          request: parsed.data,
+          ...(options?.writeTools.length ? { writeTools: options.writeTools } : {}),
+        }),
       );
       if (!response.success) throw new AiClientError("BAD_RESPONSE");
       return response.data;

@@ -43,6 +43,23 @@ fn normalized(value: Value) -> Result<ChatResponse> {
     normalize_response(&serde_json::to_vec(&value).unwrap())
 }
 
+fn reply_with(text: &str, tools: &[&str]) -> ChatResponse {
+    let mut value = response();
+    let message = &mut value["choices"][0]["message"];
+    message["content"] = json!(text);
+    message["tool_calls"] = json!(
+        tools
+            .iter()
+            .enumerate()
+            .map(|(index, name)| json!({
+                "id": format!("call_{index}"), "type": "function",
+                "function": { "name": name, "arguments": "{}" }
+            }))
+            .collect::<Vec<_>>()
+    );
+    normalized(value).unwrap()
+}
+
 #[test]
 fn only_main_is_allowed_and_permissions_exclude_quick_create() {
     assert!(main_only("main").is_ok());
@@ -113,7 +130,7 @@ fn request_forces_options_and_only_forwards_allowed_fields() {
     value["stream"] = json!(true);
     value["base_url"] = json!("https://invalid.example");
     value["authorization"] = json!("ignored-secret");
-    let (model, bytes) = request_body(value).unwrap();
+    let (model, bytes) = request_body(value, &[]).unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(model, "deepseek-flash");
     assert_eq!(body["max_tokens"], 4000);
@@ -134,7 +151,7 @@ fn assistant_tool_calls_and_corresponding_tool_messages_round_trip() {
         {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"calendar_list_events","arguments":"{}"}}]},
         {"role":"tool","tool_call_id":"call_1","content":"{\"type\":\"workbench_data\"}"}
     ]);
-    let (_, bytes) = request_body(value).unwrap();
+    let (_, bytes) = request_body(value, &[]).unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["messages"][2]["tool_calls"][0]["id"], "call_1");
     assert_eq!(body["messages"][3]["tool_call_id"], "call_1");
@@ -142,11 +159,147 @@ fn assistant_tool_calls_and_corresponding_tool_messages_round_trip() {
 }
 
 #[test]
+fn request_checks_write_tool_metadata_without_forwarding_it() {
+    let mut value = request();
+    let mut writer = tool();
+    writer["function"]["name"] = json!("reminders_create");
+    value["tools"] = json!([tool(), writer]);
+    let (_, with_metadata) = request_body(value.clone(), &["reminders_create".into()]).unwrap();
+    let (_, without_metadata) = request_body(value.clone(), &[]).unwrap();
+    assert_eq!(with_metadata, without_metadata);
+    for invalid in [
+        vec!["reminders_update".into()],
+        vec!["reminders_create".into(), "reminders_create".into()],
+    ] {
+        assert_eq!(
+            request_body(value.clone(), &invalid).unwrap_err().code,
+            "BAD_RESPONSE"
+        );
+    }
+}
+
+#[test]
+fn fake_card_placeholders_and_write_success_claims_require_a_write_call() {
+    let write_tools = ["reminders_create".into()];
+    for text in [
+        "【确认卡片】买电池（不设时间）",
+        "[确认卡片占位]",
+        "**确认卡片**\n标题：买电池\n到期时间：无",
+        "✅ **已创建待办**：买电池",
+        "✔️ 任务创建成功。",
+        "【待办卡片】买电池（无到期时间）",
+        "「确认卡片」：买电池（无到期时间）",
+        "【待确认】买电池（无到期时间）",
+        "请确认以下操作：\n- **标题：** 买电池\n- **到期时间：** 无",
+        "请确认以下待办\n待办名称: 买电池\n截止时间: 不设时间",
+        "买电池（无到期）\n[确认] [取消]",
+        "好的，已经帮你添加待办：买电池。",
+        "提醒已更新。",
+        "删除成功。",
+        "已将买电池加入待办。",
+        "已为你设置提前 15 分钟提醒。",
+        "我已删除该日程 [e1]。",
+        "已更新提醒，具体见 [r12]。我已帮你新建待办：买电池。",
+        "【确认卡片】删除日程 [e2]",
+        "已删除 [r0]。",
+        "已保存 [e01]。",
+        "已成功设置提醒。",
+    ] {
+        let error = response_guard::filter_reply(reply_with(text, &[]), &write_tools).unwrap_err();
+        assert_eq!(error.code, "CARD_REQUIRED", "{text}");
+        assert_eq!(error.message, "没有生成卡片，请重试");
+    }
+    for tools in [
+        vec!["calendar_list_events"],
+        vec!["reminders_update"],
+        vec![
+            "calendar_list_events",
+            "calendar_list_events",
+            "calendar_list_events",
+            "calendar_list_events",
+            "calendar_list_events",
+            "reminders_create",
+        ],
+    ] {
+        let reply = reply_with("已新建待办。", &tools);
+        assert_eq!(
+            response_guard::filter_reply(reply, &write_tools)
+                .unwrap_err()
+                .code,
+            "CARD_REQUIRED"
+        );
+    }
+}
+
+#[test]
+fn real_write_call_preserves_the_proposal_but_not_unconfirmed_success_text() {
+    let write_tools = ["reminders_create".into()];
+    let reply = reply_with("已新建提醒：买电池。", &["reminders_create"]);
+    let filtered = response_guard::filter_reply(reply, &write_tools).unwrap();
+    assert!(filtered.content.is_none());
+    assert_eq!(filtered.tool_calls[0].name, "reminders_create");
+    assert_eq!(filtered.usage.total_tokens, 16);
+}
+
+#[test]
+fn read_replies_explanations_and_unconfirmed_wording_are_preserved() {
+    for text in [
+        "明天有两场会议 [e1] [e2]。",
+        "演示前准备 [e3] 18:00，提醒已设置为提前 30 分钟。",
+        "日程已安排在明天 10:00 [e1]。",
+        "明天 10:00 维修预约 [e1]，已设置提前 15 分钟提醒。",
+        "提醒已添加到日历中的那场会议 [e2] 上。",
+        "提醒已设置为提前 30 分钟。",
+        "日程已安排在 10:00。",
+        "提醒已添加到日历中的那场会议上。",
+        "已更新 [r12]。",
+        "已添加日程：研讨会 [e2]。",
+        "已更新提醒，具体见 [r12]。",
+        "已将已保存的提醒列表展示如下。",
+        "确认卡片的作用是让你先核对内容。",
+        "「确认卡片」里会列出标题和到期时间。",
+        "请在确认卡片上点确认，尚未保存。",
+        "✅ 已找到两条提醒。",
+        "✅ 尚未保存。",
+        "✅ 已保存了吗？",
+        "请确认以下操作是否是你想做的。\n标题：买电池\n到期时间：无",
+        "请确认以下操作：需要修改哪一条？",
+        "查到一个待办：\n标题：买电池\n到期时间：无",
+        "这是一个例子：如果回答“已添加待办”，应检查是否有卡片。",
+        "生成日程的提醒不能直接修改，请打开原日程。",
+        "已保存的提醒明天到期。",
+        "我没有删除任何日程。",
+    ] {
+        let filtered = response_guard::filter_reply(reply_with(text, &[]), &[]).unwrap();
+        assert_eq!(filtered.content.as_deref(), Some(text));
+    }
+}
+
+#[test]
+fn suppressed_fake_card_keeps_token_accounting() {
+    let directory = Scratch::new();
+    let time = 100_000;
+    let mut store = UsageStore::load(&directory.0, time).unwrap();
+    store.charge(time).unwrap();
+    let result = finish_response(
+        Ok(reply_with("[确认卡片]", &[])),
+        |usage| store.add_tokens(usage.prompt_tokens, usage.completion_tokens, time),
+        |_| panic!("测试用量写入不应失败"),
+    )
+    .and_then(|reply| response_guard::filter_reply(reply, &["reminders_create".into()]));
+    assert_eq!(result.unwrap_err().code, "CARD_REQUIRED");
+    let usage = store.snapshot(time);
+    assert_eq!(usage.calls, 1);
+    assert_eq!(usage.prompt_tokens, 12);
+    assert_eq!(usage.completion_tokens, 4);
+}
+
+#[test]
 fn models_roles_tools_and_limits_are_validated_before_sending() {
     for model in protocol::MODELS {
         let mut value = request();
         value["model"] = json!(model);
-        assert!(request_body(value).is_ok());
+        assert!(request_body(value, &[]).is_ok());
     }
     let mut invalids = Vec::new();
     let mut value = request();
@@ -184,7 +337,7 @@ fn models_roles_tools_and_limits_are_validated_before_sending() {
     ]);
     invalids.push(value);
     for value in invalids {
-        assert!(request_body(value).is_err());
+        assert!(request_body(value, &[]).is_err());
     }
 }
 
@@ -285,7 +438,7 @@ fn request_messages_and_tool_calls_still_reject_unknown_fields() {
     for message in [call_metadata, function_metadata, message_metadata] {
         let mut value = request();
         value["messages"] = json!([message]);
-        assert_eq!(request_body(value).unwrap_err().code, "BAD_RESPONSE");
+        assert_eq!(request_body(value, &[]).unwrap_err().code, "BAD_RESPONSE");
     }
 }
 
@@ -446,9 +599,9 @@ fn tool_messages_allow_thirty_thousand_characters() {
         {"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"calendar_list_events","arguments":"{}"}}]},
         {"role":"tool","content":"中".repeat(30_000),"tool_call_id":"call_1"}
     ]);
-    assert!(request_body(value.clone()).is_ok());
+    assert!(request_body(value.clone(), &[]).is_ok());
     value["messages"][2]["content"] = json!("中".repeat(30_001));
-    assert_eq!(request_body(value).unwrap_err().code, "TOO_LARGE");
+    assert_eq!(request_body(value, &[]).unwrap_err().code, "TOO_LARGE");
 }
 
 #[test]
@@ -556,7 +709,7 @@ fn mock_http_transport_auth_body_status_errors_and_failed_calls_count() {
         let (url, worker) = server(status, response().to_string(), Duration::ZERO);
         let client = client(&url, Duration::from_secs(2)).unwrap();
         let key = ApiKey::parse("sk-fake-workbench-test-ab12").unwrap();
-        let (_, body) = request_body(request()).unwrap();
+        let (_, body) = request_body(request(), &[]).unwrap();
         let wire = build_request(
             &client,
             Method::POST,
@@ -663,7 +816,7 @@ fn redirects_are_not_followed_and_local_failures_do_not_touch_usage() {
     let mut store = UsageStore::load(&directory.0, 100_000).unwrap();
     let mut bad = request();
     bad["model"] = json!("bad");
-    assert!(request_body(bad).is_err());
+    assert!(request_body(bad, &[]).is_err());
     assert_eq!(store.snapshot(100_000).calls, 0);
     assert!(!directory.0.join("ai-usage.json").exists());
 }

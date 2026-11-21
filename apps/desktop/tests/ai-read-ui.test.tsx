@@ -309,7 +309,7 @@ describe("AI A4 读取结果与操作卡片", () => {
     });
     api.openTarget.mockRejectedValueOnce(new Error("原日程已删除"));
     await render(store);
-    await click(button("在日程中打开"));
+    await click(button("跳到原日程"));
     expect(api.openTarget).toHaveBeenCalledExactlyOnceWith({
       kind: "event",
       eventId: "source-event",

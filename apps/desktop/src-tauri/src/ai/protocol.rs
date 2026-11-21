@@ -73,7 +73,7 @@ fn short_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 200 && value.bytes().all(|c| c.is_ascii_graphic())
 }
 
-pub fn request_body(value: Value) -> Result<(String, Vec<u8>)> {
+pub fn request_body(value: Value, write_tools: &[String]) -> Result<(String, Vec<u8>)> {
     if serde_json::to_vec(&value)
         .map_err(|_| AiError::bad())?
         .len()
@@ -144,7 +144,7 @@ pub fn request_body(value: Value) -> Result<(String, Vec<u8>)> {
         let schema = &tool.function.parameters;
         if tool.kind != "function"
             || !function_name(&tool.function.name)
-            || !names.insert(&tool.function.name)
+            || !names.insert(tool.function.name.as_str())
             || tool.function.description.chars().count() > 300
             || schema.get("type").and_then(Value::as_str) != Some("object")
             || !schema.get("properties").is_some_and(Value::is_object)
@@ -152,6 +152,15 @@ pub fn request_body(value: Value) -> Result<(String, Vec<u8>)> {
         {
             return Err(AiError::bad());
         }
+    }
+    // 写工具分类只供本地识别假卡片，不能把该元数据发给模型。
+    let mut declared = std::collections::HashSet::new();
+    if write_tools.len() > names.len()
+        || write_tools
+            .iter()
+            .any(|name| !names.contains(name.as_str()) || !declared.insert(name))
+    {
+        return Err(AiError::bad());
     }
     let mut body = json!({ "model": model, "messages": messages,
         "max_tokens": 4000, "stream": false, "thinking": { "type": "disabled" } });

@@ -28,7 +28,7 @@ export function ErrorCard({
         )}
         {error.target && openTarget && (
           <Button variant="outline" size="sm" onClick={openTarget}>
-            {error.target.kind === "event" ? "在日程中打开" : "在提醒中打开"}
+            {error.target.kind === "event" ? "跳到原日程" : "在提醒中打开"}
           </Button>
         )}
         {error.code === "INSUFFICIENT_BALANCE" && (
