@@ -36,7 +36,7 @@ type WireCall = NonNullable<Assistant["tool_calls"]>[number];
 const HISTORY_MS = 30 * 60 * 1000;
 const MAX_TOOLS = 5;
 const CARD_RETRY =
-  "上一条用户请求尚未生成卡片。必须调用对应的写入工具来提出操作，不能用文字假装生成卡片或宣称操作成功。";
+  "如果用户要求新建、修改或删除，必须调用对应写入工具生成卡片；如果只是回答问题，直接回答，不要声称已写入。";
 
 export interface ConversationTurn {
   createdAt: number;
@@ -426,11 +426,12 @@ export class AiOrchestrator {
             return complete();
           }
         }
-        if (retriedCard && !calls.some((call) => writeTools.includes(call.name))) {
+        const textOnly = calls.length === 0 && Boolean(reply.content?.trim());
+        if (retriedCard && !textOnly && !calls.some((call) => writeTools.includes(call.name))) {
           fail(aiErrorMessages.CARD_REQUIRED, "manual", "CARD_REQUIRED");
           return complete();
         }
-        if (reply.content && !retriedCard) {
+        if (reply.content && (!retriedCard || textOnly)) {
           emit({ type: "text", text: reply.content });
           summaries.push(reply.content);
         }

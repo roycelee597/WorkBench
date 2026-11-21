@@ -197,6 +197,13 @@ fn fake_card_placeholders_and_write_success_claims_require_a_write_call() {
         "提醒已更新。",
         "删除成功。",
         "已将买电池加入待办。",
+        "已为你设置提前 15 分钟提醒。",
+        "我已删除该日程 [e1]。",
+        "已更新提醒，具体见 [r12]。我已帮你新建待办：买电池。",
+        "【确认卡片】删除日程 [e2]",
+        "已删除 [r0]。",
+        "已保存 [e01]。",
+        "已成功设置提醒。",
     ] {
         let error = response_guard::filter_reply(reply_with(text, &[]), &write_tools).unwrap_err();
         assert_eq!(error.code, "CARD_REQUIRED", "{text}");
@@ -238,6 +245,17 @@ fn real_write_call_preserves_the_proposal_but_not_unconfirmed_success_text() {
 fn read_replies_explanations_and_unconfirmed_wording_are_preserved() {
     for text in [
         "明天有两场会议 [e1] [e2]。",
+        "演示前准备 [e3] 18:00，提醒已设置为提前 30 分钟。",
+        "日程已安排在明天 10:00 [e1]。",
+        "明天 10:00 维修预约 [e1]，已设置提前 15 分钟提醒。",
+        "提醒已添加到日历中的那场会议 [e2] 上。",
+        "提醒已设置为提前 30 分钟。",
+        "日程已安排在 10:00。",
+        "提醒已添加到日历中的那场会议上。",
+        "已更新 [r12]。",
+        "已添加日程：研讨会 [e2]。",
+        "已更新提醒，具体见 [r12]。",
+        "已将已保存的提醒列表展示如下。",
         "确认卡片的作用是让你先核对内容。",
         "「确认卡片」里会列出标题和到期时间。",
         "请在确认卡片上点确认，尚未保存。",

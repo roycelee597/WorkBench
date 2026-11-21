@@ -202,7 +202,7 @@ describe("AI 编排器的有界工具循环", () => {
     expect(f.mock.requests).toHaveLength(2);
     expect(f.mock.requests[1]?.messages.slice(-2)).toEqual([
       { role: "user", content: text },
-      { role: "user", content: expect.stringContaining("必须调用对应的写入工具") },
+      { role: "user", content: expect.stringContaining("必须调用对应写入工具") },
     ]);
     expect(result.events.filter((event) => event.type === "text")).toEqual([]);
     expect(result.events).toContainEqual({
@@ -211,12 +211,31 @@ describe("AI 编排器的有界工具循环", () => {
       prepared: expect.objectContaining({ type: "proposal" }),
     });
     expect(result.turn.user).toBe(text);
-    expect(JSON.stringify(result.turn)).not.toContain("必须调用对应的写入工具");
+    expect(JSON.stringify(result.turn)).not.toContain("必须调用对应写入工具");
     expect(f.execute).not.toHaveBeenCalled();
   });
 
-  it.each([cardRequired(), answer("我能帮你处理"), tools(call())])(
-    "纠正仍没有卡片时显示固定错误，不再请求模型",
+  it("查询回答误判后可显示纠正的正常文字，不生成操作卡片", async () => {
+    const text = "今天有哪些日程？";
+    const reply = "今天 15:00 有一项日程 [e1]。";
+    const f = environment([tools(call()), cardRequired(), answer(reply)]);
+    const result = await f.orchestrator.run({ text });
+    expect(f.mock.requests).toHaveLength(3);
+    expect(f.mock.requests[2]?.messages.at(-1)).toEqual({
+      role: "user",
+      content:
+        "如果用户要求新建、修改或删除，必须调用对应写入工具生成卡片；如果只是回答问题，直接回答，不要声称已写入。",
+    });
+    expect(result.events).toContainEqual({ type: "text", text: reply });
+    expect(result.turn.text).toBe(reply);
+    expect(result.events.some(({ type }) => type === "prepared" || type === "error")).toBe(false);
+    expect(f.read).toHaveBeenCalledOnce();
+    expect(f.prepareWrite).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([cardRequired(), answer("  "), tools(call())])(
+    "纠正既无正常文字也无写入工具时显示固定错误，不再请求模型",
     async (retry) => {
       const f = environment([cardRequired(), retry, answer("不能请求这一步")]);
       const result = await f.orchestrator.run({ text: "先加个待办" });
