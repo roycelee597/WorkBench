@@ -72,6 +72,8 @@ flowchart TB
     subgraph UI["① 界面层 React（apps/desktop/src）"]
         Shell["主框架 Shell<br/>侧边栏 / 工作台切换 / 设置"]
         Market["工作台管理 & 市场页"]
+        General["内置综合工作台<br/>备忘录 / 日程 / 提醒"]
+        AI["内置 AI 助手<br/>对话 / 确认卡片 / 设置"]
     end
 
     subgraph Runtime["② 工作台运行时（apps/desktop/src/runtime）"]
@@ -81,13 +83,13 @@ flowchart TB
     end
 
     subgraph WBs["③ 工作台（沙盒 iframe）"]
-        General["综合工作台<br/>备忘录 / 日程 / 提醒"]
         Sample["示例分工作台"]
         Third["第三方/AI 写的分工作台"]
     end
 
     subgraph Core["④ 核心服务层 TS（apps/desktop/src/core）"]
-        Repo["数据仓库 Repository<br/>memos / events / reminders / kv"]
+        Repo["数据仓库 Repository<br/>memos / events / reminders / ai_messages / kv"]
+        AICore["core/ai<br/>操作登记 / 工具编排 / 短引用"]
         Sched["提醒调度器 Scheduler"]
         SyncStub["同步接口（V1 为空实现）"]
     end
@@ -97,6 +99,7 @@ flowchart TB
         Notify["软件内通知条"]
         Tray["托盘 / 自启 / 单实例"]
         Install["插件安装：解压 zip、校验、wbpkg:// 协议"]
+        AINative["AI 命令<br/>DeepSeek / 系统凭据 / 用量与限额"]
     end
 
     WBs -- "@workbench/sdk（postMessage）" --> Bridge
@@ -104,6 +107,13 @@ flowchart TB
     Bridge --> Repo
     Bridge --> Sched
     Shell --> Loader
+    Shell --> General
+    Shell --> AI
+    AI --> AICore
+    AI -->|"本地对话记录经 AI api.ts"| Repo
+    AI -->|"用户确认后经综合 api.ts 写入"| General
+    General --> Repo
+    AICore -->|"经主窗口 IPC 发起模型调用"| AINative
     Market --> Install
     Loader --> WBs
     Repo --> SQL
@@ -115,7 +125,7 @@ flowchart TB
 - 工作台**永远拿不到** Tauri API，也不能直接碰数据库；一切都经过 Bridge，Bridge 每次都检查权限。
 - **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问；Phase 2 只替换该入口为 SDK。内置金融指标工作台在 Phase 2 前采用同样的例外，所有数据调用集中到 `workbenches/finance/src/api.ts`；其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
 - 业务逻辑尽量写在 TypeScript（④），Rust（⑤）只做系统能力。
-- AI 助手以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。Phase 2 前采用内置工作台例外，所有数据调用集中到 `workbenches/ai/src/api.ts`；AI 仅编排并生成待确认提案，不直接写业务库，用户确认后的写入经拥有数据的综合工作台 `workbenches/general/src/api.ts` 完成。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中；用量由 Rust 独立持久化到应用数据目录的 `ai-usage.json`，不写 `workbench.db`。Phase 2 再迁移到 SDK。
+- AI 助手以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。Phase 2 前采用内置工作台例外，数据调用集中到 `workbenches/ai/src/api.ts`，对话记录经 core 仓库保存。操作登记、工具编排和短引用由 `apps/desktop/src/core/ai/` 提供，日程、提醒和备忘录经综合工作台 `workbenches/general/src/api.ts` 操作，写入须先确认。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中。用量和限额由 Rust 分别保存到应用数据目录的 `ai-usage.json` 和 `ai-config.json`。Phase 2 再迁移到 SDK。
 - 金融指标工作台以 `docs/specs/finance-indicators.md` 为具体依据：取数与指标计算由 `engines/finance/` 的独立 Python 引擎完成，作为 Tauri sidecar 分发；Rust 仅管理系统凭据、子进程和事件。App 通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，界面不直接访问 SQL；阈值、提醒和设置仍经 `core/repositories/` 访问 `workbench.db`。Phase 2 再将金融工作台入口迁移到 SDK。
 
 ---
@@ -255,12 +265,13 @@ CREATE TABLE settings (
   key TEXT NOT NULL UNIQUE,
   value TEXT NOT NULL                       -- JSON
 );
--- 本地专用：sync_state / migrations 记录等，不参与同步
+-- 本地专用：ai_messages / sync_state / migrations 记录等，不参与同步
 ```
 
 **规则**
 - 综合工作台以 `docs/specs/general-workbench.md` §8、§10 补充本节；可执行约束以 `apps/desktop/src-tauri/migrations/` 中按序执行的迁移为准。
 - `0002_reminder_scheduler.sql` 新增提醒的 `timezone`、`recurrence_start_at`、`schedule_version`，保留 RRULE 原起点与版本；新增 `reminder_occurrences`，记录父提醒、规则版本、实际到期时间、内容快照及完成/通知/贪睡状态，带完整 UUID v7 与墓碑元数据。活动实例按 `(occurrence_key, schedule_key)` 唯一，并有父提醒与待通知索引。
+- `0004_ai.sql` 新增本地专用表 `ai_messages`。页面加载最近 200 条，启动及每日清理 30 天前的记录。清空时保留 UUID v7 墓碑和时间元数据，抹除正文与卡片等载荷。待确认草稿留在内存，重启后对应卡片失效。
 - `memos`、`events`、`reminders`、`reminder_occurrences`、`settings` 使用 `deletion_group_id` 标识一次联动删除，使用 `purged_at` 区分可恢复记录和已清空内容的墓碑；永久清空不删除行，也不清除 `deleted_at`。
 - `settings` 继续按唯一 `key` 读写 JSON，同时带完整元数据；`device_id` 首次生成后保持不变，`last_trash_purge_at` 与清理操作在同一事务中写入。
 - 数据库使用 SQL 插件预加载和版本迁移；Windows 路径为 `%APPDATA%/com.royce.workbench/workbench.db`。联动写入通过插件连接池的通用事务适配执行，业务逻辑仍在 TypeScript。
@@ -347,6 +358,7 @@ sequenceDiagram
 - **启动补发**：关机期间到期且未通知的提醒合并为一条软件内通知条「你有 N 条错过的提醒」，点击打开「今天」页。
 - 开发模式即可验证软件内通知，不依赖 Windows 通知权限或安装包。退出应用或关机后无法即时提醒；再次启动时补发。
 - **全局快速新建**：默认 `Ctrl+Alt+N`，设置写入 `global_shortcut`；先注册新组合并持久化成功，再释放旧组合，冲突或保存失败保留旧绑定。
+- **AI 助手快捷键**默认 `Ctrl+Alt+Space`，设置写入 `ai.global_shortcut`。按下后显示并聚焦主窗口，切到 AI 助手并聚焦输入框。与快速新建共享注册规则，两者的生效组合必须不同。以 Space 为主键时需要 `Ctrl+Alt` 或 `Ctrl+Shift`。
 - 独立 `quick-create` 窗口置顶、居中，支持备忘/日程/提醒、Enter 保存和 Esc 收起。窗口仅获消息提交、监听响应和隐藏自身权限，不授予 SQL、主窗口控制或快捷键注册权限。
 - 快速窗口经 Rust 的定向队列传到主窗口；主窗口用 zod 严格校验后调用综合工作台 `api.ts`。Rust 检查原生调用窗口标签，限制消息长度、在途数量及重复请求；所有业务规则与写入仍在 TypeScript。
 - 今天页经 `api.ts` 汇总当日日程、今天/逾期未完成提醒和置顶备忘录；日期按本地自然日计算，午夜定时、30 秒日期检查及恢复可见时共同刷新。
@@ -355,6 +367,7 @@ sequenceDiagram
 
 ## 8. 同步预留（Phase 4 才做）
 - V1 只在 `core/sync/` 放一个接口 `SyncProvider { push(), pull() }` 和空实现。
+- `ai_messages` 始终留在本机，不加入同步。
 - 候选方案：**Supabase**（免费额度、Postgres、最省事，"最后写入者胜"按 `updated_at`）或 **CRDT**（如 Automerge/Yjs，冲突自动合并，复杂度高）。推荐先 Supabase + LWW，备忘录正文冲突时保留两份。
 - 因为所有表都有 UUID、时间戳、墓碑和 device_id，加同步时**不用改表**。
 

@@ -104,17 +104,20 @@ pub struct UsageStore {
 impl UsageStore {
     pub fn load(directory: &Path, seconds: u64) -> Result<Self> {
         let path = directory.join("ai-usage.json");
-        let limits: CallLimits = match fs::read(directory.join("ai-config.json")) {
-            Ok(bytes) => serde_json::from_slice::<CallLimits>(&bytes)
+        let config = directory.join("ai-config.json");
+        let limits = match fs::read(&config) {
+            Ok(bytes) => match serde_json::from_slice::<CallLimits>(&bytes)
                 .ok()
                 .filter(|value| value.valid())
-                .unwrap_or_else(|| {
+            {
+                Some(limits) => limits,
+                None => {
+                    let limits = CallLimits::default();
+                    persist_json(&config, &limits)?;
                     audit(directory, "call_limits_recovered");
-                    CallLimits {
-                        enabled: true,
-                        ..CallLimits::default()
-                    }
-                }),
+                    limits
+                }
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => CallLimits::default(),
             Err(_) => return Err(AiError::storage()),
         };

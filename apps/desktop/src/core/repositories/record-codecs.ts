@@ -72,7 +72,8 @@ export interface RecordDefinition<T> {
     | "settings"
     | "reminder_occurrences"
     | "finance_thresholds"
-    | "finance_alert_states";
+    | "finance_alert_states"
+    | "ai_messages";
   columns: string[];
   order: string;
   cleared: Record<string, SqlValue>;

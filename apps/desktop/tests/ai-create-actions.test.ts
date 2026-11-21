@@ -329,6 +329,10 @@ describe("综合工作台 AI 新建操作", () => {
       "calendar_create_event",
       { title: "超过七天", start: "2026-11-18T10:00", duration_minutes: 10_081 },
     ],
+    [
+      "calendar_create_event",
+      { title: "显式结束超过七天", start: "2026-11-18T10:00", end: "2026-11-25T10:01" },
+    ],
     ["reminders_create", { title: "多余字段", due: null, source: "event" }],
     ["memos_create", { content: "正文", tags: [1] }],
     ["memos_create", { content: "   " }],

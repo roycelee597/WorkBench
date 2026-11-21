@@ -17,6 +17,7 @@ import {
   aiRepeatDraft,
   defaultAiEventColor,
   eventCreateArgsSchema,
+  MAX_AI_EVENT_DURATION_MINUTES,
   memoCreateArgsSchema,
   nearestAiReminder,
   parseAiCreateDraft,
@@ -111,7 +112,7 @@ export function createGeneralAiActions(api: GeneralApi = generalApi): AiActionGr
     workbenchId: GENERAL_WORKBENCH,
     kind: "write",
     description:
-      "生成待确认的新建日程。没有结束时间默认1小时；全天默认当天。end必须晚于start，全天end为不含结束当天的日期边界；end优先于duration_minutes。提前提醒未给时用用户设置，非标准值向下取最近档。",
+      "生成待确认的新建日程。没有结束时间默认1小时；全天默认当天。end必须晚于start，日程最长7天，全天end为不含结束当天的日期边界；end优先于duration_minutes。提前提醒未给时用用户设置，非标准值向下取最近档。",
     args: eventCreateArgsSchema,
     parameters: parameters(
       {
@@ -123,7 +124,7 @@ export function createGeneralAiActions(api: GeneralApi = generalApi): AiActionGr
           description:
             "必须晚于start；全天时为不含结束当天的日期边界，例如11月18日全天的end填11月19日",
         },
-        duration_minutes: { type: "integer", minimum: 1, maximum: 10_080 },
+        duration_minutes: { type: "integer", minimum: 1, maximum: MAX_AI_EVENT_DURATION_MINUTES },
         all_day: { type: "boolean" },
         repeat: repeatParameter,
         remind_before_minutes: {

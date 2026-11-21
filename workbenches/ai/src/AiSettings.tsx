@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button } from "@workbench/ui";
 import { aiApi, type AiApi } from "./api";
 import { AiShortcutSettings } from "./AiShortcutSettings";
@@ -10,6 +10,10 @@ import {
   type AiModel,
   DEFAULT_AI_MODEL,
 } from "../../../apps/desktop/src/core/ai/llm-client";
+
+const AiHistorySettings = lazy(async () => ({
+  default: (await import("./AiHistorySettings")).AiHistorySettings,
+}));
 
 export function AiSettings({ api = aiApi }: { api?: AiApi } = {}) {
   const [status, setStatus] = useState<AiKeyStatus | null>(null);
@@ -187,6 +191,9 @@ export function AiSettings({ api = aiApi }: { api?: AiApi } = {}) {
       )}
       <AiShortcutSettings api={api} />
       <AiLimitsSettings api={api} />
+      <Suspense fallback={null}>
+        <AiHistorySettings api={api} />
+      </Suspense>
     </section>
   );
 }

@@ -20,7 +20,7 @@ function verify(condition: unknown, description: string): asserts condition {
 }
 
 async function run(text: string) {
-  state().clear();
+  await state().clear();
   state().setDraft(text);
   await state().send();
   return state().messages.flatMap((message) =>
