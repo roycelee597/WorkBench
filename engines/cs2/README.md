@@ -45,7 +45,7 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
 
 任务版本为 `1`，模式为 `inspect`。任务里的相对路径以 `task.json` 所在目录为基准。录制和输出画面的字段留待录制阶段消费。
 
-标准输出每行一个 JSON 对象，通过 `type` 区分 `progress`、`result` 和 `error`。解析和评分进度分别用 `parse`、`score` 表示。成功以 `result.inspect` 和退出码 `0` 结束。任务、demo、玩家和输出目录出错时分别返回 `INVALID_TASK`、`DEMO_PARSE_FAILED`、`PLAYER_NOT_FOUND`、`OUTPUT_WRITE_FAILED`，并以非零状态退出。终端中断返回 `CANCELLED`。
+标准输出每行一个 JSON 对象，通过 `type` 区分 `progress`、`result` 和 `error`。解析和评分进度分别用 `parse`、`score` 表示。成功以 `result.inspect` 和退出码 `0` 结束。任务、demo、玩家和输出目录出错时分别返回 `INVALID_TASK`、`DEMO_PARSE_FAILED`、`PLAYER_NOT_FOUND`、`OUTPUT_WRITE_FAILED`，并以非零状态退出。终端中断返回 `CANCELLED`。其他异常返回 `INTERNAL_ERROR`，异常堆栈只写到标准错误。
 
 工作目录内的 `parsed.json` 保存归一化事件，`highlights.json` 对应 `result.inspect`。每段预览带回合号 `round`、类别 `types`、标签 `tags`、`start_tick`、`end_tick`、`duration_s` 和 `victim_povs`。受害者窗口包含 `steamid64`（机器人或无法识别时为 `null`）、`death_tick`、起止 tick 和时长。
 

@@ -7,8 +7,11 @@ import pytest
 
 from cs2_engine.models import AliveState, Demo, Kill, Player, Round, Shot
 from cs2_engine.parser import DemoParseError, _weapon, parse_demo
+from cs2_engine.rules import Rules
+from cs2_engine.scoring import score_demo
 
 _PLAYER = 10_000_000_000_000_001
+_TEAMMATE = 10_000_000_000_000_002
 _OPPONENT = 10_000_000_000_000_009
 
 
@@ -107,6 +110,42 @@ class _SyntheticParser:
         )
 
 
+class _LaggedDeathParser(_SyntheticParser):
+    def parse_events(
+        self, names: list[str], *, player: list[str], other: list[str]
+    ) -> list[tuple[str, _Frame]]:
+        events = dict(super().parse_events(names, player=player, other=other))
+        events["player_death"] = _Frame(
+            _death(
+                145,
+                attacker_steamid=str(_OPPONENT),
+                attacker_team_num=2,
+                user_steamid=str(_TEAMMATE),
+                user_team_num=3,
+            ),
+            _death(180),
+        )
+        events["player_team"] = _Frame({"tick": 146})
+        return list(events.items())
+
+    def parse_ticks(self, props: list[str], *, ticks: list[int]) -> _Frame:
+        assert ticks == [120, 145, 146, 180, 270]
+        return _Frame(
+            *(
+                row
+                for tick in (120, 145, 146)
+                for row in (
+                    _snapshot(tick, _PLAYER, 3),
+                    _snapshot(tick, _TEAMMATE, 3, is_alive=tick <= 145),
+                    _snapshot(tick, _OPPONENT, 2),
+                    _snapshot(tick, 0, 2, entity_id=21),
+                )
+            ),
+            _snapshot(180, _PLAYER, 3),
+            _snapshot(180, _TEAMMATE, 3, is_alive=False),
+        )
+
+
 def test_parse_demo_reconstructs_playable_rounds_with_synthetic_events(tmp_path, monkeypatch):
     demo = tmp_path / "demo.dem"
     demo.write_bytes(b"PBDEMS2\x00" + bytes(8))
@@ -147,6 +186,20 @@ def test_parse_demo_reconstructs_playable_rounds_with_synthetic_events(tmp_path,
             Round(2, 250, 350, None, clip_end_tick=350),
         ),
     )
+
+
+def test_clutch_starts_at_teammate_death_even_if_snapshot_lags(tmp_path, monkeypatch):
+    demo = tmp_path / "demo.dem"
+    demo.write_bytes(b"PBDEMS2\x00" + bytes(8))
+    monkeypatch.setattr(demoparser2, "DemoParser", _LaggedDeathParser)
+
+    parsed = parse_demo(demo)
+    previews = score_demo(parsed, str(_PLAYER), {"clutch"}, Rules())
+
+    [clutch] = previews
+    assert clutch["start_tick"] == 145
+    assert clutch["end_tick"] == 180
+    assert "1v2" in clutch["tags"]
 
 
 def test_parse_demo_rejects_invalid_or_missing_input_without_exposing_path(tmp_path):

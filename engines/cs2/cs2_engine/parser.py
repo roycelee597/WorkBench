@@ -160,7 +160,7 @@ def _shot(row: _Row, tick: int) -> Shot | None:
     return Shot(tick, player, weapon) if player and weapon else None
 
 
-def _alive_states(rows: list[_Row]) -> dict[int, AliveState]:
+def _alive_states(rows: list[_Row], deaths_by_tick: dict[int, list[Kill]]) -> dict[int, AliveState]:
     teams_by_tick: defaultdict[int, dict[int, set[str]]] = defaultdict(lambda: {2: set(), 3: set()})
     for row in rows:
         tick = _tick(row)
@@ -172,6 +172,16 @@ def _alive_states(rows: list[_Row]) -> dict[int, AliveState]:
         connected = _integer(row.get("is_connected")) in (0, None)
         if row.get("is_alive") is True and connected and side is not None and player:
             teams[side].add(player)
+
+    # 死亡事件可能先于存活属性更新。用事件校正该 tick 的阵容，保留实际死亡时间。
+    for tick, deaths in deaths_by_tick.items():
+        teams = teams_by_tick.get(tick)
+        if teams is None:
+            continue
+        dead_players = {death.victim_id for death in deaths if death.victim_id is not None}
+        for players in teams.values():
+            players.difference_update(dead_players)
+
     return {
         tick: AliveState(tick, {side: frozenset(players) for side, players in teams.items()})
         for tick, teams in teams_by_tick.items()
@@ -196,7 +206,7 @@ def _players(info_rows: list[_Row], tick_rows: list[_Row]) -> tuple[Player, ...]
 def _make_rounds(
     bounds: list[_RoundBounds],
     events: dict[str, list[_Row]],
-    states: dict[int, AliveState],
+    tick_rows: list[_Row],
 ) -> tuple[Round, ...]:
     kills: dict[int, list[Kill]] = defaultdict(list)
     shots: dict[int, list[Shot]] = defaultdict(list)
@@ -207,6 +217,7 @@ def _make_rounds(
         if row.get("is_warmup_period") is not True and (tick := _tick(row)) is not None:
             if (shot := _shot(row, tick)) is not None:
                 shots[tick].append(shot)
+    states = _alive_states(tick_rows, kills)
     kill_ticks = sorted(kills)
     shot_ticks = sorted(shots)
     state_ticks = sorted(states)
@@ -274,5 +285,5 @@ def parse_demo(path: Path) -> Demo:
     return Demo(
         tick_rate=_TICK_RATE,
         players=_players(info_rows, tick_rows),
-        rounds=_make_rounds(bounds, events, _alive_states(tick_rows)),
+        rounds=_make_rounds(bounds, events, tick_rows),
     )

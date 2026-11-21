@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import traceback
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -161,6 +162,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except KeyboardInterrupt:
         emit("error", code="CANCELLED", message="已取消预览。")
+        return 1
+    except Exception:
+        emit("error", code="INTERNAL_ERROR", message="引擎内部错误，请查看日志")
+        traceback.print_exc(file=sys.stderr)
         return 1
     return 0
 

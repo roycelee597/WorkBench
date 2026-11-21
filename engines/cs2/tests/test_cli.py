@@ -180,3 +180,25 @@ def test_demo_parse_error_is_reported(monkeypatch, tmp_path, capsys):
 
     assert cli.main(["run", "--task", str(make_task(tmp_path))]) == 1
     assert messages(capsys)[-1]["code"] == "DEMO_PARSE_FAILED"
+
+
+def test_unexpected_scoring_error_preserves_json_protocol(
+    monkeypatch, tmp_path, capsys, synthetic_demo
+):
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("合成评分异常")
+
+    monkeypatch.setattr(cli, "score_demo", fail)
+    task = make_task(tmp_path, player={"steamid64": PLAYER_ID})
+
+    assert cli.main(["run", "--task", str(task)]) != 0
+
+    output = capsys.readouterr()
+    emitted = [json.loads(line) for line in output.out.splitlines()]
+    assert emitted[-1] == {
+        "type": "error",
+        "code": "INTERNAL_ERROR",
+        "message": "引擎内部错误，请查看日志",
+    }
+    assert "Traceback (most recent call last):" in output.err
+    assert "RuntimeError: 合成评分异常" in output.err
