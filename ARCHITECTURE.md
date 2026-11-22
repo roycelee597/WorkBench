@@ -17,7 +17,7 @@
 |---|---|
 | 产品 | WorkBench：模块化工作台软件 |
 | 默认自带 | **综合工作台**：备忘录、日程安排、提醒事项 |
-| 扩展方式 | **分工作台**，从**工作台市场**安装；用户可以上传自己写的或 AI 写的分工作台 |
+| 扩展方式 | **分工作台**，从本地 .wbpkg 安装；用户可以上传自己写的或 AI 写的分工作台 |
 | 平台顺序 | Windows → macOS → iOS / Android |
 | 开发方式 | 主要由 Codex（Windows 桌面版）写代码，Royce 审核、运行、提交 |
 | 预算 | 学生预算，优先免费方案 |
@@ -25,7 +25,7 @@
 **V1 目标（Windows 可用版）**
 1. 能安装、能开机自启、能常驻系统托盘
 2. 综合工作台三件套好用：备忘录、日程、提醒（到点弹软件内通知）
-3. 能从本地文件夹或 zip 安装分工作台，并附带一个示例分工作台
+3. 能从本地 .wbpkg 安装分工作台，并附带一个示例分工作台
 4. 数据结构从第一天起就为"以后多设备同步"做好准备
 
 **V1 不做**：账号系统、云同步、线上市场、macOS/手机端、付费。
@@ -123,10 +123,10 @@ flowchart TB
 
 **关键原则**
 - 工作台**永远拿不到** Tauri API，也不能直接碰数据库；一切都经过 Bridge，Bridge 每次都检查权限。
-- **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问；Phase 2 只替换该入口为 SDK。内置金融指标工作台在 Phase 2 前采用同样的例外，所有数据调用集中到 `workbenches/finance/src/api.ts`；其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
+- **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问，作为核心保留此入口。内置金融指标工作台在 对应 P0 迁移前采用同样的例外，所有数据调用集中到 `workbenches/finance/src/api.ts`；其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
 - 业务逻辑尽量写在 TypeScript（④），Rust（⑤）只做系统能力。
-- AI 助手以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。Phase 2 前采用内置工作台例外，数据调用集中到 `workbenches/ai/src/api.ts`，对话记录经 core 仓库保存。操作登记、工具编排和短引用由 `apps/desktop/src/core/ai/` 提供，日程、提醒和备忘录经综合工作台 `workbenches/general/src/api.ts` 操作，写入须先确认。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中。用量和限额由 Rust 分别保存到应用数据目录的 `ai-usage.json` 和 `ai-config.json`。Phase 2 再迁移到 SDK。
-- 金融指标工作台以 `docs/specs/finance-indicators.md` 为具体依据：取数与指标计算由 `engines/finance/` 的独立 Python 引擎完成，作为 Tauri sidecar 分发；Rust 仅管理系统凭据、子进程和事件。App 通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，界面不直接访问 SQL；阈值、提醒和设置仍经 `core/repositories/` 访问 `workbench.db`。Phase 2 再将金融工作台入口迁移到 SDK。
+- AI 助手以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。对应 P0 迁移前采用内置工作台例外，数据调用集中到 `workbenches/ai/src/api.ts`，对话记录经 core 仓库保存。操作登记、工具编排和短引用由 `apps/desktop/src/core/ai/` 提供，日程、提醒和备忘录经综合工作台 `workbenches/general/src/api.ts` 操作，写入须先确认。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中。用量和限额由 Rust 分别保存到应用数据目录的 `ai-usage.json` 和 `ai-config.json`。P0-3 再迁移到 SDK。
+- 金融指标工作台以 `docs/specs/finance-indicators.md` 为具体依据：取数与指标计算由 `engines/finance/` 的独立 Python 引擎完成，作为 Tauri sidecar 分发；Rust 仅管理系统凭据、子进程和事件。App 通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，界面不直接访问 SQL；阈值、提醒和设置仍经 `core/repositories/` 访问 `workbench.db`。P0-2 再将金融工作台入口迁移到 SDK。
 
 ---
 
@@ -282,55 +282,30 @@ CREATE TABLE settings (
 
 ---
 
-## 6. 分工作台（插件）规范
+## 6. 模块运行时
 
-### 6.1 包格式
-一个分工作台 = 一个文件夹（或其 zip，扩展名可用 `.wbpkg`），根目录必须有 `manifest.json`，前端是**已构建好的静态文件**（HTML/JS/CSS），不允许运行原生代码。
+### 6.1 本地包与生命周期
 
-```json
-{
-  "id": "com.royce.pomodoro",
-  "name": "番茄钟",
-  "version": "1.0.0",
-  "author": { "name": "Royce", "url": "https://github.com/royce" },
-  "description": "简单的番茄钟，完成后发通知",
-  "entry": "index.html",
-  "icon": "icon.png",
-  "minHostVersion": "0.1.0",
-  "permissions": ["storage", "notifications", "reminders:write"],
-  "license": "MIT",
-  "homepage": "https://github.com/royce/workbench-pomodoro"
-}
-```
+以 [模块运行时规格](docs/specs/module-runtime.md) 为准。综合工作台是核心，只能隐藏或显示。其余工作台按可卸载模块设计。V1 从本地 `.wbpkg` ZIP 安装，校验后原子落位，可带静态前端与明确标为完全信任的本地引擎。卸载清除模块资源和数据，失败可在重启时继续。
 
-校验规则：`id` 为反向域名格式且全局唯一；`version` 为 semver；`entry` 必须在包内；未知权限直接拒绝安装。
+### 6.2 SDK API
 
-### 6.2 SDK API（`@workbench/sdk`）
-
-所有方法都是 `async`，底层用 `postMessage` + 请求 ID 实现。
-
-| 模块 | 方法 | 需要的权限 |
+| 模块 | 方法 | 权限 |
 |---|---|---|
-| `wb.app` | `getInfo()`、`getTheme()`、`onThemeChange(cb)`、`getLocale()` | 无 |
-| `wb.storage` | `get(key)`、`set(key, value)`、`remove(key)`、`list(prefix?)` | `storage`（只能访问本工作台自己的空间） |
-| `wb.notifications` | `send({ title, body })` | `notifications` |
-| `wb.reminders` | `list(filter)`、`create()`、`update()`、`complete()` | `reminders:read` / `reminders:write` |
-| `wb.calendar` | `listEvents(range)` / `createEvent()`、`updateEvent()` | `calendar:read` / `calendar:write` |
-| `wb.memos` | `list()`、`get()` / `create()`、`update()` | `memos:read` / `memos:write` |
-| `wb.ui` | `toast(msg)`、`confirm(msg)`、`setTitle(t)`、`setBadge(n)` | 无 |
-| `wb.events` | `on('data-changed', cb)` | 跟随对应读权限 |
-| `wb.net` | `fetch(url)`（后期，按域名白名单） | `net:<域名>` |
+| `wb.app` | getInfo、getTheme、onThemeChange、getLocale | 无 |
+| `wb.storage` | get、set、remove、list | storage |
+| `wb.notifications` | send | notifications |
+| `wb.reminders` | list、create、update、complete | reminders:read / reminders:write |
+| `wb.calendar` | listEvents、createEvent、updateEvent | calendar:read / calendar:write |
+| `wb.memos` | list、get、create、update | memos:read / memos:write |
+| `wb.ui` | toast、confirm、setTitle、setBadge | 无 |
+| `wb.events` | on('data-changed', cb) | 对应读权限 |
+| `wb.dialog` | open | dialog.open |
+| `wb.engine` | start、progress、cancel、logs、probe | engine；执行路径另需 engine.exec_paths 和确认 |
 
-> 删除类操作一律是软删除；工作台只能修改自己创建的数据（`source_workbench` 判断），除非获得 `*:write-all`（V1 不开放）。
+### 6.3 安全边界
 
-### 6.3 安全与权限模型
-1. **沙盒**：`<iframe sandbox="allow-scripts allow-forms">`，**不加** `allow-same-origin`、`allow-top-navigation`、`allow-popups-to-escape-sandbox`。
-2. **独立来源**：工作台文件通过 Rust 注册的自定义协议 `wbpkg://<id>/...` 提供，不同工作台互相隔离，且该来源**不授予任何 Tauri capability**。
-3. **CSP**：工作台页面默认 `default-src 'self' wbpkg:; connect-src 'none'`，没有 `net` 权限就无法联网。
-4. **Bridge 校验**：每条消息检查 `event.source` 对应哪个 iframe → 查该工作台已授权权限 → 校验参数（zod）→ 执行。永远不信任消息里自报的 id。
-5. **授权流程**：安装时弹窗列出权限，用户同意才安装；设置页可随时撤销。
-6. **限流**：通知、写入等接口限频，防止刷屏。
-7. **线上市场阶段**再加：包签名、哈希校验、人工/自动审核。
+iframe 仅开放 `allow-scripts allow-forms`。只读包协议限定模块目录，设置 CSP 且不授予 Tauri capability。Bridge 按 iframe 来源和会话识别模块，检查可撤销权限、zod 参数及限流。模块 storage 按所有权隔离并限 10 MiB。引擎由主程序启动，每次验证 SHA-256，使用 JSON Lines、并发上限、进程树取消及有界脱敏日志。传给引擎的授权路径均来自宿主对话框。
 
 ---
 
@@ -440,7 +415,7 @@ git push -u origin feat/memo-editor   # 然后去 GitHub 开 PR
 |---|---|---|---|
 | **Phase 0** 环境 | Windows 开发环境 + 仓库骨架 + GitHub | `pnpm tauri dev` 能打开空窗口；代码已推到 GitHub 且 CI 绿 | 1–3 天 |
 | **Phase 1** 主框架 + 综合工作台 | 主界面、SQLite、三件套、托盘、提醒 | 能增删改查备忘录/日程/提醒，关窗进托盘，到点弹通知 | 2–4 周 |
-| **Phase 2** 插件运行时 | SDK、沙盒、权限、本地安装、示例分工作台 | 从 zip 装上"番茄钟"，它能存数据、发通知；综合工作台迁到 SDK 上 | 2–4 周 |
+| **模块化 P0** | P0-1 运行时、P0-2 金融迁移、P0-3 AI 迁移 | 本地安装、撤销和彻底卸载；官方模块升级自动接入并保留数据和 token | 分 PR |
 | **Phase 3** 打磨 + 打包 | 设置、主题、备份导出、安装包、自动更新 | GitHub Release 发布 v0.3.0 安装包，别人能下载安装 | 1–2 周 |
 | **Phase 4** 同步 | 账号 + Supabase 同步 | 两台 Windows 电脑数据互通 | 3–4 周 |
 | **Phase 5** 线上市场 | registry → 市场页 → 签名/审核 | 在 App 内浏览、安装、更新社区工作台 | 3–4 周 |
@@ -505,25 +480,9 @@ gh repo create workbench --public --source . --remote origin --push
 每一步完成后：确保 lint/typecheck/test 通过，按 Conventional Commits 提交，告诉我手动测试步骤。软件内通知在开发模式下即可验证。
 ```
 
-### Phase 2：插件运行时 + 本地安装 + 示例分工作台
-**Codex 提示词（Phase 2）**
-```text
-请先阅读 ARCHITECTURE.md 第 3、6 节和 AGENTS.md。新建分支 feat/plugin-runtime。
-1. packages/manifest：用 zod 定义 manifest 结构和权限枚举，提供 validateManifest()，写测试。
-2. packages/sdk（@workbench/sdk）：按第 6.2 节实现基于 postMessage 的客户端（请求 ID、超时、错误类型、事件订阅），导出完整 TypeScript 类型。
-3. apps/desktop/src/runtime：
-   - Loader：为每个已启用工作台创建 <iframe sandbox="allow-scripts allow-forms">（不允许 allow-same-origin）。
-   - Bridge：根据 event.source 识别是哪个 iframe，检查已授权权限，用 zod 校验参数，调用 core 仓库；storage 按 workbench_id 隔离并限制 10MB；对通知和写入限流。
-   - 权限：安装时弹窗展示权限，设置页可撤销。
-4. src-tauri（Rust，尽量少）：
-   - 注册自定义协议 wbpkg://<id>/<path>，只从该工作台安装目录读取文件，防止路径穿越（../），并设置第 6.3 节的 CSP。
-   - install_workbench 命令：接收文件夹或 zip 路径，解压到应用数据目录的 workbenches/<id>/<version>，校验 manifest 后返回结果；uninstall 为软删除记录并删除文件。
-   - 不给 wbpkg:// 来源任何 Tauri capability。
-5. 新建 workbenches/sample-pomodoro（番茄钟），只用 @workbench/sdk，权限 storage + notifications，构建脚本输出 dist 并能打包为 .wbpkg（zip）。
-6. 把综合工作台的 api.ts 改为通过 SDK 调用（内置工作台以 builtin 方式安装，权限自动授予）。
-7. 写 docs/plugin-guide.md：如何用 AI 写一个分工作台（模板、manifest、SDK 示例、打包、安装）。
-保证 lint/typecheck/test 通过，小步提交，最后给出手动测试清单（包括：装番茄钟、撤销通知权限后应被拒绝、恶意路径应被拒绝）。
-```
+### 模块化 P0
+
+P0-1 实现模块运行时和番茄钟样例。P0-2、P0-3 分别迁移金融和 AI，沿用现有数据及凭据。金融与 AI 的官方包随安装包附带，卸载后可从设置重新安装。完整范围及迁移接口见 [模块运行时规格](docs/specs/module-runtime.md)。
 
 ### Phase 3：打磨 + Windows 安装包
 **Codex 提示词（Phase 3）**
