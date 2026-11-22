@@ -1,0 +1,74 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color-scheme: light dark;
+  color: CanvasText;
+  background: Canvas;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 24rem;
+  margin: 2rem auto;
+  padding: 2rem;
+  border: 1px solid GrayText;
+  border-radius: 1rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+#clock {
+  display: block;
+  margin: 1rem 0;
+  font-size: clamp(2.5rem, 15vw, 5rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.actions,
+form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+button,
+input {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid GrayText;
+  border-radius: 0.4rem;
+  font: inherit;
+}
+
+input {
+  width: 4rem;
+}
+
+#toggle {
+  background: #294b3f;
+  color: white;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+#status {
+  margin-bottom: 0;
+  min-height: 1.5em;
+}

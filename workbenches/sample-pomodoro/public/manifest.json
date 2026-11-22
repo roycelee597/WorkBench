@@ -1,0 +1,10 @@
+{
+  "id": "com.royce.pomodoro",
+  "name": "番茄钟",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "minHostVersion": "0.1.0",
+  "permissions": ["storage", "notifications"],
+  "description": "本地专注计时，记住时长并在结束时提醒。",
+  "license": "MIT"
+}

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>番茄钟</title>
+    <link rel="stylesheet" href="./pomodoro.css" />
+    <script src="./pomodoro.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <h1>番茄钟</h1>
+      <output id="clock" role="timer" aria-label="剩余时间">25:00</output>
+      <div class="actions">
+        <button id="toggle" type="button" disabled>开始</button>
+        <button id="reset" type="button" disabled>重置</button>
+      </div>
+      <form>
+        <label for="minutes">专注时长（分钟）</label>
+        <input id="minutes" type="number" value="25" min="1" max="120" required />
+        <button id="save" type="submit" disabled>保存</button>
+      </form>
+      <button id="notify" type="button">测试通知</button>
+      <p id="status" role="status"></p>
+    </main>
+  </body>
+</html>
