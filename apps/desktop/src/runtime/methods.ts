@@ -11,7 +11,11 @@ const empty = z.strictObject({}).default({});
 const id = z.string().uuid();
 const title = z.string().trim().min(1).max(200);
 const body = z.string().max(20_000);
-const key = z.string().min(1).max(128).refine((value) => !/\p{Cc}/u.test(value));
+const key = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine((value) => !/\p{Cc}/u.test(value));
 const timestamp = z.number().int().min(-8.64e15).max(8.64e15);
 const memoInput = z.strictObject({
   title: z.string().max(200).optional(),
