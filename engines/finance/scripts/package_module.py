@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -33,10 +34,11 @@ def package(engine: Path, frontend: Path, output: Path) -> None:
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
-    print(f"已打包金融模块：{output.name}（{output.stat().st_size} 字节）")
 
 
 def main() -> None:
+    # Windows CI 重定向标准输出时可能使用 CP1252，命令行统一输出 UTF-8。
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--engine",
@@ -47,6 +49,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=TAURI / "bundled/finance.wbpkg")
     args = parser.parse_args()
     package(args.engine, args.frontend, args.output)
+    print(f"已打包金融模块：{args.output.name}（{args.output.stat().st_size} 字节）")
 
 
 if __name__ == "__main__":
