@@ -254,8 +254,8 @@ Tushare 各接口入库时间不同（官方文档写法略有出入，取较晚
   │  └─ planner.py           # 算出「缺哪些天、先做什么」
   └─ tests/
   ```
-- 打包：用 **PyInstaller 单文件模式**生成 `finance-engine-x86_64-pc-windows-msvc.exe`，放在 `apps/desktop/src-tauri/binaries/`（不进 Git，由脚本和 CI 生成），通过 `tauri.conf.json` 的 `bundle.externalBin` 随安装包分发。单文件模式每次启动要解压，大约慢 2–5 秒，对每天一次的更新来说可以接受。
-- 开发模式：`pnpm finance:engine` 脚本先打包一次 sidecar。也可以设置环境变量 `WORKBENCH_FINANCE_ENGINE_DEV=1`，让 Rust 改用 `uv run python -m finance_engine` 启动，省得每次改代码都重新打包。
+- 打包：用 **PyInstaller 单文件模式**生成 Windows 引擎，由 `pnpm finance:package` 打入 `official/finance.wbpkg`。包内包含前端和引擎，manifest 记录引擎的 SHA-256 与并发上限。安装包将模块作为本地资源附带。
+- 开发模式：`tauri dev` 启动前生成同一官方模块包，经通用引擎启动流程验证安装及执行。单测可通过 `uv run --locked pytest` 独立运行 Python 用例。
 
 ### 8.2 App 和 Python 怎么通信
 
