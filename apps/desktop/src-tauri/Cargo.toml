@@ -26,7 +26,23 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 keyring = { version = "3", features = ["windows-native"] }
 tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+semver = "1"
+sha2 = "0.10"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+zip = { version = "9.4", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 codegen-units = 1

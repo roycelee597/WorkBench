@@ -1,0 +1,16 @@
+[[permission]]
+identifier = "allow-module-host"
+description = "允许受信主窗口管理模块和调度引擎"
+commands.allow = [
+  "module_list",
+  "module_preview",
+  "install_module",
+  "module_discard",
+  "uninstall_module",
+  "module_finish_uninstall",
+  "module_revoke",
+  "module_storage_read",
+  "module_storage_write",
+  "module_dialog_open",
+  "module_engine_call",
+]
