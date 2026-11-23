@@ -1,5 +1,7 @@
 # 金融指标工作台 F2 验证
 
+> 本文的实测记录对应 F2 侧车实现。P0-2 起金融引擎随官方模块包分发，当前开发、打包和验收流程见 [金融模块升级与卸载验证](finance-module-verification.md)。
+
 金融缓存位于 `%LOCALAPPDATA%\com.royce.workbench\finance.db`。在 Windows 的隔离 Tauri 实例中，SQL 插件通过绝对路径读取该基目录下的测试缓存成功，写入探测被 SQLite 的 `mode=ro` 拒绝。前端查询后只关闭金融连接池，综合工作台的连接可继续使用。
 
 ## 开发和检查

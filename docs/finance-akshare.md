@@ -64,9 +64,9 @@ pnpm finance:engine
 需要自行构建可选版时：
 
 1. 按上面的 PowerShell 命令生成可选 sidecar。在应用退出且没有引擎运行时，将可选产物复制到 `apps/desktop/src-tauri/binaries/finance-engine-x86_64-pc-windows-msvc.exe`。
-2. 用 `pnpm --filter desktop tauri build` 打包。不要用根目录 `pnpm build`，它会先重新构建默认的不含 AKShare 的 sidecar。
+2. 先运行 `pnpm --filter @workbench/finance build` 和 `uv run --project engines/finance --locked python engines/finance/scripts/package_module.py`，生成含可选引擎及其摘要的官方包。再用 `pnpm --filter desktop tauri build` 打包。根目录 `pnpm build` 使用默认的不含 AKShare 的引擎。
 3. 用独立 identifier 和 `app.appDirectoriesOverride` 配置隔离实例做验收，数据目录必须独立；不要拿正式缓存测试故障、重建或开关持久化。
-4. 打开设置 → 金融指标，确认开关默认勾选；关闭后重启，确认仍关闭。重新勾选后，只有 Tushare 失败时才会尝试三个白名单入口。
+4. 打开设置 → 模块管理 → 金融设置，确认开关默认勾选。关闭后重启，确认仍关闭。重新勾选后，只有 Tushare 失败时才会尝试三个白名单入口。
 5. 用隔离合成库给前 5% 日值和沪深300 收盘标记 `source=akshare`，进入金融页：确认菱形和来源说明；切到月均，确认含备用日值的月均仍有标记。未标记的普通缓存保持原样。
 6. 如需恢复默认构建，运行 `pnpm finance:engine`。不要把 exe、缓存数据库或任何真实 token 提交到 Git。
 

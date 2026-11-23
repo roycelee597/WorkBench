@@ -328,6 +328,8 @@ finance-engine --version
 
 ### 9.1 Rust（尽量少，只做系统能力）
 
+> P0-2 以 [模块运行时规格](module-runtime.md) 为安装与启动接口依据。旧版 `finance_update_start`、`finance_update_cancel` 和 `finance_verify` 已迁移至通用 `engine.*`。以下表格保留 F2 的接口记录。新版通过 `pnpm finance:package` 打包固定 SHA-256 的引擎，凭据使用原来的 Windows 服务名，宿主仍收取同样的更新事件。
+
 新文件 `src-tauri/src/finance.rs`，所有命令只允许 `main` 窗口调用（和 `execute_batch` 一样检查 `window.label()`）：
 
 | 命令                         | 作用                                                                                                                           |

@@ -123,10 +123,10 @@ flowchart TB
 
 **关键原则**
 - 工作台**永远拿不到** Tauri API，也不能直接碰数据库；一切都经过 Bridge，Bridge 每次都检查权限。
-- **综合工作台在 Phase 1 的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问，作为核心保留此入口。内置金融指标工作台在 对应 P0 迁移前采用同样的例外，所有数据调用集中到 `workbenches/finance/src/api.ts`；其他分工作台始终走 SDK。系统窗口的关闭前保存由主程序 Shell 协调，不在工作台中调用 Tauri API。
+- **综合工作台的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问，作为核心保留此入口。金融模块界面的数据调用集中到 `workbenches/finance/src/api.ts`，通过 SDK 访问宿主。系统窗口的关闭前保存由主程序 Shell 协调。
 - 业务逻辑尽量写在 TypeScript（④），Rust（⑤）只做系统能力。
 - AI 助手以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。对应 P0 迁移前采用内置工作台例外，数据调用集中到 `workbenches/ai/src/api.ts`，对话记录经 core 仓库保存。操作登记、工具编排和短引用由 `apps/desktop/src/core/ai/` 提供，日程、提醒和备忘录经综合工作台 `workbenches/general/src/api.ts` 操作，写入须先确认。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中。用量和限额由 Rust 分别保存到应用数据目录的 `ai-usage.json` 和 `ai-config.json`。P0-3 再迁移到 SDK。
-- 金融指标工作台以 `docs/specs/finance-indicators.md` 为具体依据：取数与指标计算由 `engines/finance/` 的独立 Python 引擎完成，作为 Tauri sidecar 分发；Rust 仅管理系统凭据、子进程和事件。App 通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，界面不直接访问 SQL；阈值、提醒和设置仍经 `core/repositories/` 访问 `workbench.db`。P0-2 再将金融工作台入口迁移到 SDK。
+- 金融指标工作台以 `docs/specs/finance-indicators.md` 为指标依据，以 `docs/specs/module-runtime.md` 为安装与执行依据。官方 `.wbpkg` 随安装包分发，`engines/finance/` 的 Python 引擎由通用引擎运行时启动。宿主通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，阈值、提醒和设置经 `core/repositories/` 访问 `workbench.db`。升级原位接管旧缓存和凭据。卸载时仅宿主可清除金融专用阈值、游标和设置行，共享提醒按同步规则保留最小墓碑。
 
 ---
 

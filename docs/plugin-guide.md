@@ -73,4 +73,4 @@ pnpm --filter desktop tauri dev --config ../../dist/module-runtime-check/tauri.j
 
 启动时引擎通过 stdin 读取一条 JSON。stdout 每行输出一个带 `type` 的 JSON 对象，失败先报告 `error` 再退出。用 `wb.engine.start` 返回的 `taskId` 读取进度、日志或取消任务。访问用户选中的文件先申请 `dialog.open`，将宿主返回的句柄放入 `paths`。将该路径交给引擎作为执行目标还需申请 `engine.exec_paths` 并取得当次用户确认。
 
-清理声明只描述模块自己的凭据、私有数据表和设置前缀。禁止在示例、测试包或日志中写入真实密钥，测试包要在隔离的 WorkBench 实例中安装。
+卸载时，宿主清理模块独享的目录和声明的模块凭据。普通模块的 `uninstall.tables` 和 `uninstall.settingsPrefixes` 仅用于展示声明，宿主不会按这些名称执行删表或删除设置。金融旧数据由宿主内置的官方清理规则处理。测试包要在隔离的 WorkBench 实例中安装，使用虚构凭据。
