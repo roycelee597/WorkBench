@@ -28,7 +28,7 @@
     "lucide-react": "^1.67.0",
     "rrule": "2.8.1",
     "zod": "^4.6.7",
-    "zustand": "^5.0.16"
+    "zustand": "^5.1.0"
   },
   "peerDependencies": {
     "react": "^19.1.0",
