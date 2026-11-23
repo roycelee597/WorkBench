@@ -1,13 +1,14 @@
 import {
   MODULE_CHANNEL_PARAM,
-  MODULE_ERROR_CODES,
   MODULE_PROTOCOL,
   type CalendarInput,
   type CalendarPatch,
   type EngineStartInput,
+  type FinancePreferenceWrite,
+  type FinanceThresholdInput,
+  type FinanceUpdateMode,
   type JsonValue,
   type MemoInput,
-  type ModuleErrorCode,
   type ModuleRequest,
   type ModuleSubscription,
   type ModuleTheme,
@@ -23,7 +24,7 @@ export class WorkbenchError extends Error {
   override readonly name = "WorkbenchError";
 
   constructor(
-    readonly code: ModuleErrorCode,
+    readonly code: string,
     message: string,
   ) {
     super(message);
@@ -62,6 +63,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isEventValue(name: EventName, value: unknown) {
   if (name === "theme-changed") return value === "light" || value === "dark";
+  if (name === "finance-changed")
+    return (
+      isRecord(value) &&
+      typeof value.confirmBackfill === "boolean" &&
+      isRecord(value.update) &&
+      typeof value.update.revision === "number"
+    );
   return (
     isRecord(value) &&
     (value.domain === "memos" || value.domain === "reminders" || value.domain === "calendar")
@@ -97,7 +105,7 @@ class BridgeClient {
         this.waiting.delete(id);
         port1.close();
       };
-      const fail = (code: ModuleErrorCode, message: string) => {
+      const fail = (code: string, message: string) => {
         finish();
         reject(new WorkbenchError(code, message));
       };
@@ -118,8 +126,8 @@ class BridgeClient {
           resolve(reply.value as WorkbenchMethods[Method]["result"]);
         } else if (isRecord(reply.error) && typeof reply.error.message === "string") {
           const { code, message } = reply.error;
-          const recognized = MODULE_ERROR_CODES.find((candidate) => candidate === code);
-          fail(recognized ?? "INTERNAL_ERROR", message);
+          const recognized = typeof code === "string" && /^[A-Z_]{1,40}$/.test(code);
+          fail(recognized ? code : "INTERNAL_ERROR", message);
         } else {
           fail("INTERNAL_ERROR", "WorkBench 返回了无效的错误信息");
         }
@@ -154,7 +162,7 @@ class BridgeClient {
           return;
         const name = packet.event;
         if (
-          (name === "theme-changed" || name === "data-changed") &&
+          (name === "theme-changed" || name === "data-changed" || name === "finance-changed") &&
           isEventValue(name, packet.value)
         ) {
           const handlers = this.listeners.get(name);
@@ -256,6 +264,33 @@ export function createWorkbenchSdk(options: WorkbenchSdkOptions = {}) {
       cancel: (taskId: string) => request("engine.cancel", { taskId }),
       logs: (taskId: string) => request("engine.logs", { taskId }),
       probe: () => request("engine.probe", {}),
+    },
+    // 这些端点只由官方金融模块得到授权。
+    finance: {
+      snapshot: () => request("finance.snapshot", {}),
+      onChange: (listen: (value: WorkbenchEventMap["finance-changed"]) => void) =>
+        client.on("finance-changed", listen),
+      cacheStatus: () => request("finance.cacheStatus", {}),
+      listIndicators: () => request("finance.listIndicators", {}),
+      getRecent: (keys: string[]) => request("finance.getRecent", { keys }),
+      getSeries: (keys: string[]) => request("finance.getSeries", { keys }),
+      getOverlay: () => request("finance.getOverlay", {}),
+      loadThresholds: () => request("finance.loadThresholds", {}),
+      saveThreshold: (fields: FinanceThresholdInput, id?: string) =>
+        request("finance.saveThreshold", id === undefined ? { fields } : { fields, id }),
+      deleteThreshold: (id: string) => request("finance.deleteThreshold", { id }),
+      loadPreferences: () => request("finance.loadPreferences", {}),
+      savePreference: (input: FinancePreferenceWrite) => request("finance.savePreference", input),
+      loadFallback: () => request("finance.loadFallback", {}),
+      saveFallback: (enabled: boolean) => request("finance.saveFallback", { enabled }),
+      requestUpdate: (mode: FinanceUpdateMode) => request("finance.requestUpdate", { mode }),
+      cancelUpdate: () => request("finance.cancelUpdate", {}),
+      saveToken: (token: string) => request("finance.saveToken", { token }),
+      clearToken: () => request("finance.clearToken", {}),
+      verify: () => request("finance.verify", {}),
+      openDirectory: () => request("finance.openDirectory", {}),
+      dismissBackfill: () => request("finance.dismissBackfill", {}),
+      approveBackfill: () => request("finance.approveBackfill", {}),
     },
     dispose: () => client.dispose(),
   };

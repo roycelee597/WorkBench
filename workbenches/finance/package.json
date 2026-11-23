@@ -4,15 +4,12 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "exports": {
-    ".": "./src/index.ts",
-    "./page": "./src/FinanceWorkbench.tsx"
-  },
   "scripts": {
+    "build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
+    "@workbench/sdk": "workspace:*",
     "@workbench/ui": "workspace:*",
     "echarts": "^6.1.0",
     "zustand": "^5.0.16"
@@ -22,7 +19,11 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.4",
     "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6"
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^6.0.2",
+    "tailwindcss": "^4.3.4",
+    "vite": "^8.0.16"
   }
 }

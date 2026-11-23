@@ -1,10 +1,5 @@
 import { z } from "zod";
-import {
-  MODULE_PROTOCOL,
-  type ModuleErrorCode,
-  type ModuleEvent,
-  type ModuleResponse,
-} from "@workbench/sdk";
+import { MODULE_PROTOCOL, type ModuleEvent, type ModuleResponse } from "@workbench/sdk";
 import type { ModuleManifest } from "@workbench/manifest";
 
 export type ModulePermission = ModuleManifest["permissions"][number];
@@ -19,7 +14,7 @@ export interface ModuleMethod {
 
 export class BridgeError extends Error {
   constructor(
-    readonly code: ModuleErrorCode,
+    readonly code: string,
     message: string,
   ) {
     super(message);

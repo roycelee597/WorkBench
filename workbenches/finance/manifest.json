@@ -1,0 +1,21 @@
+{
+  "id": "com.royce.workbench.finance",
+  "name": "金融指标",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "minHostVersion": "0.1.0",
+  "permissions": ["engine", "finance"],
+  "description": "在本机更新、绘制金融指标，并通过 WorkBench 提醒越线。",
+  "author": { "name": "Royce Lee" },
+  "license": "MIT",
+  "engine": {
+    "path": "engine/finance-engine.exe",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "concurrency": 1
+  },
+  "uninstall": {
+    "credentials": [{ "service": "tushare", "account": "tushare" }],
+    "tables": ["finance_thresholds", "finance_alert_states"],
+    "settingsPrefixes": ["finance."]
+  }
+}

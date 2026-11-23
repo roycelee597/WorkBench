@@ -253,7 +253,7 @@ afterEach(async () => {
   createdStores.splice(0).forEach((store) => store.getState().dispose());
   vi.unstubAllGlobals();
 });
-async function render(store: AiStore) {
+async function render(store: AiStore, financeAvailable = true) {
   await act(async () =>
     root.render(
       <AiWorkbench
@@ -261,6 +261,7 @@ async function render(store: AiStore) {
         openSettings={() => undefined}
         manualCreate={() => undefined}
         focusVersion={1}
+        financeAvailable={financeAvailable}
       />,
     ),
   );
@@ -281,6 +282,17 @@ async function click(element: HTMLElement) {
 }
 
 describe("AI A4 读取结果与操作卡片", () => {
+  it("卸载金融后，已显示的金融短引用变为说明，其他引用仍可打开", async () => {
+    const { store, api } = setup([readCall(), answer("请看 [e1] 和 [e2]。")]);
+    await render(store);
+    await send(store);
+    expect(button("[e2]")).toBeDefined();
+    await render(store, false);
+    expect(button("[e2]")).toBeUndefined();
+    expect(container.textContent).toContain("金融模块未安装或已停用");
+    await click(button("[e1]"));
+    expect(api.openTarget).toHaveBeenCalledOnce();
+  });
   it("内存上下文最多六轮，只有最新一轮保留读取exchanges", async () => {
     const { store } = setup(
       Array.from({ length: 8 }, (_, index) => [readCall(), answer(`第${index}轮回复`)]).flat(),

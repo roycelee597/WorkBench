@@ -1,67 +1,40 @@
+use crate::{
+    module_engine::{EngineError as FinanceError, read_event},
+    module_runtime::{FINANCE_ID, ModuleState, only_main},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStderr, ChildStdout, Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_shell::ShellExt;
+use uuid::Uuid;
 
 const EVENT: &str = "finance://event";
-const ENGINE_LOG: &str = "finance-engine.log";
+pub(crate) const ENGINE_LOG: &str = "finance-engine.log";
 const ENGINE_LOG_LIMIT: usize = 1024 * 1024;
-
-#[derive(Serialize)]
-pub struct FinanceError {
-    code: String,
-    message: String,
-}
-
-impl FinanceError {
-    fn new(code: &str, message: &str) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-        }
-    }
-}
+pub(crate) const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const CANCEL_GRACE: Duration = Duration::from_secs(5);
 
 type Result<T> = std::result::Result<T, FinanceError>;
 
-struct Active {
-    child: Option<Child>,
-    control: Arc<RunControl>,
-    updating: bool,
-    exit_code: Option<i32>,
-}
-
-struct RunControl {
+pub(crate) struct RunControl {
     scratch: PathBuf,
     log_dir: Option<PathBuf>,
     stop_at: Mutex<Option<Instant>>,
 }
 
 impl RunControl {
-    fn new(parent: &Path, log_dir: Option<PathBuf>) -> io::Result<Self> {
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        std::fs::create_dir_all(parent)?;
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let scratch = parent.join(format!(
-            "{}-{time}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&scratch)?;
+    pub(crate) fn new(parent: &Path, log_dir: Option<PathBuf>) -> io::Result<Self> {
+        fs::create_dir_all(parent)?;
+        let scratch = parent.join(Uuid::new_v4().simple().to_string());
+        fs::create_dir(&scratch)?;
         Ok(Self {
             scratch,
             log_dir,
@@ -69,18 +42,18 @@ impl RunControl {
         })
     }
 
-    fn cancel_file(&self) -> PathBuf {
+    pub(crate) fn cancel_file(&self) -> PathBuf {
         self.scratch.join("cancel")
     }
 
-    fn requested_at(&self) -> Option<Instant> {
+    pub(crate) fn requested_at(&self) -> Option<Instant> {
         *self
             .stop_at
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn request_stop(&self) -> std::io::Result<()> {
+    pub(crate) fn request_stop(&self) -> io::Result<()> {
         let mut stop_at = self
             .stop_at
             .lock()
@@ -88,14 +61,12 @@ impl RunControl {
         if stop_at.is_some() {
             return Ok(());
         }
+        // 写信号失败时仍设置截止时间，Job 层会在宽限期后终止进程树。
         *stop_at = Some(Instant::now());
-        std::fs::write(self.cancel_file(), [])
+        fs::write(self.cancel_file(), [])
     }
-}
 
-impl Drop for RunControl {
-    fn drop(&mut self) {
-        // 只清理由本次运行创建的专属目录，其他进程的 _MEI 目录不在此范围内。
+    pub(crate) fn cleanup(&self) {
         if let Err(error) = fs::remove_dir_all(&self.scratch)
             && error.kind() != io::ErrorKind::NotFound
         {
@@ -114,15 +85,15 @@ impl Drop for RunControl {
     }
 }
 
-const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
-const CANCEL_GRACE: Duration = Duration::from_secs(5);
-
-#[derive(Clone, Default)]
-pub struct FinanceState(Arc<Mutex<Option<Active>>>);
+impl Drop for RunControl {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum UpdateMode {
+pub(crate) enum UpdateMode {
     Auto,
     FullRebuild,
 }
@@ -136,12 +107,140 @@ impl UpdateMode {
     }
 }
 
-fn main_only(window: &WebviewWindow) -> Result<()> {
-    if window.label() == "main" {
-        Ok(())
-    } else {
-        Err(FinanceError::new("FORBIDDEN", "只有主窗口可以访问金融服务"))
+#[derive(Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum EngineInput {
+    Update {
+        mode: UpdateMode,
+        #[serde(rename = "akshareFallback", default = "default_fallback")]
+        akshare_fallback: bool,
+    },
+    Verify {},
+}
+
+fn default_fallback() -> bool {
+    true
+}
+
+impl EngineInput {
+    pub(crate) fn updating(&self) -> bool {
+        matches!(self, Self::Update { .. })
     }
+}
+
+pub(crate) struct FinanceRun {
+    pub(crate) control: std::sync::Arc<RunControl>,
+    pub(crate) token: String,
+    pub(crate) updating: bool,
+    pub(crate) arguments: Vec<OsString>,
+    akshare_fallback: bool,
+}
+
+fn engine_arguments(path: &Path, request: &EngineInput) -> Vec<OsString> {
+    let mut args = vec![
+        if request.updating() {
+            "update"
+        } else {
+            "verify"
+        }
+        .into(),
+        "--db".into(),
+        path.as_os_str().to_owned(),
+    ];
+    if let EngineInput::Update { mode, .. } = request {
+        args.extend(["--mode".into(), mode.as_arg().into()]);
+    }
+    args
+}
+
+impl FinanceRun {
+    // 在通用引擎持有模块锁时调用，防止启动与卸载竞争。
+    pub(crate) fn prepare(app: &AppHandle, request: &EngineInput) -> Result<Self> {
+        let token = stored_token(app)?
+            .ok_or_else(|| FinanceError::new("TOKEN_MISSING", "请先在设置中保存 Tushare token"))?;
+        let scratch_parent = app
+            .path()
+            .app_cache_dir()
+            .map_err(|_| FinanceError::new("ENGINE_START_FAILED", "无法定位金融引擎临时目录"))?
+            .join("finance-runs");
+        let control = std::sync::Arc::new(
+            RunControl::new(&scratch_parent, app.path().app_log_dir().ok()).map_err(|_| {
+                FinanceError::new("ENGINE_START_FAILED", "无法创建金融引擎临时目录")
+            })?,
+        );
+        let mut arguments = engine_arguments(&database_path(app)?, request);
+        arguments.extend([
+            "--cancel-file".into(),
+            control.cancel_file().into_os_string(),
+        ]);
+        let fallback = matches!(
+            request,
+            EngineInput::Update {
+                akshare_fallback: true,
+                ..
+            }
+        );
+        Ok(Self {
+            control,
+            akshare_fallback: fallback,
+            token,
+            updating: request.updating(),
+            arguments,
+        })
+    }
+
+    pub(crate) fn input(&self) -> Value {
+        json!({ "tushare_token": self.token, "akshare_fallback": self.akshare_fallback })
+    }
+
+    pub(crate) fn environment(&self) -> [(&'static str, OsString); 2] {
+        let path = self.control.scratch.as_os_str();
+        [("TEMP", path.to_owned()), ("TMP", path.to_owned())]
+    }
+
+    pub(crate) fn append_stderr(&self, stderr: fs::File) {
+        let mut reader = BufReader::new(stderr);
+        if let Some(folder) = &self.control.log_dir {
+            let _ = redact_stderr(&mut reader, &self.token, |line| {
+                append_engine_log(folder, line, ENGINE_LOG_LIMIT)
+            });
+        }
+        let _ = io::copy(&mut reader, &mut io::sink());
+    }
+
+    pub(crate) fn forward(&self, app: &AppHandle, event: &Value) {
+        if self.updating {
+            let _ = app.emit_to("main", EVENT, event.to_string());
+        }
+    }
+}
+
+fn require_installed(app: &AppHandle) -> Result<()> {
+    with_installed(app, || Ok(()))
+}
+
+fn with_installed<T>(app: &AppHandle, action: impl FnOnce() -> Result<T>) -> Result<T> {
+    app.state::<ModuleState>()
+        .with_store(|store| {
+            let module = store.active(FINANCE_ID)?;
+            if module
+                .grants
+                .iter()
+                .any(|permission| permission == "finance")
+            {
+                Ok(action())
+            } else {
+                Ok(Err(FinanceError::new(
+                    "PERMISSION_DENIED",
+                    "金融指标权限已撤销",
+                )))
+            }
+        })
+        .map_err(|_| FinanceError::new("MODULE_NOT_INSTALLED", "请先在模块管理中安装金融指标"))?
+}
+
+fn main_only(window: &WebviewWindow) -> Result<()> {
+    only_main(window).map_err(|_| FinanceError::new("FORBIDDEN", "只有主窗口可以访问金融服务"))
 }
 
 fn credential(app: &AppHandle) -> Result<keyring::Entry> {
@@ -195,25 +294,31 @@ pub fn finance_token_set(window: WebviewWindow, token: String) -> Result<TokenSt
             "请输入有效格式的 Tushare token",
         ));
     }
-    credential(window.app_handle())?
-        .set_password(token)
-        .map_err(|_| credential_error())?;
-    Ok(token_status(Some(token)))
+    with_installed(window.app_handle(), || {
+        credential(window.app_handle())?
+            .set_password(token)
+            .map_err(|_| credential_error())?;
+        Ok(token_status(Some(token)))
+    })
 }
 
 #[tauri::command]
 pub fn finance_token_status(window: WebviewWindow) -> Result<TokenStatus> {
     main_only(&window)?;
-    Ok(token_status(stored_token(window.app_handle())?.as_deref()))
+    with_installed(window.app_handle(), || {
+        Ok(token_status(stored_token(window.app_handle())?.as_deref()))
+    })
 }
 
 #[tauri::command]
 pub fn finance_token_clear(window: WebviewWindow) -> Result<()> {
     main_only(&window)?;
-    match credential(window.app_handle())?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(_) => Err(credential_error()),
-    }
+    with_installed(window.app_handle(), || {
+        match credential(window.app_handle())?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(credential_error()),
+        }
+    })
 }
 
 fn database_path(app: &AppHandle) -> Result<PathBuf> {
@@ -248,18 +353,24 @@ pub async fn finance_reader_open(
     app: AppHandle,
 ) -> Result<Option<CacheConnection>> {
     main_only(&window)?;
+    let pools = app.state::<tauri_plugin_sql::DbInstances>();
+    let mut instances = pools.0.write().await;
+    // 卸载先停用模块，再用同一池锁关闭缓存。异步打开后再次确认安装状态。
+    require_installed(&app)?;
     let path = database_path(&app)?;
     let bytes = match std::fs::metadata(&path) {
         Ok(metadata) => metadata.len(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(FinanceError::new("DB_ERROR", "无法读取金融数据文件")),
     };
-    let pools = app.state::<tauri_plugin_sql::DbInstances>();
-    let mut instances = pools.0.write().await;
     if !instances.contains_key(CACHE_POOL_KEY) {
         let pool = open_cache(&path).await.map_err(|_| {
             FinanceError::new("DB_ERROR", "无法只读打开金融缓存，请检查文件或重建金融数据")
         })?;
+        if let Err(error) = require_installed(&app) {
+            pool.close().await;
+            return Err(error);
+        }
         instances.insert(
             CACHE_POOL_KEY.into(),
             tauri_plugin_sql::DbPool::Sqlite(pool),
@@ -274,23 +385,29 @@ pub async fn finance_reader_open(
 #[tauri::command]
 pub async fn finance_reader_close(window: WebviewWindow, app: AppHandle) -> Result<()> {
     main_only(&window)?;
+    close_reader(&app).await;
+    Ok(())
+}
+
+pub(crate) async fn close_reader(app: &AppHandle) {
     let pools = app.state::<tauri_plugin_sql::DbInstances>();
-    let pool = pools.0.write().await.remove(CACHE_POOL_KEY);
-    if let Some(tauri_plugin_sql::DbPool::Sqlite(pool)) = pool {
+    let mut instances = pools.0.write().await;
+    if let Some(tauri_plugin_sql::DbPool::Sqlite(pool)) = instances.remove(CACHE_POOL_KEY) {
         pool.close().await;
     }
-    Ok(())
 }
 
 #[tauri::command]
 pub fn finance_db_path(window: WebviewWindow, app: AppHandle) -> Result<String> {
     main_only(&window)?;
+    require_installed(&app)?;
     Ok(database_path(&app)?.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 pub fn finance_db_size(window: WebviewWindow, app: AppHandle) -> Result<Option<u64>> {
     main_only(&window)?;
+    require_installed(&app)?;
     match std::fs::metadata(database_path(&app)?) {
         Ok(metadata) => Ok(Some(metadata.len())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -301,204 +418,19 @@ pub fn finance_db_size(window: WebviewWindow, app: AppHandle) -> Result<Option<u
 #[tauri::command]
 pub fn finance_open_directory(window: WebviewWindow, app: AppHandle) -> Result<()> {
     main_only(&window)?;
+    require_installed(&app)?;
     let path = database_path(&app)?;
     let folder = path
         .parent()
         .ok_or_else(|| FinanceError::new("DB_ERROR", "无法定位金融数据文件夹"))?;
-    std::fs::create_dir_all(folder)
-        .map_err(|_| FinanceError::new("DB_ERROR", "无法创建金融数据文件夹"))?;
+    with_installed(&app, || {
+        fs::create_dir_all(folder)
+            .map_err(|_| FinanceError::new("DB_ERROR", "无法创建金融数据文件夹"))
+    })?;
     #[allow(deprecated)]
     app.shell()
         .open(folder.to_string_lossy(), None)
         .map_err(|_| FinanceError::new("DB_ERROR", "无法打开金融数据文件夹"))
-}
-
-fn add_arguments(command: &mut Command, path: &Path, mode: Option<UpdateMode>) {
-    command
-        .arg(if mode.is_some() { "update" } else { "verify" })
-        .arg("--db")
-        .arg(path);
-    if let Some(mode) = mode {
-        command.args(["--mode", mode.as_arg()]);
-    }
-}
-
-fn engine_missing(app: &AppHandle) -> FinanceError {
-    let folder = app
-        .path()
-        .app_log_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    FinanceError::new(
-        "ENGINE_MISSING",
-        &format!("无法启动金融引擎，请重新安装 WorkBench。日志目录：{folder}"),
-    )
-}
-
-fn command(app: &AppHandle, mode: Option<UpdateMode>, control: &RunControl) -> Result<Command> {
-    let mut command = if cfg!(debug_assertions)
-        && std::env::var("WORKBENCH_FINANCE_ENGINE_DEV").as_deref() == Ok("1")
-    {
-        let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../engines/finance");
-        let mut command = Command::new("uv");
-        command
-            .args(["run", "--locked", "--project"])
-            .arg(project)
-            .args(["python", "-m", "finance_engine"]);
-        command
-    } else {
-        // 插件负责定位安装的 sidecar。标准进程接口允许写完后关闭 stdin。
-        app.shell()
-            .sidecar("finance-engine")
-            .map_err(|_| engine_missing(app))?
-            .into()
-    };
-    add_arguments(&mut command, &database_path(app)?, mode);
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .arg("--cancel-file")
-        .arg(control.cancel_file())
-        .env("TEMP", &control.scratch)
-        .env("TMP", &control.scratch)
-        .env_remove("TUSHARE_TOKEN");
-    hide_console(&mut command);
-    Ok(command)
-}
-
-fn hide_console(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    #[cfg(not(windows))]
-    let _ = command;
-}
-
-fn kill_tree(child: &mut Child) -> std::io::Result<()> {
-    if child.try_wait()?.is_some() {
-        return Ok(());
-    }
-    #[cfg(windows)]
-    if let Some(root) = std::env::var_os("SystemRoot") {
-        // PyInstaller 单文件和 uv 均会再起进程，取消时结束整棵进程树。
-        let mut command = Command::new(PathBuf::from(root).join("System32/taskkill.exe"));
-        hide_console(&mut command);
-        if command
-            .args(["/T", "/F", "/PID"])
-            .arg(child.id().to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-        {
-            return Ok(());
-        }
-    }
-    child.kill()
-}
-
-struct ChildPipes {
-    stdout: ChildStdout,
-    stderr: ChildStderr,
-    token: String,
-}
-
-fn start(
-    app: &AppHandle,
-    state: &FinanceState,
-    mode: Option<UpdateMode>,
-    fallback: bool,
-) -> Result<Option<ChildPipes>> {
-    let mut active = state
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(entry) = active.as_ref() {
-        if mode.is_some() && !entry.updating {
-            return Err(FinanceError::new(
-                "ENGINE_BUSY",
-                "正在测试 Tushare 连接，请稍后更新",
-            ));
-        }
-        return Ok(None);
-    }
-    let token = stored_token(app)?
-        .ok_or_else(|| FinanceError::new("TOKEN_MISSING", "请先在设置中保存 Tushare token"))?;
-    let input = format!(
-        "{}\n",
-        json!({"tushare_token": token, "akshare_fallback": fallback})
-    );
-    let scratch_parent = app
-        .path()
-        .app_cache_dir()
-        .map_err(|_| FinanceError::new("ENGINE_START_FAILED", "无法定位金融引擎临时目录"))?
-        .join("finance-runs");
-    let control = Arc::new(
-        RunControl::new(&scratch_parent, app.path().app_log_dir().ok())
-            .map_err(|_| FinanceError::new("ENGINE_START_FAILED", "无法创建金融引擎临时目录"))?,
-    );
-    let mut child = command(app, mode, &control)?
-        .spawn()
-        .map_err(|_| engine_missing(app))?;
-    let sent = child
-        .stdin
-        .take()
-        .is_some_and(|mut stdin| stdin.write_all(input.as_bytes()).is_ok());
-    if !sent {
-        let _ = kill_tree(&mut child);
-        let _ = child.wait();
-        return Err(FinanceError::new(
-            "ENGINE_START_FAILED",
-            "无法向金融引擎提供连接凭据",
-        ));
-    }
-    let stdout = child.stdout.take().expect("金融引擎 stdout 已配置为管道");
-    let stderr = child.stderr.take().expect("金融引擎 stderr 已配置为管道");
-    *active = Some(Active {
-        child: Some(child),
-        control,
-        updating: mode.is_some(),
-        exit_code: None,
-    });
-    Ok(Some(ChildPipes {
-        stdout,
-        stderr,
-        token,
-    }))
-}
-
-fn read_stdout(
-    app: &AppHandle,
-    stdout: ChildStdout,
-    token: &str,
-    updating: bool,
-) -> (bool, Option<FinanceError>) {
-    let mut failure = None;
-    let mut verified = false;
-    for line in BufReader::new(stdout)
-        .lines()
-        .map_while(std::result::Result::ok)
-    {
-        let line = line.replace(token, "[已隐藏]");
-        if updating {
-            let _ = app.emit_to("main", EVENT, &line);
-        } else if let Ok(event) = serde_json::from_str::<Value>(&line) {
-            if event["type"] == "error" {
-                failure = Some(FinanceError::new(
-                    event["code"].as_str().unwrap_or("INTERNAL"),
-                    event["message"].as_str().unwrap_or("测试连接失败"),
-                ));
-            }
-            if event["type"] == "done" && event["status"] == "ok" {
-                verified = true;
-            }
-        }
-    }
-    (verified, failure)
 }
 
 fn redact_stderr(
@@ -507,7 +439,7 @@ fn redact_stderr(
     mut write_line: impl FnMut(&str) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut line = Vec::new();
-    while input.read_until(b'\n', &mut line)? > 0 {
+    while read_event(&mut input, &mut line)? {
         let safe = String::from_utf8_lossy(&line).replace(token, "[已隐藏]");
         write_line(&safe)?;
         line.clear();
@@ -543,182 +475,6 @@ fn append_engine_log(folder: &Path, line: &str, limit: usize) -> io::Result<()> 
         .append(true)
         .open(path)?
         .write_all(line.as_bytes())
-}
-
-fn append_stderr(app: &AppHandle, stderr: ChildStderr, token: &str) {
-    let mut reader = BufReader::new(stderr);
-    if let Ok(folder) = app.path().app_log_dir() {
-        let _ = redact_stderr(&mut reader, token, |line| {
-            append_engine_log(&folder, line, ENGINE_LOG_LIMIT)
-        });
-    }
-    let _ = io::copy(&mut reader, &mut io::sink());
-}
-
-fn wait_for_child(
-    child: &mut Child,
-    control: &RunControl,
-    timeout: Option<Duration>,
-    grace: Duration,
-) -> (Option<i32>, bool) {
-    let started = Instant::now();
-    let mut timed_out = false;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return (status.code(), timed_out),
-            Ok(None) => {}
-            Err(_) => break,
-        }
-        if !timed_out && timeout.is_some_and(|limit| started.elapsed() >= limit) {
-            timed_out = true;
-            let _ = control.request_stop();
-        }
-        if control
-            .requested_at()
-            .is_some_and(|instant| instant.elapsed() >= grace)
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let _ = kill_tree(child);
-    (
-        child.wait().ok().and_then(|status| status.code()),
-        timed_out,
-    )
-}
-
-fn collect(app: AppHandle, state: FinanceState, pipes: ChildPipes, updating: bool) -> Result<()> {
-    let (mut child, control) = {
-        let mut active = state
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = active.as_mut().expect("金融进程运行时占用槽位");
-        (
-            entry.child.take().expect("仅收集一次金融进程"),
-            Arc::clone(&entry.control),
-        )
-    };
-    // 槽位保持占用，但等待不持有全局锁，取消和退出仍能写停止信号。
-    let ChildPipes {
-        stdout,
-        stderr,
-        token,
-    } = pipes;
-    let (code, timed_out, verified, failure) = std::thread::scope(|scope| {
-        let out = scope.spawn(|| read_stdout(&app, stdout, &token, updating));
-        let err = scope.spawn(|| append_stderr(&app, stderr, &token));
-        let (code, timed_out) = wait_for_child(
-            &mut child,
-            &control,
-            (!updating).then_some(VERIFY_TIMEOUT),
-            CANCEL_GRACE,
-        );
-        let (verified, failure) = out.join().unwrap_or_default();
-        let _ = err.join();
-        (code, timed_out, verified, failure)
-    });
-    let mut active = state
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let exit_code = active.take().and_then(|entry| entry.exit_code);
-    let cancelled = control.requested_at().is_some();
-    drop(control);
-    if updating {
-        let _ = app.emit_to(
-            "main",
-            EVENT,
-            json!({"type": "engine_exit", "code": code, "cancelled": cancelled}).to_string(),
-        );
-    }
-    drop(active);
-    if let Some(code) = exit_code {
-        app.exit(code);
-    }
-    if timed_out {
-        return Err(FinanceError::new(
-            "VERIFY_TIMEOUT",
-            "测试连接超时（约 60 秒），请检查网络后重试",
-        ));
-    }
-    if code == Some(0) && (updating || verified) {
-        return Ok(());
-    }
-    Err(failure.unwrap_or_else(|| FinanceError::new("ENGINE_EXIT", "金融引擎未正常完成")))
-}
-
-#[tauri::command]
-pub fn finance_update_start(
-    window: WebviewWindow,
-    app: AppHandle,
-    mode: UpdateMode,
-    akshare_fallback: Option<bool>,
-) -> Result<&'static str> {
-    main_only(&window)?;
-    let state = app.state::<FinanceState>().inner().clone();
-    let Some(pipes) = start(&app, &state, Some(mode), akshare_fallback.unwrap_or(true))? else {
-        return Ok("already_running");
-    };
-    std::thread::spawn(move || {
-        let _ = collect(app, state, pipes, true);
-    });
-    Ok("started")
-}
-
-fn stop(app: &AppHandle) -> Result<()> {
-    let state = app.state::<FinanceState>();
-    let active = state
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(entry) = active.as_ref() {
-        entry.control.request_stop().map_err(|_| {
-            FinanceError::new(
-                "ENGINE_CANCEL_FAILED",
-                "无法写入停止信号，将尝试强制结束金融引擎",
-            )
-        })?;
-    }
-    Ok(())
-}
-
-pub fn defer_exit(app: &AppHandle, code: i32) -> bool {
-    let state = app.state::<FinanceState>();
-    let mut active = state
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(entry) = active.as_mut() {
-        entry.exit_code = Some(code);
-        let _ = entry.control.request_stop();
-        return true;
-    }
-    false
-}
-
-#[tauri::command]
-pub fn finance_update_cancel(window: WebviewWindow, app: AppHandle) -> Result<()> {
-    main_only(&window)?;
-    stop(&app)
-}
-
-#[tauri::command]
-pub async fn finance_verify(window: WebviewWindow, app: AppHandle) -> Result<()> {
-    main_only(&window)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<FinanceState>().inner().clone();
-        let Some(pipes) = start(&app, &state, None, false)? else {
-            return Err(FinanceError::new(
-                "ENGINE_BUSY",
-                "金融引擎正在运行，请稍后测试连接",
-            ));
-        };
-        collect(app, state, pipes, false)
-    })
-    .await
-    .map_err(|_| FinanceError::new("ENGINE_EXIT", "测试连接未完成"))?
 }
 
 #[cfg(test)]
@@ -821,46 +577,58 @@ mod tests {
         });
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn verify_deadline_requests_graceful_stop_and_removes_owned_scratch() {
-        let control =
-            RunControl::new(&std::env::temp_dir().join("workbench-finance-tests"), None).unwrap();
-        let scratch = control.scratch.clone();
-        let mut command = Command::new("powershell.exe");
-        hide_console(&mut command);
-        let mut child = command.args(["-NoProfile", "-NonInteractive", "-Command",
-            "while (!(Test-Path -LiteralPath $env:WORKBENCH_TEST_CANCEL)) { Start-Sleep -Milliseconds 20 }; exit 0"])
-            .env("WORKBENCH_TEST_CANCEL", control.cancel_file())
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-        let (code, timed_out) = wait_for_child(
-            &mut child,
-            &control,
-            Some(Duration::from_millis(80)),
-            CANCEL_GRACE,
-        );
-        assert!(timed_out);
-        assert_eq!(code, Some(0));
-        assert!(control.cancel_file().exists());
-        drop(control);
-        assert!(!scratch.exists());
-    }
-
     #[test]
     fn engine_arguments_do_not_contain_token() {
         let token = "dummy-private-token";
-        let path = Path::new("C:/Users/Test/AppData/Local/com.royce.workbench/finance.db");
-        for mode in [None, Some(UpdateMode::Auto), Some(UpdateMode::FullRebuild)] {
-            let mut command = Command::new("finance-engine");
-            add_arguments(&mut command, path, mode);
-            let args: Vec<_> = command.get_args().collect();
+        let path = Path::new("fixture/finance.db");
+        for (input, count) in [
+            (EngineInput::Verify {}, 3),
+            (
+                EngineInput::Update {
+                    mode: UpdateMode::Auto,
+                    akshare_fallback: true,
+                },
+                5,
+            ),
+            (
+                EngineInput::Update {
+                    mode: UpdateMode::FullRebuild,
+                    akshare_fallback: false,
+                },
+                5,
+            ),
+        ] {
+            let args = engine_arguments(path, &input);
             assert!(
                 args.iter()
                     .all(|arg| !arg.to_string_lossy().contains(token))
             );
-            assert_eq!(args.len(), if mode.is_some() { 5 } else { 3 });
+            assert_eq!(args.len(), count);
         }
         let status = token_status(Some(token));
         assert_eq!(status.tail.as_deref(), Some("oken"));
+    }
+
+    #[test]
+    fn accepts_only_fixed_finance_engine_operations() {
+        assert!(serde_json::from_value::<EngineInput>(json!({"operation":"verify"})).is_ok());
+        assert!(
+            serde_json::from_value::<EngineInput>(json!({
+                "operation":"update", "mode":"auto", "akshareFallback":false
+            }))
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<EngineInput>(json!({
+                "operation":"update", "mode":"auto", "tushare_token":"fake"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<EngineInput>(json!({
+                "operation":"verify", "db":"elsewhere.db"
+            }))
+            .is_err()
+        );
     }
 }

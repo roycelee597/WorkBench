@@ -178,6 +178,27 @@ pub fn stage_package(
     staging: &Path,
     host_version: &str,
 ) -> Result<StagedPackage, String> {
+    stage(path, staging, host_version, None)
+}
+
+pub(super) fn stage_official_package(
+    path: &Path,
+    staging: &Path,
+    host_version: &str,
+    expected_id: &str,
+) -> Result<StagedPackage, String> {
+    if !OFFICIAL_IDS.contains(&expected_id) {
+        return Err("未知官方模块".into());
+    }
+    stage(path, staging, host_version, Some(expected_id))
+}
+
+fn stage(
+    path: &Path,
+    staging: &Path,
+    host_version: &str,
+    official_id: Option<&str>,
+) -> Result<StagedPackage, String> {
     if !has_extension(path, "wbpkg") {
         return Err("请选择以 .wbpkg 结尾的本地模块包".into());
     }
@@ -202,8 +223,12 @@ pub fn stage_package(
     }
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|_| "模块清单 JSON 无效")?;
     manifest.validate(host_version)?;
-    if OFFICIAL_IDS.contains(&manifest.id.as_str()) {
-        return Err("此 ID 保留给安装包内置的官方模块".into());
+    match official_id {
+        Some(id) if id != manifest.id => return Err("附带的官方模块 ID 不匹配".into()),
+        None if OFFICIAL_IDS.contains(&manifest.id.as_str()) => {
+            return Err("此 ID 保留给安装包内置的官方模块".into());
+        }
+        _ => {}
     }
     module_file(&files, &manifest.entry)?;
     if let Some(icon) = &manifest.icon {

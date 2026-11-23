@@ -28,6 +28,7 @@ docs/                 后续开发文档
 - Rust stable，使用 MSVC 工具链，版本至少为 1.90。
 - Visual Studio C++ Build Tools，包含“使用 C++ 的桌面开发”工作负载及 Windows SDK。
 - WebView2 Runtime。
+- Python 3.12 和 uv，用于生成随安装包分发的官方金融模块。
 - GitHub CLI（用于推送后的 PR 管理）。
 
 系统依赖安装说明见 [Tauri 官方前置条件](https://v2.tauri.app/start/prerequisites/)。
@@ -48,7 +49,7 @@ pnpm dev
 pnpm --filter desktop tauri dev
 ```
 
-首次启动会下载 Rust 依赖并编译。成功后应打开标题为 **WorkBench** 的窗口，默认进入综合工作台的“今天”页签。
+首次启动会生成官方金融模块、下载 Rust 依赖并编译。成功后应打开标题为 **WorkBench** 的窗口，默认进入综合工作台的“今天”页签。
 开发服务器使用 `http://localhost:1420`。关闭窗口会隐藏到托盘；结束开发时可从托盘菜单退出，再在终端按 `Ctrl+C`。
 
 ## 开发命令
@@ -57,12 +58,13 @@ pnpm --filter desktop tauri dev
 | ----------------------------------------------- | -------------------------------------------- |
 | `pnpm dev`                                      | 启动 Tauri 桌面开发模式                      |
 | `pnpm build`                                    | 构建桌面应用及默认安装包                     |
+| `pnpm finance:package`                          | 生成内附的官方金融模块包                     |
 | `pnpm lint`                                     | 检查 ESLint 规则，禁止显式 `any`             |
 | `pnpm typecheck`                                | 检查桌面端和所有工作区的严格 TypeScript 类型 |
 | `pnpm test`                                     | 运行 Vitest                                  |
 | `pnpm format`                                   | 格式化代码与新增文档，统一 LF 换行           |
 | `pnpm --filter desktop build`                   | 仅构建桌面端前端资源                         |
-| `pnpm --filter desktop tauri build --no-bundle` | 编译桌面程序，不生成安装包                   |
+| `pnpm --filter desktop tauri build --no-bundle` | 编译桌面程序，先运行 `pnpm finance:package`  |
 
 `pnpm test` 包含数据仓库、回收站、重复日程、Markdown 往返、数据接口和自动保存测试。
 新增逻辑必须同时添加 Vitest 单元测试。现有 `ARCHITECTURE.md`、`AGENTS.md` 和 `.gitignore` 不由格式化命令改写。
@@ -74,6 +76,7 @@ pnpm install --frozen-lockfile
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm finance:package
 pnpm --filter desktop tauri build --no-bundle
 pnpm --filter desktop tauri dev
 ```

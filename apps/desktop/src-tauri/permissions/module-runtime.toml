@@ -3,6 +3,7 @@ identifier = "allow-module-host"
 description = "允许受信主窗口管理模块和调度引擎"
 commands.allow = [
   "module_list",
+  "module_reinstall_bundled",
   "module_preview",
   "install_module",
   "module_discard",

@@ -1,8 +1,10 @@
 mod archive;
 mod manifest;
+mod official;
 mod state;
 
 pub use archive::verify_engine;
+pub use manifest::FINANCE_ID;
 pub use state::ModuleState;
 
 use archive::stage_package;
@@ -26,11 +28,21 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
         .map_err(|_| "无法定位模块数据目录")?;
     std::fs::create_dir_all(&parent).map_err(|_| "无法建立应用数据目录")?;
     archive::ordinary_dir(&parent)?;
-    app.state::<ModuleState>().initialize(
+    let state = app.state::<ModuleState>();
+    state.initialize(
         parent.join("modules"),
         app.config().identifier.clone(),
         app.package_info().version.to_string(),
-    )
+        Some(official::LegacyFinancePaths::from_app(app, parent)?),
+    )?;
+    if let Err(error) = state.with_store(|store| {
+        store.ensure_official(&official::FINANCE, true, || {
+            official::package_path(app, &official::FINANCE)
+        })
+    }) {
+        eprintln!("官方金融模块尚未迁移，可在模块管理重试：{error}");
+    }
+    Ok(())
 }
 
 pub(crate) fn only_main(window: &WebviewWindow) -> Result<(), String> {
@@ -159,6 +171,27 @@ pub async fn install_module(window: WebviewWindow, ticket: String) -> Result<Mod
 }
 
 #[tauri::command]
+pub async fn module_reinstall_bundled(
+    window: WebviewWindow,
+    id: String,
+) -> Result<ModuleRecord, String> {
+    only_main(&window)?;
+    let descriptor = official::descriptor(&id).ok_or("没有附带此官方模块")?;
+    let app = window.app_handle().clone();
+    async_runtime::spawn_blocking(move || {
+        app.state::<ModuleState>().with_store(|store| {
+            store
+                .ensure_official(descriptor, false, || {
+                    official::package_path(&app, descriptor)
+                })?
+                .ok_or_else(|| "未能安装官方模块".into())
+        })
+    })
+    .await
+    .map_err(|_| "官方模块安装未完成")?
+}
+
+#[tauri::command]
 pub fn module_discard(
     window: WebviewWindow,
     state: State<'_, ModuleState>,
@@ -175,13 +208,23 @@ pub fn module_discard(
 pub async fn uninstall_module(window: WebviewWindow, id: String) -> Result<(), String> {
     only_main(&window)?;
     let app = window.app_handle().clone();
+    let should_cleanup = app
+        .state::<ModuleState>()
+        .with_store(|store| store.mark_uninstall(&id))?;
+    if !should_cleanup {
+        return Ok(());
+    }
+    let stop_app = app.clone();
+    let stop_id = id.clone();
+    async_runtime::spawn_blocking(move || crate::module_engine::stop_module(&stop_app, &stop_id))
+        .await
+        .map_err(|_| "模块进程未能退出")??;
+    if id == FINANCE_ID {
+        crate::finance::close_reader(&app).await;
+    }
     async_runtime::spawn_blocking(move || {
-        let state = app.state::<ModuleState>();
-        if state.with_store(|store| store.mark_uninstall(&id))? {
-            crate::module_engine::stop_module(&app, &id)?;
-            state.with_store(|store| store.cleanup_native(&id))?;
-        }
-        Ok(())
+        app.state::<ModuleState>()
+            .with_store(|store| store.cleanup_native(&id))
     })
     .await
     .map_err(|_| "模块卸载未完成")?
@@ -205,20 +248,26 @@ pub async fn module_revoke(
 ) -> Result<ModuleRecord, String> {
     only_main(&window)?;
     let app = window.app_handle().clone();
-    async_runtime::spawn_blocking(move || {
+    let close_reader = id == FINANCE_ID && permission == "finance";
+    let revoke_app = app.clone();
+    let record = async_runtime::spawn_blocking(move || -> Result<ModuleRecord, String> {
         let record = app
             .state::<ModuleState>()
             .with_store(|store| store.revoke(&id, &permission))?;
         if matches!(
             permission.as_str(),
-            "engine" | "engine.exec_paths" | "dialog.open"
+            "engine" | "engine.exec_paths" | "dialog.open" | "finance"
         ) {
             crate::module_engine::stop_module(&app, &id)?;
         }
         Ok(record)
     })
     .await
-    .map_err(|_| "模块权限更新未完成")?
+    .map_err(|_| "模块权限更新未完成")??;
+    if close_reader {
+        crate::finance::close_reader(&revoke_app).await;
+    }
+    Ok(record)
 }
 
 #[tauri::command]

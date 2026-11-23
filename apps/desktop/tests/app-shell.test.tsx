@@ -27,6 +27,7 @@ const mock = vi.hoisted(() => ({
   snooze: vi.fn(),
   financeOpen: vi.fn(),
   financeRuntime: vi.fn(),
+  financeInstalled: true,
   scheduler: vi.fn(),
   schedulerStop: vi.fn(),
   quickStart: vi.fn(),
@@ -114,17 +115,12 @@ vi.mock("@workbench/general", async () => {
     openAiTarget: mock.openAiTarget,
   };
 });
-vi.mock("@workbench/finance", () => ({
-  FinanceSettings: () => <span>金融设置</span>,
-  FinanceBackfillDialog: () => null,
-  financeApi: { startRuntime: mock.financeRuntime, openReminder: mock.financeOpen },
+vi.mock("../src/core/finance/finance-host", () => ({
+  financeHost: { startRuntime: mock.financeRuntime, openReminder: mock.financeOpen },
 }));
-vi.mock("@workbench/finance/page", () => ({
-  FinanceWorkbench: ({ openSettings }: { openSettings: () => void }) => (
-    <section data-testid="finance">
-      金融内容<button onClick={openSettings}>金融设置入口</button>
-    </section>
-  ),
+vi.mock("../src/shell/FinanceStartupPrompt", () => ({ FinanceStartupPrompt: () => null }));
+vi.mock("../src/runtime/ModuleLoader", () => ({
+  ModuleLoader: () => <section data-testid="finance">金融内容</section>,
 }));
 vi.mock("@workbench/ai", () => ({
   AiSettings: () => <h3 id="ai-settings-heading">AI 设置</h3>,
@@ -232,11 +228,32 @@ beforeEach(async () => {
   mock.financeRuntime.mockReturnValue(() => undefined);
   mock.financeOpen.mockResolvedValue(undefined);
   mock.scheduler.mockResolvedValue({ stop: mock.schedulerStop });
-  mock.invoke
-    .mockReset()
-    .mockImplementation(async (command: string) =>
-      command === "take_shell_requests" ? [] : undefined,
-    );
+  mock.financeInstalled = true;
+  mock.invoke.mockReset().mockImplementation(async (command: string) => {
+    if (command === "take_shell_requests") return [];
+    if (command === "module_list")
+      return {
+        pending: [],
+        modules: mock.financeInstalled
+          ? [
+              {
+                manifest: {
+                  id: FINANCE_WORKBENCH,
+                  name: "金融指标",
+                  version: "0.1.0",
+                  minHostVersion: "0.1.0",
+                  entry: "index.html",
+                  permissions: ["finance", "engine"],
+                  engine: { path: "engine.exe", sha256: "a".repeat(64), concurrency: 1 },
+                },
+                grants: ["finance", "engine"],
+                url: "http://wbpkg.localhost/finance/route/index.html",
+              },
+            ]
+          : [],
+      };
+    return undefined;
+  });
   mock.listen.mockImplementation(async (_event: string, listener: () => void) => {
     mock.shellListener = listener;
     return () => {
@@ -293,12 +310,12 @@ async function tray(requests: string[]) {
   });
 }
 
-describe("三个内置工作台的 Shell", () => {
+describe("核心工作台与已安装模块的 Shell", () => {
   it("侧栏顺序稳定，AI 和金融按需显示，综合内容一直保留挂载", async () => {
     expect([...container.querySelectorAll("nav button")].map((item) => item.textContent)).toEqual([
       "综合工作台",
-      "金融指标",
       "AI 助手",
+      "金融指标",
     ]);
     const general = container.querySelector('[data-testid="general"]');
     await click("AI 助手");
@@ -312,6 +329,27 @@ describe("三个内置工作台的 Shell", () => {
     expect(container.querySelector('[data-testid="general"]')).toBe(general);
     expect(container.querySelector('[data-testid="ai"]')).toBeNull();
     expect(mock.configureAi).toHaveBeenCalledOnce();
+  });
+  it("金融未安装时不启动金融运行时，AI 入口和失效提醒处理正常", async () => {
+    await act(async () => root.unmount());
+    mock.financeInstalled = false;
+    mock.financeRuntime.mockClear();
+    root = createRoot(container);
+    await act(async () => root.render(<AppShell />));
+    expect(button("金融指标")).toBeUndefined();
+    expect(mock.financeRuntime).not.toHaveBeenCalled();
+    await click("AI 助手");
+    expect(selected()).toBe("AI 助手");
+    mock.resolve.mockResolvedValue({
+      reminderId: "finance-reminder",
+      occurrenceId: "o2",
+      sourceWorkbench: FINANCE_WORKBENCH,
+    });
+    await act(async () => {
+      await mock.noticeAction!({ kind: "open", occurrenceId: "o2" });
+    });
+    expect(mock.financeOpen).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("金融指标模块未安装或已停用");
   });
   it("AI 快捷键先显示主窗，等待综合保存后才切换，并能重复聚焦", async () => {
     await click("金融指标");

@@ -50,14 +50,14 @@ const metadata: IndicatorMeta = {
 
 describe("金融入口的持久游标与更新容错", () => {
   let f: Awaited<ReturnType<typeof fixture>>;
-  let module: typeof import("../../../workbenches/finance/src/api");
+  let module: typeof import("../src/core/finance/finance-host");
   let prices: FinancePoint[];
   let failing: boolean;
   let receive: (event: { payload: string }) => void;
   let stop: () => void;
   const send = (event: object) => receive({ payload: JSON.stringify(event) });
   const engineStarts = () =>
-    bridge.invoke.mock.calls.filter(([name]) => name === "finance_update_start");
+    bridge.invoke.mock.calls.filter(([name]) => name === "module_engine_call");
   const cursor = async () => (await f.data.financeAlertStates.list())[0]?.evaluated_through;
   const appendCrossing = () => prices.push({ trade_date: 20261103, value: 46, extra_json: null });
 
@@ -91,14 +91,14 @@ describe("金融入口的持久游标与更新容错", () => {
     );
     bridge.invoke.mockImplementation(async (command: string) => {
       if (command === "finance_token_status") return { configured: true, tail: "test" };
-      if (command === "finance_update_start") return "started";
+      if (command === "module_engine_call") return { taskId: "synthetic-task" };
       throw new Error("意外原生命令：" + command);
     });
     bridge.listen.mockImplementation(async (_event: string, callback: typeof receive) => {
       receive = callback;
       return () => undefined;
     });
-    module = await import("../../../workbenches/finance/src/api");
+    module = await import("../src/core/finance/finance-host");
   });
 
   afterEach(() => {
@@ -107,29 +107,31 @@ describe("金融入口的持久游标与更新容错", () => {
   });
 
   async function start() {
-    stop = module.financeApi.startRuntime();
+    stop = module.financeHost.startRuntime();
     await vi.waitFor(async () => expect(await cursor()).toBe(20261102));
   }
 
   it("备用源默认开启，保存后实际传给引擎，并跨入口重载保持", async () => {
-    expect(await module.financeApi.loadFallback()).toBe(true);
-    await module.financeApi.saveFallback(false);
+    expect(await module.financeOperations.loadFallback()).toBe(true);
+    await module.financeOperations.saveFallback(false);
     expect(await f.data.settings.getValue("finance.akshare_fallback")).toBe(false);
-    await module.financeApi.requestUpdate();
-    expect(bridge.invoke).toHaveBeenCalledWith("finance_update_start", {
-      mode: "auto",
-      akshareFallback: false,
+    await module.financeWrite(module.financeOperations.requestUpdate);
+    expect(bridge.invoke).toHaveBeenCalledWith("module_engine_call", {
+      id: "com.royce.workbench.finance",
+      method: "start",
+      params: { input: { operation: "update", mode: "auto", akshareFallback: false } },
     });
     send({ type: "engine_exit", code: 0, cancelled: false });
-    await module.financeApi.loadThresholds();
+    await module.financeWrite(module.financeOperations.loadThresholds);
     vi.resetModules();
-    const restarted = await import("../../../workbenches/finance/src/api");
-    expect(await restarted.financeApi.loadFallback()).toBe(false);
-    await restarted.financeApi.saveFallback(true);
-    await restarted.financeApi.requestUpdate();
-    expect(bridge.invoke).toHaveBeenLastCalledWith("finance_update_start", {
-      mode: "auto",
-      akshareFallback: true,
+    const restarted = await import("../src/core/finance/finance-host");
+    expect(await restarted.financeOperations.loadFallback()).toBe(false);
+    await restarted.financeOperations.saveFallback(true);
+    await restarted.financeWrite(restarted.financeOperations.requestUpdate);
+    expect(bridge.invoke).toHaveBeenLastCalledWith("module_engine_call", {
+      id: "com.royce.workbench.finance",
+      method: "start",
+      params: { input: { operation: "update", mode: "auto", akshareFallback: true } },
     });
   });
 
@@ -139,24 +141,24 @@ describe("金融入口的持久游标与更新容错", () => {
     { name: "没有 done", status: undefined, code: 1, cancelled: false },
   ])("越线发布后$name，之后无新日期更新仍恰好一条提醒", async ({ status, code, cancelled }) => {
     await start();
-    await module.financeApi.requestUpdate();
+    await module.financeWrite(module.financeOperations.requestUpdate);
     appendCrossing();
     if (status) send({ type: "done", status, new_dates: {}, through: {} });
     send({ type: "engine_exit", code, cancelled });
     await vi.waitFor(async () => expect(await f.data.reminders.list()).toHaveLength(1));
-    await module.financeApi.requestUpdate();
+    await module.financeWrite(module.financeOperations.requestUpdate);
     send({ type: "done", status: "ok", new_dates: {}, through: { [key]: "20261103" } });
     send({ type: "engine_exit", code: 0, cancelled: false });
-    await module.financeApi.loadThresholds();
+    await module.financeWrite(module.financeOperations.loadThresholds);
     expect(await f.data.reminders.list()).toHaveLength(1);
     expect(await cursor()).toBe(20261103);
     expect(engineStarts()).toHaveLength(2);
   });
 
   it("App 启动直接补评估已发布的日子，不必等待启动更新", async () => {
-    await module.financeApi.loadThresholds();
+    await module.financeWrite(module.financeOperations.loadThresholds);
     appendCrossing();
-    stop = module.financeApi.startRuntime();
+    stop = module.financeHost.startRuntime();
     await vi.waitFor(async () => expect(await f.data.reminders.list()).toHaveLength(1));
     expect(await cursor()).toBe(20261103);
     expect(engineStarts()).toHaveLength(0);
@@ -169,21 +171,19 @@ describe("金融入口的持久游标与更新容错", () => {
     "$name后评估失败，下次无新日期的正常更新仍补出一条提醒",
     async ({ status, code, cancelled }) => {
       await start();
-      await module.financeApi.requestUpdate();
+      await module.financeWrite(module.financeOperations.requestUpdate);
       appendCrossing();
       failing = true;
       if (status) send({ type: "done", status, new_dates: {}, through: {} });
       send({ type: "engine_exit", code, cancelled });
-      await vi.waitFor(() =>
-        expect(module.useFinanceState.getState().error).toBe("模拟评估持续失败"),
-      );
+      await vi.waitFor(() => expect(module.financeState.getState().error).toBe("模拟评估持续失败"));
       expect(await cursor()).toBe(20261102);
       expect(await f.data.reminders.list()).toHaveLength(0);
       failing = false;
-      await module.financeApi.requestUpdate();
+      await module.financeWrite(module.financeOperations.requestUpdate);
       send({ type: "done", status: "ok", new_dates: {}, through: {} });
       send({ type: "engine_exit", code: 0, cancelled: false });
-      await module.financeApi.loadThresholds();
+      await module.financeWrite(module.financeOperations.loadThresholds);
       expect(await f.data.reminders.list()).toHaveLength(1);
       expect(await cursor()).toBe(20261103);
     },
@@ -194,18 +194,18 @@ describe("金融入口的持久游标与更新容错", () => {
     appendCrossing();
     failing = true;
     for (let index = 0; index < 2; index++) {
-      await module.financeApi.requestUpdate();
+      await module.financeWrite(module.financeOperations.requestUpdate);
       expect(engineStarts()).toHaveLength(index + 1);
-      expect(module.useFinanceState.getState().error).toBe("模拟评估持续失败");
+      expect(module.financeState.getState().error).toBe("模拟评估持续失败");
       send({ type: "engine_exit", code: 130, cancelled: true });
     }
     expect(await cursor()).toBe(20261102);
     expect(await f.data.reminders.list()).toHaveLength(0);
     failing = false;
-    await module.financeApi.requestUpdate();
+    await module.financeWrite(module.financeOperations.requestUpdate);
     send({ type: "done", status: "ok", new_dates: {}, through: {} });
     send({ type: "engine_exit", code: 0, cancelled: false });
-    await module.financeApi.loadThresholds();
+    await module.financeWrite(module.financeOperations.loadThresholds);
     expect(engineStarts()).toHaveLength(3);
     expect(await f.data.reminders.list()).toHaveLength(1);
     expect(await cursor()).toBe(20261103);
@@ -216,7 +216,7 @@ describe("金融入口的持久游标与更新容错", () => {
     const [threshold] = await f.data.financeThresholds.list();
     failing = true;
     await expect(
-      module.financeApi.saveThreshold(
+      module.financeOperations.saveThreshold(
         {
           indicator_id: key,
           series_key: key,
@@ -230,7 +230,7 @@ describe("金融入口的持久游标与更新容错", () => {
       ),
     ).resolves.toHaveLength(1);
     expect((await f.data.financeThresholds.get(threshold!.id))?.label).toBe("可保存");
-    expect(module.useFinanceState.getState().error).toBe("模拟评估持续失败");
-    await expect(module.financeApi.deleteThreshold(threshold!.id)).resolves.toEqual([]);
+    expect(module.financeState.getState().error).toBe("模拟评估持续失败");
+    await expect(module.financeOperations.deleteThreshold(threshold!.id)).resolves.toEqual([]);
   });
 });

@@ -78,3 +78,4 @@ __pycache__/
 .uv-cache/
 finance.db.lock
 apps/desktop/src-tauri/binaries/finance-engine-*.exe
+apps/desktop/src-tauri/bundled/finance.wbpkg

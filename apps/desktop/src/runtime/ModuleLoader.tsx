@@ -3,25 +3,31 @@ import { invoke } from "@tauri-apps/api/core";
 import { Button, Dialog } from "@workbench/ui";
 import { MODULE_CHANNEL_PARAM } from "@workbench/sdk";
 import { ModuleBridge, ModuleRateLimiter } from "./bridge";
-import { moduleMethods } from "./methods";
-import { moduleDataLayer, type ModuleRecord } from "./module-api";
+import { moduleMethods, type ModuleSurface } from "./methods";
+import { isModuleRemoving, moduleDataLayer, type ModuleRecord } from "./module-api";
+import { financeMethods, subscribeFinanceModule } from "./finance-methods";
+import { FINANCE_WORKBENCH } from "../core/finance/finance-target";
 
 type Notice = { title: string; body?: string };
 type Approval = { message: string; resolve: (value: boolean) => void };
 const rateLimits = new WeakMap<ModuleRecord, ModuleRateLimiter>();
 
-function frameUrl(url: string, channel: string) {
+function frameUrl(url: string, channel: string, financeSettings: boolean) {
   const source = new URL(url);
-  source.hash = new URLSearchParams({ [MODULE_CHANNEL_PARAM]: channel }).toString();
+  const query = new URLSearchParams({ [MODULE_CHANNEL_PARAM]: channel });
+  if (financeSettings) query.set("view", "settings");
+  source.hash = query.toString();
   return source.href;
 }
 
 export function ModuleLoader({
   record,
   onBadge,
+  financeSettings = false,
 }: {
   record: ModuleRecord;
   onBadge: (id: string, count: number) => void;
+  financeSettings?: boolean;
 }) {
   const element = useRef<HTMLIFrameElement>(null);
   const pendingApproval = useRef<Approval | null>(null);
@@ -37,34 +43,41 @@ export function ModuleLoader({
     const theme = () => (document.documentElement.classList.contains("dark") ? "dark" : "light");
     const limiter = rateLimits.get(record) ?? new ModuleRateLimiter();
     rateLimits.set(record, limiter);
+    const surface: ModuleSurface = {
+      active: () => active && !isModuleRemoving(id),
+      permissions: () => (isModuleRemoving(id) ? [] : record.grants),
+      theme,
+      notify(title, body) {
+        if (!active) return;
+        setNotice(body === undefined ? { title } : { title, body });
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => setNotice(null), 8_000);
+        if (body !== undefined) void invoke("show_main").catch(() => undefined);
+      },
+      confirm(message) {
+        if (!active || pendingApproval.current) return Promise.resolve(false);
+        return new Promise<boolean>((resolve) => {
+          const next = { message, resolve };
+          pendingApproval.current = next;
+          setApproval(next);
+        });
+      },
+      setTitle: setCaption,
+      setBadge: (count) => onBadge(id, count),
+    };
     const bridge = new ModuleBridge({
-      source: () => element.current?.contentWindow ?? null,
+      source: () => (surface.active() ? (element.current?.contentWindow ?? null) : null),
       channel,
-      permissions: () => record.grants,
+      permissions: surface.permissions,
       limiter,
-      methods: moduleMethods(id, {
-        active: () => active,
-        permissions: () => record.grants,
-        theme,
-        notify(title, body) {
-          if (!active) return;
-          setNotice(body === undefined ? { title } : { title, body });
-          window.clearTimeout(timer);
-          timer = window.setTimeout(() => setNotice(null), 8_000);
-          if (body !== undefined) void invoke("show_main").catch(() => undefined);
-        },
-        confirm(message) {
-          if (!active || pendingApproval.current) return Promise.resolve(false);
-          return new Promise<boolean>((resolve) => {
-            const next = { message, resolve };
-            pendingApproval.current = next;
-            setApproval(next);
-          });
-        },
-        setTitle: setCaption,
-        setBadge: (count) => onBadge(id, count),
-      }),
+      methods: { ...moduleMethods(id, surface), ...financeMethods(id, surface) },
     });
+    const stopFinance =
+      id === FINANCE_WORKBENCH && record.grants.includes("finance")
+        ? subscribeFinanceModule((snapshot) => {
+            if (surface.active()) bridge.publish("finance-changed", snapshot);
+          })
+        : undefined;
     const receive = (event: MessageEvent<unknown>) => void bridge.receive(event);
     window.addEventListener("message", receive);
     let previousTheme = theme();
@@ -101,6 +114,7 @@ export function ModuleLoader({
       observer.disconnect();
       bridge.close();
       stopChanges?.();
+      stopFinance?.();
       pendingApproval.current?.resolve(false);
       pendingApproval.current = null;
       onBadge(id, 0);
@@ -137,7 +151,7 @@ export function ModuleLoader({
       <iframe
         ref={element}
         title={name}
-        src={frameUrl(record.url, channel)}
+        src={frameUrl(record.url, channel, id === FINANCE_WORKBENCH && financeSettings)}
         sandbox="allow-scripts allow-forms"
         referrerPolicy="no-referrer"
         className="w-full min-h-0 flex-1 border-0"

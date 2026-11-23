@@ -30,23 +30,21 @@ import {
 } from "@workbench/general";
 import { aiRegistry } from "../core/ai/registry";
 import { cn, Button, Dialog } from "@workbench/ui";
-import { FinanceBackfillDialog, FinanceSettings, financeApi } from "@workbench/finance";
+import { FINANCE_WORKBENCH } from "../core/finance/finance-target";
+import { financeHost } from "../core/finance/finance-host";
 import { AiSettings, configureAiHostServices } from "@workbench/ai";
 import { ModuleLoader } from "../runtime/ModuleLoader";
 import { ModuleManager } from "../runtime/ModuleManager";
 import { moduleApi } from "../runtime/module-api";
 import { useModules } from "../runtime/use-modules";
+import { FinanceStartupPrompt } from "./FinanceStartupPrompt";
 
-const FinanceWorkbench = lazy(() =>
-  import("@workbench/finance/page").then((module) => ({ default: module.FinanceWorkbench })),
-);
 const AiWorkbench = lazy(() =>
   import("@workbench/ai/page").then((module) => ({ default: module.AiWorkbench })),
 );
 if (!aiRegistry.get("reminders_create")) aiRegistry.register(generalAiActions);
 const builtinWorkbenches = [
   { id: "general", name: "综合工作台", icon: "workspace", component: GeneralWorkbench },
-  { id: "finance", name: "金融指标", icon: "workspace", component: FinanceWorkbench },
   { id: "ai", name: "AI 助手", icon: "workspace", component: AiWorkbench },
 ] as const;
 type BuiltinWorkbench = (typeof builtinWorkbenches)[number]["id"];
@@ -129,6 +127,9 @@ export function AppShell() {
   const [generalHidden, setGeneralHidden] = useState(false);
   const [moduleBadges, setModuleBadges] = useState<Record<string, number>>({});
   const catalog = useModules();
+  const financeRecord = catalog.modules.find(({ manifest }) => manifest.id === FINANCE_WORKBENCH);
+  const financeEnabled = Boolean(financeRecord?.grants.includes("finance"));
+  const financeEngineEnabled = Boolean(financeRecord?.grants.includes("engine"));
   const activeModule = catalog.modules.find(
     ({ manifest }) => activeWorkbench === `module:${manifest.id}`,
   );
@@ -142,11 +143,14 @@ export function AppShell() {
     });
   }, []);
   const [financeNavigation, setFinanceNavigation] = useState(0);
+  const [financeSettings, setFinanceSettings] = useState(false);
   const [aiFocusVersion, setAiFocusVersion] = useState(0);
   const aiShortcut = useSyncExternalStore(subscribeAiShortcutStatus, getAiShortcutStatus);
   const [enabling, setEnabling] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
-  useEffect(() => financeApi.startRuntime(), []);
+  useEffect(() => {
+    if (financeEnabled) return financeHost.startRuntime(financeEngineEnabled);
+  }, [financeEnabled, financeEngineEnabled]);
   useEffect(() => {
     if (!isTauri()) return;
     let current = true;
@@ -313,6 +317,14 @@ export function AppShell() {
       })
       .catch(reportNavigation);
   }
+  async function openModule(id: string, settings = false) {
+    await workspace.flush();
+    if (id === FINANCE_WORKBENCH) {
+      setFinanceSettings(settings);
+      setFinanceNavigation((value) => value + 1);
+    }
+    setActiveWorkbench(`module:${id}`);
+  }
   async function openWorkbench(id: BuiltinWorkbench) {
     if (id === "general") return openGeneral("today");
     await workspace.flush();
@@ -371,12 +383,7 @@ export function AppShell() {
                 activeWorkbench === `module:${manifest.id}` && "selected",
               )}
               disabled={!state.ready || state.busy}
-              onClick={() =>
-                void workspace
-                  .flush()
-                  .then(() => setActiveWorkbench(`module:${manifest.id}`))
-                  .catch(reportNavigation)
-              }
+              onClick={() => void openModule(manifest.id).catch(reportNavigation)}
             >
               <NavIcon type="workspace" />
               <span className="min-w-0 truncate">{manifest.name}</span>
@@ -451,11 +458,13 @@ export function AppShell() {
             settingsExtra={
               <>
                 <AiSettings />
-                <FinanceSettings />
                 {isTauri() && (
                   <ModuleManager
                     catalog={catalog}
                     generalHidden={generalHidden}
+                    onFinanceSettings={() =>
+                      void openModule(FINANCE_WORKBENCH, true).catch(reportNavigation)
+                    }
                     onGeneralVisibility={async (hidden) => {
                       await moduleApi.setGeneralHidden(hidden);
                       setGeneralHidden(hidden);
@@ -466,20 +475,6 @@ export function AppShell() {
             }
           />
         </div>
-        {activeWorkbench === "finance" && (
-          <Suspense
-            fallback={
-              <p className="p-6" role="status">
-                正在打开金融指标…
-              </p>
-            }
-          >
-            <FinanceWorkbench
-              key={financeNavigation}
-              openSettings={() => navigateGeneral("settings")}
-            />
-          </Suspense>
-        )}
         {activeWorkbench === "ai" && (
           <Suspense
             fallback={
@@ -492,11 +487,17 @@ export function AppShell() {
               openSettings={openAiSettings}
               manualCreate={manualCreate}
               focusVersion={aiFocusVersion}
+              financeAvailable={financeEnabled}
             />
           </Suspense>
         )}
         {activeModule && (
-          <ModuleLoader key={activeModule.url} record={activeModule} onBadge={setModuleBadge} />
+          <ModuleLoader
+            key={`${activeModule.url}:${activeModule === financeRecord ? financeNavigation : 0}`}
+            record={activeModule}
+            onBadge={setModuleBadge}
+            financeSettings={activeModule === financeRecord && financeSettings}
+          />
         )}
       </main>
       <ReminderNotices
@@ -504,15 +505,20 @@ export function AppShell() {
           handleNotification(action, {
             showGeneral: () => setActiveWorkbench("general"),
             async openFinance(reminderId) {
-              await workspace.flush();
-              await financeApi.openReminder(reminderId);
-              setFinanceNavigation((value) => value + 1);
-              setActiveWorkbench("finance");
+              if (!financeEnabled) {
+                await openGeneral("settings");
+                reportNavigation(new Error("金融指标模块未安装或已停用。"));
+                return;
+              }
+              await financeHost.openReminder(reminderId);
+              await openModule(FINANCE_WORKBENCH);
             },
           })
         }
       />
-      <FinanceBackfillDialog />
+      {financeEnabled && financeEngineEnabled && activeModule !== financeRecord && (
+        <FinanceStartupPrompt />
+      )}
       <Dialog
         open={state.autostartOffer}
         onOpenChange={(open) => {

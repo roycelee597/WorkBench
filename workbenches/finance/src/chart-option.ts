@@ -6,7 +6,7 @@ import type {
   LegendComponentOption,
   TooltipComponentOption,
 } from "echarts/components";
-import type { FinancePoint } from "../../../apps/desktop/src/core/finance/finance-reader";
+import type { FinancePoint } from "@workbench/sdk";
 import type { MonthlyPoint } from "./monthly";
 import { dayTime, displayValue, rangeStart } from "./series-view";
 import type { FinanceRange } from "./preferences";

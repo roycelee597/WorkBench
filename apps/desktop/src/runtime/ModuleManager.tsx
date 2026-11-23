@@ -4,6 +4,7 @@ import type { ModuleManifest } from "@workbench/manifest";
 import type { ModulePermission } from "./bridge";
 import { moduleApi, type ModuleRecord } from "./module-api";
 import { describeModuleError, type useModules } from "./use-modules";
+import { FINANCE_WORKBENCH } from "../core/finance/finance-target";
 
 const permissionNames: Record<string, string> = {
   storage: "读取和写入模块自己的存储",
@@ -16,6 +17,7 @@ const permissionNames: Record<string, string> = {
   "memos:write": "创建或修改本模块的备忘录",
   "dialog.open": "通过文件选择框取得路径授权",
   engine: "启动和管理本地引擎",
+  finance: "读取金融指标并管理金融设置、阈值和凭据",
   "engine.exec_paths": "经确认后把已选路径作为可执行路径传给引擎",
 };
 
@@ -29,6 +31,14 @@ type Approval =
   | { kind: "revoke"; record: ModuleRecord; permission: ModulePermission };
 
 function cleanupItems(manifest: ModuleManifest) {
+  if (manifest.id === FINANCE_WORKBENCH)
+    return [
+      "金融模块文件、本地引擎及运行日志",
+      "金融行情缓存和数据库",
+      "金融阈值、提醒评估状态与金融提醒内容",
+      "金融模块的设置与图表偏好",
+      "Windows 凭据管理器中的 Tushare token",
+    ];
   const cleanup = manifest.uninstall;
   return [
     "模块文件、本地引擎、缓存和模块 storage",
@@ -38,9 +48,9 @@ function cleanupItems(manifest: ModuleManifest) {
     ...(cleanup?.credentials?.length
       ? [`声明凭据服务：${cleanup.credentials.map(({ service }) => service).join("、")}`]
       : []),
-    ...(cleanup?.tables?.length ? [`私有数据表：${cleanup.tables.join("、")}`] : []),
+    ...(cleanup?.tables?.length ? [`声明的私有数据表：${cleanup.tables.join("、")}`] : []),
     ...(cleanup?.settingsPrefixes?.length
-      ? [`设置项前缀：${cleanup.settingsPrefixes.join("、")}`]
+      ? [`声明的设置项前缀：${cleanup.settingsPrefixes.join("、")}`]
       : []),
   ];
 }
@@ -49,10 +59,12 @@ export function ModuleManager({
   catalog,
   generalHidden,
   onGeneralVisibility,
+  onFinanceSettings,
 }: {
   catalog: ReturnType<typeof useModules>;
   generalHidden: boolean;
   onGeneralVisibility: (hidden: boolean) => Promise<void>;
+  onFinanceSettings?: () => void;
 }) {
   const [approval, setApproval] = useState<Approval | null>(null);
   const [busy, setBusy] = useState(false);
@@ -155,6 +167,32 @@ export function ModuleManager({
         </Button>
       </div>
       {catalog.loading && <p role="status">正在读取模块…</p>}
+      {!catalog.loading &&
+        !catalog.error &&
+        !catalog.pending.includes(FINANCE_WORKBENCH) &&
+        !catalog.modules.some(({ manifest }) => manifest.id === FINANCE_WORKBENCH) && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border py-3">
+            <div>
+              <h3 className="font-medium">金融指标</h3>
+              <p>官方模块 · 安装包内置资源</p>
+              {catalog.officialErrors[FINANCE_WORKBENCH] && (
+                <p role="alert">{catalog.officialErrors[FINANCE_WORKBENCH]}</p>
+              )}
+            </div>
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  await moduleApi.reinstallFinance();
+                  await catalog.refresh();
+                })
+              }
+            >
+              安装官方金融模块
+            </Button>
+          </div>
+        )}
       {!catalog.loading && !catalog.error && !catalog.modules.length && <p>还未安装模块。</p>}
       {catalog.modules.map((record) => (
         <article key={record.manifest.id} className="space-y-2 border-t border-border py-3">
@@ -166,14 +204,21 @@ export function ModuleManager({
               </p>
               {record.manifest.engine && <p className="font-semibold">完全信任 · 本地引擎</p>}
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => setApproval({ kind: "uninstall", record })}
-            >
-              卸载
-            </Button>
+            <div className="flex gap-2">
+              {record.manifest.id === FINANCE_WORKBENCH && onFinanceSettings && (
+                <Button size="sm" variant="outline" disabled={busy} onClick={onFinanceSettings}>
+                  金融设置
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setApproval({ kind: "uninstall", record })}
+              >
+                卸载
+              </Button>
+            </div>
           </div>
           {record.manifest.permissions.length > 0 && (
             <ul className="space-y-1">

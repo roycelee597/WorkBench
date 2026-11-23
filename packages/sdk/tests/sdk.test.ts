@@ -90,6 +90,58 @@ describe("模块 SDK", () => {
     }
   });
 
+  it.each([
+    ["TOKEN_INVALID", "TOKEN_INVALID"],
+    ["A".repeat(40), "A".repeat(40)],
+    ["A".repeat(41), "INTERNAL_ERROR"],
+    ["invalid-code", "INTERNAL_ERROR"],
+  ])("校验引擎错误码 %s，同时保留消息", async (code, expected) => {
+    const { wb, sent } = transport();
+    const pending = wb.finance.verify();
+    const { message, port } = sent[0]!;
+    if (message.kind !== "request") throw new Error("需要请求消息");
+    expect(message.method).toBe("finance.verify");
+    port.postMessage({
+      protocol: MODULE_PROTOCOL,
+      kind: "response",
+      id: message.id,
+      ok: false,
+      error: { code, message: "Tushare token 无效" },
+    });
+    await expect(pending).rejects.toMatchObject({
+      code: expected,
+      message: "Tushare token 无效",
+    });
+    wb.dispose();
+    port.close();
+  });
+
+  it("通过同一隔离事件端口传递金融进度和具体错误", async () => {
+    const { wb, sent } = transport();
+    const received = new Promise((resolve) => wb.finance.onChange(resolve));
+    const { port } = sent[0]!;
+    const snapshot = {
+      token: { configured: true, tail: "test" },
+      confirmBackfill: false,
+      error: null,
+      update: {
+        status: "running",
+        progress: { current: "20261113", done: 1, total: 2, eta_seconds: 10 },
+        diagnostic: { code: "PERMISSION_DENIED", message: "Tushare 积分不足" },
+        revision: 1,
+      },
+    };
+    port.postMessage({
+      protocol: MODULE_PROTOCOL,
+      kind: "event",
+      event: "finance-changed",
+      value: snapshot,
+    });
+    await expect(received).resolves.toEqual(snapshot);
+    wb.dispose();
+    port.close();
+  });
+
   it("用同一事件端口订阅并能单独取消", async () => {
     const { wb, sent } = transport();
     const receiveTheme = vi.fn();

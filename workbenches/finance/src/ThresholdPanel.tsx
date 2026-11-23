@@ -1,10 +1,10 @@
 import { Button, Dialog } from "@workbench/ui";
 import { useState, type FormEvent } from "react";
-import type { IndicatorMeta } from "../../../apps/desktop/src/core/finance/finance-reader";
 import type {
-  FinanceThreshold,
-  ThresholdInput,
-} from "../../../apps/desktop/src/core/repositories/finance-thresholds";
+  FinanceIndicator as IndicatorMeta,
+  FinanceModuleThreshold as FinanceThreshold,
+  FinanceThresholdInput as ThresholdInput,
+} from "@workbench/sdk";
 import { metricLabels, windowLabels } from "./series-view";
 
 const directionLabels = { above: "高于", below: "低于" };

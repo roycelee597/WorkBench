@@ -42,6 +42,10 @@ const engineStart = z.strictObject({
   paths: z.array(id).max(16).optional(),
   execPaths: z.array(id).max(16).optional(),
 });
+const engineError = z.object({
+  code: z.string().regex(/^[A-Z_]{1,40}$/u),
+  message: z.string().max(512),
+});
 
 function memoView({ id, title, content, pinned, tags }: Memo) {
   return { id, title, content, pinned, tags };
@@ -88,8 +92,15 @@ export function moduleMethods(moduleId: string, ui: ModuleSurface) {
         throw new BridgeError("PERMISSION_DENIED", "该模块未获此权限，或权限已撤销");
       return run();
     });
-  const engine = (operation: string, params: unknown = {}) =>
-    invoke("module_engine_call", { id: moduleId, method: operation, params });
+  const engine = async (operation: string, params: unknown = {}) => {
+    try {
+      return await invoke("module_engine_call", { id: moduleId, method: operation, params });
+    } catch (error) {
+      const diagnostic = engineError.safeParse(error);
+      if (diagnostic.success) throw new BridgeError(diagnostic.data.code, diagnostic.data.message);
+      throw error;
+    }
+  };
   const zone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
   const db = moduleDataLayer;
   return {
@@ -292,7 +303,7 @@ export function moduleMethods(moduleId: string, ui: ModuleSurface) {
       (params) => {
         if (params.execPaths?.length && !ui.permissions().includes("engine.exec_paths"))
           throw new BridgeError("PERMISSION_DENIED", "该模块未获执行路径权限");
-        return engine("start", params);
+        return write("engine", () => engine("start", params));
       },
       "engine",
     ),
@@ -302,7 +313,12 @@ export function moduleMethods(moduleId: string, ui: ModuleSurface) {
       (params) => engine("progress", params),
       "engine",
     ),
-    "engine.cancel": method(engineTask, "write", (params) => engine("cancel", params), "engine"),
+    "engine.cancel": method(
+      engineTask,
+      "write",
+      (params) => write("engine", () => engine("cancel", params)),
+      "engine",
+    ),
     "engine.logs": method(engineTask, "engine", (params) => engine("logs", params), "engine"),
     "engine.probe": method(empty, "engine", () => engine("probe"), "engine"),
   };

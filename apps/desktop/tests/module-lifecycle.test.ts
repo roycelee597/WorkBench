@@ -29,18 +29,26 @@ it("重启时继续清理，仓库清理成功后才移除待清理记录", asyn
   expect(mocks.invoke).toHaveBeenCalledWith("module_finish_uninstall", { id });
 });
 
-it("卸载排在模块已接受的事务之后，核心工作台没有卸载调用", async () => {
-  const id = "com.example.timer";
+it("卸载等待正在执行的事务，拒绝排队和后续写入", async () => {
+  const id = "com.example.queued-timer";
   let release!: () => void;
   const pending = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const write = sequenceModuleWrite(id, () => pending);
+  const started = vi.fn(() => pending);
+  const write = sequenceModuleWrite(id, started);
+  await vi.waitFor(() => expect(started).toHaveBeenCalled());
+  const queued = vi.fn(async () => undefined);
+  const waiting = expect(sequenceModuleWrite(id, queued)).rejects.toThrow("正在卸载");
   const cleanup = moduleApi.uninstall(id);
+  await expect(sequenceModuleWrite(id, queued)).rejects.toThrow("正在卸载");
   expect(mocks.invoke).not.toHaveBeenCalled();
   release();
   await write;
+  await waiting;
   await cleanup;
+  expect(queued).not.toHaveBeenCalled();
+  await expect(sequenceModuleWrite(id, queued)).rejects.toThrow("正在卸载");
   expect(mocks.invoke.mock.calls).toEqual([
     ["uninstall_module", { id }],
     ["module_finish_uninstall", { id }],

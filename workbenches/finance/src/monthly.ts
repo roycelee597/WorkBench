@@ -1,4 +1,4 @@
-import type { FinancePoint } from "../../../apps/desktop/src/core/finance/finance-reader";
+import type { FinancePoint } from "@workbench/sdk";
 import { isAkshare } from "./data-source";
 
 export type MonthlyPoint = FinancePoint & { month: number; monthToDate: boolean };

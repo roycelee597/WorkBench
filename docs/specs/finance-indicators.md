@@ -254,8 +254,8 @@ Tushare 各接口入库时间不同（官方文档写法略有出入，取较晚
   │  └─ planner.py           # 算出「缺哪些天、先做什么」
   └─ tests/
   ```
-- 打包：用 **PyInstaller 单文件模式**生成 `finance-engine-x86_64-pc-windows-msvc.exe`，放在 `apps/desktop/src-tauri/binaries/`（不进 Git，由脚本和 CI 生成），通过 `tauri.conf.json` 的 `bundle.externalBin` 随安装包分发。单文件模式每次启动要解压，大约慢 2–5 秒，对每天一次的更新来说可以接受。
-- 开发模式：`pnpm finance:engine` 脚本先打包一次 sidecar。也可以设置环境变量 `WORKBENCH_FINANCE_ENGINE_DEV=1`，让 Rust 改用 `uv run python -m finance_engine` 启动，省得每次改代码都重新打包。
+- 打包：用 **PyInstaller 单文件模式**生成 Windows 引擎，由 `pnpm finance:package` 打入 `official/finance.wbpkg`。包内包含前端和引擎，manifest 记录引擎的 SHA-256 与并发上限。安装包将模块作为本地资源附带。
+- 开发模式：`tauri dev` 启动前生成同一官方模块包，经通用引擎启动流程验证安装及执行。单测可通过 `uv run --locked pytest` 独立运行 Python 用例。
 
 ### 8.2 App 和 Python 怎么通信
 
@@ -327,6 +327,8 @@ finance-engine --version
 ## 9. App 端集成
 
 ### 9.1 Rust（尽量少，只做系统能力）
+
+> P0-2 以 [模块运行时规格](module-runtime.md) 为安装与启动接口依据。旧版 `finance_update_start`、`finance_update_cancel` 和 `finance_verify` 已迁移至通用 `engine.*`。以下表格保留 F2 的接口记录。新版通过 `pnpm finance:package` 打包固定 SHA-256 的引擎，凭据使用原来的 Windows 服务名，宿主仍收取同样的更新事件。
 
 新文件 `src-tauri/src/finance.rs`，所有命令只允许 `main` 窗口调用（和 `execute_batch` 一样检查 `window.label()`）：
 
