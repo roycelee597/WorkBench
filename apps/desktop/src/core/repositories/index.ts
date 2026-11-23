@@ -11,6 +11,7 @@ import { ReminderOccurrencesRepository } from "./reminder-occurrences";
 import { FinanceThresholdsRepository } from "./finance-thresholds";
 import { FinanceAlertStatesRepository } from "./finance-alert-states";
 import { AiMessagesRepository } from "./ai-messages";
+import { ModuleCleanupRepository } from "./module-cleanup";
 
 export async function createDataLayer(
   db: SqlDatabase,
@@ -21,7 +22,15 @@ export async function createDataLayer(
     select: (query, values) => db.select(query, values),
     batch: async (statements) => {
       const result = await db.batch(statements);
-      changes.emit();
+      const tables = new Set<string>();
+      for (const [index, statement] of statements.entries()) {
+        if (!result[index]) continue;
+        const table = /^(?:INSERT INTO|UPDATE|DELETE FROM)\s+"?([a-z_]+)"?\b/i.exec(
+          statement.query,
+        )?.[1];
+        if (table) tables.add(table.toLowerCase());
+      }
+      changes.emit(tables);
       return result;
     },
   };
@@ -46,6 +55,7 @@ export async function createDataLayer(
     financeAlertStates: new FinanceAlertStatesRepository(database, context),
     // 对话记录变动不刷新日程页面，也不唤醒提醒调度。
     aiMessages: new AiMessagesRepository(db, context),
+    moduleCleanup: new ModuleCleanupRepository(database, context),
     settings,
     trash: new TrashCleaner(database, context, settings),
   };

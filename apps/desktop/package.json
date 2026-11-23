@@ -18,6 +18,8 @@
     "@tauri-apps/plugin-sql": "^2.6.0",
     "@workbench/finance": "workspace:*",
     "@workbench/general": "workspace:*",
+    "@workbench/manifest": "workspace:*",
+    "@workbench/sdk": "workspace:*",
     "@workbench/ui": "workspace:*",
     "dayjs": "^1.11.23",
     "react": "^19.1.0",

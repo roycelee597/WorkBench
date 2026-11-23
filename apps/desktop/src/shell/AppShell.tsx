@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { isTauri, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -32,6 +32,10 @@ import { aiRegistry } from "../core/ai/registry";
 import { cn, Button, Dialog } from "@workbench/ui";
 import { FinanceBackfillDialog, FinanceSettings, financeApi } from "@workbench/finance";
 import { AiSettings, configureAiHostServices } from "@workbench/ai";
+import { ModuleLoader } from "../runtime/ModuleLoader";
+import { ModuleManager } from "../runtime/ModuleManager";
+import { moduleApi } from "../runtime/module-api";
+import { useModules } from "../runtime/use-modules";
 
 const FinanceWorkbench = lazy(() =>
   import("@workbench/finance/page").then((module) => ({ default: module.FinanceWorkbench })),
@@ -46,6 +50,7 @@ const builtinWorkbenches = [
   { id: "ai", name: "AI 助手", icon: "workspace", component: AiWorkbench },
 ] as const;
 type BuiltinWorkbench = (typeof builtinWorkbenches)[number]["id"];
+type WorkbenchSelection = BuiltinWorkbench | `module:${string}`;
 
 async function waitForWorkspace() {
   if (!workspace.useWorkspace.getState().busy) return;
@@ -120,13 +125,44 @@ function NavIcon({ type }: { type: "workspace" | "settings" | "trash" }) {
 }
 export function AppShell() {
   const state = workspace.useWorkspace();
-  const [activeWorkbench, setActiveWorkbench] = useState<BuiltinWorkbench>("general");
+  const [activeWorkbench, setActiveWorkbench] = useState<WorkbenchSelection>("general");
+  const [generalHidden, setGeneralHidden] = useState(false);
+  const [moduleBadges, setModuleBadges] = useState<Record<string, number>>({});
+  const catalog = useModules();
+  const activeModule = catalog.modules.find(
+    ({ manifest }) => activeWorkbench === `module:${manifest.id}`,
+  );
+  const setModuleBadge = useCallback((id: string, count: number) => {
+    setModuleBadges((current) => {
+      if (count > 0) return { ...current, [id]: count };
+      if (!Object.hasOwn(current, id)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
   const [financeNavigation, setFinanceNavigation] = useState(0);
   const [aiFocusVersion, setAiFocusVersion] = useState(0);
   const aiShortcut = useSyncExternalStore(subscribeAiShortcutStatus, getAiShortcutStatus);
   const [enabling, setEnabling] = useState(false);
   const [offerError, setOfferError] = useState<string | null>(null);
   useEffect(() => financeApi.startRuntime(), []);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let current = true;
+    void moduleApi
+      .isGeneralHidden()
+      .then(async (hidden) => {
+        if (!current) return;
+        setGeneralHidden(hidden);
+        if (hidden && workspace.useWorkspace.getState().page === "today")
+          await workspace.useWorkspace.getState().navigate("settings");
+      })
+      .catch((error: unknown) => console.error("读取综合工作台可见性失败", error));
+    return () => {
+      current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!isTauri()) return;
     configureHostServices({
@@ -303,24 +339,50 @@ export function AppShell() {
           </div>
         </div>
         <p className="sidebar-section-title">工作空间</p>
-        <nav>
-          {builtinWorkbenches.map((workbench) => (
+        <nav className="min-h-0 overflow-y-auto">
+          {builtinWorkbenches
+            .filter(({ id }) => id !== "general" || !generalHidden)
+            .map((workbench) => (
+              <button
+                key={workbench.id}
+                type="button"
+                className={cn(
+                  "sidebar-link",
+                  activeWorkbench === workbench.id &&
+                    (workbench.id !== "general" ||
+                      (state.page !== "settings" && state.page !== "trash")) &&
+                    "selected",
+                )}
+                disabled={!state.ready || state.busy}
+                onClick={() => void openWorkbench(workbench.id).catch(reportNavigation)}
+              >
+                <NavIcon type={workbench.icon} />
+                <span>{workbench.name}</span>
+                <span className="sidebar-active-dot" />
+              </button>
+            ))}
+          {catalog.modules.map(({ manifest }) => (
             <button
-              key={workbench.id}
+              key={manifest.id}
               type="button"
+              title={manifest.name}
               className={cn(
                 "sidebar-link",
-                activeWorkbench === workbench.id &&
-                  (workbench.id !== "general" ||
-                    (state.page !== "settings" && state.page !== "trash")) &&
-                  "selected",
+                activeWorkbench === `module:${manifest.id}` && "selected",
               )}
               disabled={!state.ready || state.busy}
-              onClick={() => void openWorkbench(workbench.id).catch(reportNavigation)}
+              onClick={() =>
+                void workspace
+                  .flush()
+                  .then(() => setActiveWorkbench(`module:${manifest.id}`))
+                  .catch(reportNavigation)
+              }
             >
-              <NavIcon type={workbench.icon} />
-              <span>{workbench.name}</span>
-              <span className="sidebar-active-dot" />
+              <NavIcon type="workspace" />
+              <span className="min-w-0 truncate">{manifest.name}</span>
+              {(moduleBadges[manifest.id] ?? 0) > 0 && (
+                <span className="sidebar-count">{moduleBadges[manifest.id]}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -390,6 +452,16 @@ export function AppShell() {
               <>
                 <AiSettings />
                 <FinanceSettings />
+                {isTauri() && (
+                  <ModuleManager
+                    catalog={catalog}
+                    generalHidden={generalHidden}
+                    onGeneralVisibility={async (hidden) => {
+                      await moduleApi.setGeneralHidden(hidden);
+                      setGeneralHidden(hidden);
+                    }}
+                  />
+                )}
               </>
             }
           />
@@ -422,6 +494,9 @@ export function AppShell() {
               focusVersion={aiFocusVersion}
             />
           </Suspense>
+        )}
+        {activeModule && (
+          <ModuleLoader key={activeModule.url} record={activeModule} onBadge={setModuleBadge} />
         )}
       </main>
       <ReminderNotices
