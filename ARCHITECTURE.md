@@ -7,7 +7,7 @@
 
 ## 0. 一句话结论
 
-**用 Tauri 2 + React + TypeScript 做一个"主程序 + 插件"的工作台软件：数据本地优先存在 SQLite，每个分工作台都是放在沙盒 iframe 里的网页小模块，只能通过 `@workbench/sdk` 按权限访问主程序。先做 Windows，后面再加同步、线上市场、macOS 和手机端。项目开源，托管在 GitHub，用 MIT 协议。**
+**用 Tauri 2 + React + TypeScript 构建 WorkBench。主程序内置综合工作台和 AI 工作台，数据本地优先保存在 SQLite。可安装模块的前端运行在沙盒 iframe 中，通过 `@workbench/sdk` 按权限访问主程序。先做 Windows，后面再加同步、线上市场、macOS 和手机端。项目开源，托管在 GitHub，用 MIT 协议。**
 
 ---
 
@@ -16,8 +16,8 @@
 | 项目 | 内容 |
 |---|---|
 | 产品 | WorkBench：模块化工作台软件 |
-| 默认自带 | **综合工作台**：备忘录、日程安排、提醒事项 |
-| 扩展方式 | **分工作台**，从本地 .wbpkg 安装；用户可以上传自己写的或 AI 写的分工作台 |
+| 核心工作台 | **综合工作台**（备忘录、日程、提醒）与 **AI 工作台**（AI 助手），入口可隐藏或显示，不可卸载 |
+| 可卸载模块 | 金融、后续 CS2 和第三方模块，通过本地 `.wbpkg` 安装或随安装包附带 |
 | 平台顺序 | Windows → macOS → iOS / Android |
 | 开发方式 | 主要由 Codex（Windows 桌面版）写代码，Royce 审核、运行、提交 |
 | 预算 | 学生预算，优先免费方案 |
@@ -72,8 +72,8 @@ flowchart TB
     subgraph UI["① 界面层 React（apps/desktop/src）"]
         Shell["主框架 Shell<br/>侧边栏 / 工作台切换 / 设置"]
         Market["工作台管理 & 市场页"]
-        General["内置综合工作台<br/>备忘录 / 日程 / 提醒"]
-        AI["内置 AI 助手<br/>对话 / 确认卡片 / 设置"]
+        General["核心综合工作台<br/>备忘录 / 日程 / 提醒"]
+        AI["核心 AI 工作台<br/>对话 / 确认卡片 / 设置"]
     end
 
     subgraph Runtime["② 工作台运行时（apps/desktop/src/runtime）"]
@@ -82,9 +82,11 @@ flowchart TB
         Perm["权限管理<br/>安装时授权、可撤销"]
     end
 
-    subgraph WBs["③ 工作台（沙盒 iframe）"]
-        Sample["示例分工作台"]
-        Third["第三方/AI 写的分工作台"]
+    subgraph WBs["③ 可卸载模块（沙盒 iframe）"]
+        Financial["官方金融模块"]
+        CS2["CS2 模块（后续）"]
+        Sample["番茄钟样例"]
+        Third["第三方模块"]
     end
 
     subgraph Core["④ 核心服务层 TS（apps/desktop/src/core）"]
@@ -122,10 +124,10 @@ flowchart TB
 ```
 
 **关键原则**
-- 工作台**永远拿不到** Tauri API，也不能直接碰数据库；一切都经过 Bridge，Bridge 每次都检查权限。
+- 可安装模块的前端经 SDK 和 Bridge 按权限访问宿主。模块 iframe 无权直接调用 Tauri API 或访问数据库。
 - **综合工作台的所有数据调用集中到 `workbenches/general/src/api.ts`**，经 core 仓库访问，作为核心保留此入口。金融模块界面的数据调用集中到 `workbenches/finance/src/api.ts`，通过 SDK 访问宿主。系统窗口的关闭前保存由主程序 Shell 协调。
 - 业务逻辑尽量写在 TypeScript（④），Rust（⑤）只做系统能力。
-- AI 助手以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。对应 P0 迁移前采用内置工作台例外，数据调用集中到 `workbenches/ai/src/api.ts`，对话记录经 core 仓库保存。操作登记、工具编排和短引用由 `apps/desktop/src/core/ai/` 提供，日程、提醒和备忘录经综合工作台 `workbenches/general/src/api.ts` 操作，写入须先确认。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中。用量和限额由 Rust 分别保存到应用数据目录的 `ai-usage.json` 和 `ai-config.json`。P0-3 再迁移到 SDK。
+- AI 助手是核心工作台，以 `docs/specs/ai-assistant.md` 为具体依据，与本架构冲突时以本架构为准。数据调用集中到 `workbenches/ai/src/api.ts`，对话记录经 core 仓库保存。操作登记、工具编排和短引用由 `apps/desktop/src/core/ai/` 提供，日程、提醒和备忘录经综合工作台 `workbenches/general/src/api.ts` 操作，写入须先确认。DeepSeek 网络调用仅在 Rust，密钥保存在按 identifier 隔离的系统凭据中。用量和限额由 Rust 分别保存到应用数据目录的 `ai-usage.json` 和 `ai-config.json`。
 - 金融指标工作台以 `docs/specs/finance-indicators.md` 为指标依据，以 `docs/specs/module-runtime.md` 为安装与执行依据。官方 `.wbpkg` 随安装包分发，`engines/finance/` 的 Python 引擎由通用引擎运行时启动。宿主通过 `core/finance/finance-reader.ts` 统一只读访问 Python 独占写入的 `finance.db`，阈值、提醒和设置经 `core/repositories/` 访问 `workbench.db`。升级原位接管旧缓存和凭据。卸载时仅宿主可清除金融专用阈值、游标和设置行，共享提醒按同步规则保留最小墓碑。
 
 ---
@@ -163,7 +165,9 @@ workbench/
 │  ├─ manifest/              # manifest 的类型定义和校验（zod）
 │  └─ create-workbench/      # （后期）脚手架：一条命令生成分工作台模板
 ├─ workbenches/
-│  ├─ general/               # 综合工作台（内置）
+│  ├─ general/               # 核心综合工作台
+│  ├─ ai/                    # 核心 AI 工作台
+│  ├─ finance/               # 官方可卸载金融模块
 │  └─ sample-pomodoro/       # 示例分工作台：番茄钟
 └─ docs/                     # 插件开发指南、设计稿等
 ```
@@ -286,7 +290,9 @@ CREATE TABLE settings (
 
 ### 6.1 本地包与生命周期
 
-以 [模块运行时规格](docs/specs/module-runtime.md) 为准。综合工作台是核心，只能隐藏或显示。其余工作台按可卸载模块设计。V1 从本地 `.wbpkg` ZIP 安装，校验后原子落位，可带静态前端与明确标为完全信任的本地引擎。卸载清除模块资源和数据，失败可在重启时继续。
+以 [模块运行时规格](docs/specs/module-runtime.md) 为准。综合工作台和 AI 工作台是核心，入口可隐藏或重新显示，不可卸载。金融、后续 CS2 和第三方工作台属于可卸载模块。AI 引用的模块未安装或已卸载时，引用处显示「未安装」。
+
+V1 从本地 `.wbpkg` ZIP 安装模块，校验后原子落位，可带静态前端与明确标为完全信任的本地引擎。卸载清除模块资源和数据，失败可在重启时继续。
 
 ### 6.2 SDK API
 
@@ -415,7 +421,7 @@ git push -u origin feat/memo-editor   # 然后去 GitHub 开 PR
 |---|---|---|---|
 | **Phase 0** 环境 | Windows 开发环境 + 仓库骨架 + GitHub | `pnpm tauri dev` 能打开空窗口；代码已推到 GitHub 且 CI 绿 | 1–3 天 |
 | **Phase 1** 主框架 + 综合工作台 | 主界面、SQLite、三件套、托盘、提醒 | 能增删改查备忘录/日程/提醒，关窗进托盘，到点弹通知 | 2–4 周 |
-| **模块化 P0** | P0-1 运行时、P0-2 金融迁移、P0-3 AI 迁移 | 本地安装、撤销和彻底卸载；官方模块升级自动接入并保留数据和 token | 分 PR |
+| **模块化 P0** | P0-1 模块运行时、P0-2 金融迁移 | 支持本地安装、权限撤销和彻底卸载；升级接入官方金融模块并保留数据和 token | 分 PR |
 | **Phase 3** 打磨 + 打包 | 设置、主题、备份导出、安装包、自动更新 | GitHub Release 发布 v0.3.0 安装包，别人能下载安装 | 1–2 周 |
 | **Phase 4** 同步 | 账号 + Supabase 同步 | 两台 Windows 电脑数据互通 | 3–4 周 |
 | **Phase 5** 线上市场 | registry → 市场页 → 签名/审核 | 在 App 内浏览、安装、更新社区工作台 | 3–4 周 |
@@ -482,7 +488,7 @@ gh repo create workbench --public --source . --remote origin --push
 
 ### 模块化 P0
 
-P0-1 实现模块运行时和番茄钟样例。P0-2、P0-3 分别迁移金融和 AI，沿用现有数据及凭据。金融与 AI 的官方包随安装包附带，卸载后可从设置重新安装。完整范围及迁移接口见 [模块运行时规格](docs/specs/module-runtime.md)。
+P0-1 实现模块运行时和番茄钟样例。P0-2 将金融迁移为可卸载的官方模块，沿用现有数据及凭据。官方金融包随安装包附带，卸载后可从设置重新安装。综合工作台和 AI 工作台均作为核心功能维护。完整范围及迁移接口见 [模块运行时规格](docs/specs/module-runtime.md)。
 
 ### Phase 3：打磨 + Windows 安装包
 **Codex 提示词（Phase 3）**
