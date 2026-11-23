@@ -2,10 +2,10 @@ import { Button } from "@workbench/ui";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type {
   FinancePoint,
-  IndicatorMeta,
-} from "../../../apps/desktop/src/core/finance/finance-reader";
-import { outsideThreshold } from "../../../apps/desktop/src/core/finance/threshold-evaluator";
-import type { FinanceThreshold } from "../../../apps/desktop/src/core/repositories/finance-thresholds";
+  FinanceIndicator as IndicatorMeta,
+  FinanceModuleThreshold as FinanceThreshold,
+} from "@workbench/sdk";
+import { outsideFinanceThreshold as outsideThreshold } from "@workbench/sdk";
 import type { financeApi } from "./api";
 import { buildChartOption } from "./chart-option";
 import { Chart } from "./components/Chart";
@@ -331,7 +331,7 @@ export function FinanceDashboard({ api, revision, busy, configured, update, open
   const delta = value != null && prior != null ? value - prior : null;
 
   return (
-    <div className="grid min-w-0 items-start gap-4 lg:grid-cols-[210px_minmax(0,1fr)]">
+    <div className="grid min-w-0 items-start gap-4 min-[900px]:grid-cols-[210px_minmax(0,1fr)]">
       <aside className="rounded-xl border border-border bg-card p-3" aria-label="指标目录">
         <h2 className="px-2 pb-2 font-semibold">指标目录</h2>
         {!groups.length && (

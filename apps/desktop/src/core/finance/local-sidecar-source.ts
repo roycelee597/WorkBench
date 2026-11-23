@@ -1,11 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  parseEngineEvent,
-  type EngineEvent,
-  type FinanceDone,
-  type FinanceStage,
-} from "./engine-events";
+import type { FinanceUpdateMode, FinanceUpdateSnapshot } from "@workbench/sdk";
+import { parseEngineEvent, type EngineEvent, type FinanceDone } from "./engine-events";
 import {
   FinanceReader,
   type DateRange,
@@ -14,8 +10,9 @@ import {
   type IndicatorMeta,
   type SeriesData,
 } from "./finance-reader";
+import { FINANCE_WORKBENCH } from "./finance-target";
 
-export type UpdateMode = "auto" | "full-rebuild";
+export type UpdateMode = FinanceUpdateMode;
 export interface FinanceDataSource {
   listIndicators(): Promise<IndicatorMeta[]>;
   getSeries(keys: string[], range?: DateRange): Promise<SeriesData[]>;
@@ -26,12 +23,8 @@ export interface FinanceDataSource {
   onEvent(callback: (event: EngineEvent) => void): () => void;
 }
 
-type Snapshot = {
-  status: "idle" | "running" | "complete" | "partial" | "failed" | "already_running";
-  stage?: FinanceStage | undefined;
+type Snapshot = Omit<FinanceUpdateSnapshot, "progress"> & {
   progress?: Extract<EngineEvent, { type: "progress" }> | undefined;
-  diagnostic?: { code: string; message: string } | undefined;
-  revision: number;
 };
 
 type Bridge = {
@@ -39,8 +32,17 @@ type Bridge = {
   subscribe(callback: (payload: unknown) => void): Promise<() => void>;
 };
 
+export function callFinanceEngine<T>(method: string, params: object): Promise<T> {
+  return invoke<T>("module_engine_call", { id: FINANCE_WORKBENCH, method, params });
+}
+
 const bridge: Bridge = {
-  start: (mode, akshareFallback) => invoke("finance_update_start", { mode, akshareFallback }),
+  async start(mode, akshareFallback) {
+    const task = await callFinanceEngine<{ taskId: string; alreadyRunning?: boolean }>("start", {
+      input: { operation: "update", mode, akshareFallback },
+    });
+    return task.alreadyRunning ? "already_running" : "started";
+  },
   subscribe: (callback) => listen("finance://event", (event) => callback(event.payload)),
 };
 
@@ -81,6 +83,19 @@ export class LocalSidecarSource implements FinanceDataSource {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);
   };
+
+  reset() {
+    this.reader.resume();
+    this.mode = "auto";
+    this.outcome = undefined;
+    this.set({
+      status: "idle",
+      stage: undefined,
+      progress: undefined,
+      diagnostic: undefined,
+      revision: this.snapshot.revision + 1,
+    });
+  }
 
   onEvent(callback: (event: EngineEvent) => void): () => void {
     this.events.add(callback);

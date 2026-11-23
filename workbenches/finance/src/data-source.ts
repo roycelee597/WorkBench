@@ -1,4 +1,4 @@
-import type { FinancePoint } from "../../../apps/desktop/src/core/finance/finance-reader";
+import type { FinancePoint } from "@workbench/sdk";
 
 export function isAkshare(point: FinancePoint | undefined): boolean {
   if (!point || point.value === null || !point.extra_json) return false;

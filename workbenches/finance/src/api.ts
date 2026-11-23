@@ -1,176 +1,120 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { create } from "zustand";
 import {
-  financeDiagnostic,
-  LocalSidecarSource,
-  type UpdateMode,
-} from "../../../apps/desktop/src/core/finance/local-sidecar-source";
-import type { FinanceStatus } from "../../../apps/desktop/src/core/finance/finance-reader";
-import { scheduleFinanceStartupUpdate } from "../../../apps/desktop/src/core/finance/startup-update";
-import { FinanceAlerts } from "../../../apps/desktop/src/core/finance/finance-alerts";
-import type { ThresholdInput } from "../../../apps/desktop/src/core/repositories/finance-thresholds";
-import {
-  preferenceKeys,
-  preferencesForTarget,
-  readPreferences,
+  createWorkbenchSdk,
+  type FinanceCacheStatus,
+  type FinanceModuleSnapshot,
   type FinancePreferences,
-} from "./preferences";
+  type FinancePreferenceWrite,
+  type FinanceUpdateMode,
+} from "@workbench/sdk";
 
-type TokenStatus = { configured: boolean; tail: string | null };
-const source = new LocalSidecarSource();
-const confirmedKey = "finance.initial_backfill_confirmed";
-const fallbackKey = "finance.akshare_fallback";
-let preferenceWrites = Promise.resolve();
-
-async function financeData() {
-  const { initializeDataLayer } =
-    await import("../../../apps/desktop/src/core/repositories/initialize");
-  return initializeDataLayer();
-}
-const financeSettings = async () => (await financeData()).settings;
-const alerts = new FinanceAlerts(source, financeData, Date.now, reportError);
-
-export const useFinanceState = create<{
-  token: TokenStatus | null;
-  confirmBackfill: boolean;
-  error: string | null;
-}>(() => ({ token: null, confirmBackfill: false, error: null }));
-
-async function refreshToken() {
-  const token = await invoke<TokenStatus>("finance_token_status");
-  useFinanceState.setState({ token });
-  return token;
-}
+// 测试连接由宿主限制为约 60 秒，SDK 给它留出返回超时消息的时间。
+const wb = createWorkbenchSdk({ timeoutMs: 70_000 });
+export const useFinanceState = create<FinanceModuleSnapshot>(() => ({
+  token: null,
+  confirmBackfill: false,
+  error: null,
+  update: { status: "idle", revision: 0 },
+}));
 
 function reportError(error: unknown) {
-  useFinanceState.setState({ error: financeDiagnostic(error).message });
+  useFinanceState.setState({ error: displayFinanceError(error) });
 }
 
-async function requestUpdate(mode: UpdateMode = "auto"): Promise<void> {
-  useFinanceState.setState({ error: null });
-  try {
-    const token = useFinanceState.getState().token ?? (await refreshToken());
-    if (!token.configured) return;
-    const settings = await financeSettings();
-    await preferenceWrites;
-    const confirmed = (await settings.getValue(confirmedKey)) === true;
-    if (mode === "auto" && !confirmed) {
-      useFinanceState.setState({ confirmBackfill: true });
-      return;
-    }
-    if (mode === "full-rebuild" && !confirmed) await settings.setValue(confirmedKey, true);
-    // 先给现有缓存建立静默基线，避免升级后的首次增量吞掉真正的新越线。
-    await alerts.evaluate(mode).catch(reportError);
-    await source.requestUpdate(mode, (await settings.getValue(fallbackKey)) !== false);
-  } catch (error) {
-    reportError(error);
-  }
+export function connectFinanceModule() {
+  let active = true;
+  let receivedUpdate = false;
+  const unsubscribe = wb.finance.onChange((snapshot) => {
+    receivedUpdate = true;
+    useFinanceState.setState(snapshot);
+  });
+  const applyTheme = (theme: string) =>
+    document.documentElement.classList.toggle("dark", theme === "dark");
+  let receivedTheme = false;
+  const stopTheme = wb.app.onThemeChange((theme) => {
+    receivedTheme = true;
+    applyTheme(theme);
+  });
+  void wb.app
+    .getTheme()
+    .then((theme) => {
+      if (active && !receivedTheme) applyTheme(theme);
+    })
+    .catch(() => undefined);
+  void wb.finance.snapshot().then(
+    (snapshot) => {
+      if (active && !receivedUpdate) useFinanceState.setState(snapshot);
+    },
+    (error: unknown) => {
+      if (active) reportError(error);
+    },
+  );
+  return () => {
+    active = false;
+    unsubscribe();
+    stopTheme();
+    wb.dispose();
+  };
 }
 
 export const financeApi = {
-  async loadFallback(): Promise<boolean> {
-    await preferenceWrites;
-    return (await (await financeSettings()).getValue(fallbackKey)) !== false;
+  listIndicators: wb.finance.listIndicators,
+  getRecent: wb.finance.getRecent,
+  getSeries: wb.finance.getSeries,
+  getOverlay: wb.finance.getOverlay,
+  loadThresholds: wb.finance.loadThresholds,
+  saveThreshold: wb.finance.saveThreshold,
+  deleteThreshold: wb.finance.deleteThreshold,
+  loadPreferences: wb.finance.loadPreferences,
+  async savePreference<K extends keyof FinancePreferences>(field: K, value: FinancePreferences[K]) {
+    await wb.finance.savePreference({ field, value } as FinancePreferenceWrite);
   },
-  saveFallback(enabled: boolean): Promise<void> {
-    const saved = preferenceWrites.then(async () =>
-      (await financeSettings()).setValue(fallbackKey, enabled),
-    );
-    preferenceWrites = saved.catch(() => undefined);
-    return saved;
+  loadFallback: wb.finance.loadFallback,
+  async saveFallback(enabled: boolean) {
+    await wb.finance.saveFallback(enabled);
   },
-  listIndicators: () => source.listIndicators(),
-  getRecent: (keys: string[]) => source.getRecent(keys),
-  getSeries: (keys: string[]) => source.getSeries(keys),
-  getOverlay: () => source.getOverlay(),
-  loadThresholds: () => alerts.list(),
-  saveThreshold: (fields: ThresholdInput, id?: string) => alerts.save(fields, id),
-  deleteThreshold: (id: string) => alerts.delete(id),
-  async openReminder(reminderId: string) {
-    const target = await (await financeData()).financeAlertStates.targetForReminder(reminderId);
-    if (!target) return;
-    const preferences = preferencesForTarget(target, await source.listIndicators());
-    for (const [field, value] of Object.entries(preferences))
-      await financeApi.savePreference(field as keyof FinancePreferences, value);
+  async requestUpdate(mode: FinanceUpdateMode = "auto") {
+    await wb.finance.requestUpdate(mode).catch(reportError);
   },
-  async loadPreferences(): Promise<FinancePreferences> {
-    await preferenceWrites;
-    const settings = await financeSettings();
-    const entries = await Promise.all(
-      Object.entries(preferenceKeys).map(async ([field, key]) => [
-        field,
-        await settings.getValue(key),
-      ]),
-    );
-    return readPreferences(Object.fromEntries(entries));
+  async cancelUpdate() {
+    await wb.finance.cancelUpdate();
   },
-  savePreference<K extends keyof FinancePreferences>(
-    field: K,
-    value: FinancePreferences[K],
-  ): Promise<void> {
-    const saved = preferenceWrites.then(async () =>
-      (await financeSettings()).setValue(preferenceKeys[field], value),
-    );
-    preferenceWrites = saved.catch(() => undefined);
-    return saved;
+  async saveToken(token: string) {
+    await wb.finance.saveToken(token);
   },
-  startRuntime(): () => void {
-    if (!isTauri()) return () => undefined;
-    const unsubscribe = source.onExit((mode) => {
-      void alerts.evaluate(mode).catch(reportError);
-    });
-    void alerts.evaluate().catch(reportError);
-    void refreshToken().catch(reportError);
-    void source.connect().catch(reportError);
-    const stop = scheduleFinanceStartupUpdate(() => void requestUpdate());
-    return () => {
-      stop();
-      unsubscribe();
-    };
+  async clearToken() {
+    await wb.finance.clearToken();
   },
-  requestUpdate,
-  async saveToken(value: string): Promise<void> {
-    const token = await invoke<TokenStatus>("finance_token_set", { token: value });
-    useFinanceState.setState({ token });
-    await requestUpdate();
+  async verify() {
+    await wb.finance.verify();
   },
-  verify: () => invoke<void>("finance_verify"),
-  async clearToken(): Promise<void> {
-    await invoke("finance_token_clear");
-    useFinanceState.setState({ token: { configured: false, tail: null }, confirmBackfill: false });
+  async openDirectory() {
+    await wb.finance.openDirectory();
   },
-  cancelUpdate: () => invoke<void>("finance_update_cancel"),
-  openDirectory: () => invoke<void>("finance_open_directory"),
-  dismissBackfill: () => useFinanceState.setState({ confirmBackfill: false }),
-  async approveBackfill(): Promise<void> {
-    try {
-      const settings = await financeSettings();
-      await settings.setValue(confirmedKey, true);
-      useFinanceState.setState({ confirmBackfill: false });
-      await requestUpdate();
-    } catch (error) {
-      reportError(error);
-    }
+  dismissBackfill() {
+    void wb.finance.dismissBackfill().catch(reportError);
+  },
+  async approveBackfill() {
+    await wb.finance.approveBackfill().catch(reportError);
   },
 };
 
 export function useFinanceUpdate() {
-  return useSyncExternalStore(source.subscribe, source.getSnapshot);
+  return useFinanceState((state) => state.update);
 }
 
 export function useFinanceCache() {
   const revision = useFinanceUpdate().revision;
-  const [view, setView] = useState<{ status?: FinanceStatus; error?: string }>({});
+  const [view, setView] = useState<{ status?: FinanceCacheStatus; error?: string }>({});
   useEffect(() => {
-    if (!isTauri()) return;
     let live = true;
-    void source.getStatus().then(
+    void wb.finance.cacheStatus().then(
       (status) => {
         if (live) setView({ status });
       },
       (error: unknown) => {
-        if (live) setView({ error: financeDiagnostic(error).message });
+        if (live) setView({ error: displayFinanceError(error) });
       },
     );
     return () => {
@@ -181,5 +125,5 @@ export function useFinanceCache() {
 }
 
 export function displayFinanceError(error: unknown): string {
-  return financeDiagnostic(error).message;
+  return error instanceof Error ? error.message : "金融操作未完成，请重试";
 }

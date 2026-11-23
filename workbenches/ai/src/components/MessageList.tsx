@@ -11,6 +11,7 @@ export function MessageList({
   openSettings,
   manualCreate,
   openPlatform,
+  financeAvailable,
   store,
 }: {
   messages: AiMessage[];
@@ -18,6 +19,7 @@ export function MessageList({
   openSettings: () => void;
   manualCreate: () => void;
   openPlatform: () => void;
+  financeAvailable: boolean;
   store: AiStore;
 }) {
   const bottom = useRef<HTMLDivElement>(null);
@@ -55,11 +57,16 @@ export function MessageList({
                   : {})}
               />
             ) : event.type === "text" ? (
-              <ReferencedText text={event.text} store={store} />
+              <ReferencedText text={event.text} store={store} financeAvailable={financeAvailable} />
             ) : event.type === "warning" ? (
               <p className="ai-message-note">{event.message}</p>
             ) : event.type === "results" ? (
-              <ReadResults items={event.items} empty={event.empty} store={store} />
+              <ReadResults
+                items={event.items}
+                empty={event.empty}
+                store={store}
+                financeAvailable={financeAvailable}
+              />
             ) : event.prepared.type === "proposal" || event.prepared.type === "choose" ? (
               <CandidateCard id={message.id} store={store} />
             ) : (

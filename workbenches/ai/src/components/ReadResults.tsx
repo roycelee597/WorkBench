@@ -13,13 +13,18 @@ export function ReferenceButton({
   item,
   store,
   compact = false,
+  financeAvailable,
 }: {
   item: ResultItem;
   store: AiStore;
   compact?: boolean;
+  financeAvailable: boolean;
 }) {
   const error = store((state) => state.navigationErrors[item.id]);
   const opening = store((state) => state.openingReference === item.id);
+  const label = compact ? `[${item.id}]` : `${item.when} · ${item.title}（${item.id}）`;
+  if (!financeAvailable && item.badges.includes("finance"))
+    return <span className="text-muted-foreground">{label}（金融模块未安装或已停用）</span>;
   return (
     <>
       <button
@@ -28,7 +33,7 @@ export function ReferenceButton({
         disabled={opening}
         onClick={() => void store.getState().openReference(item.id)}
       >
-        {compact ? `[${item.id}]` : `${item.when} · ${item.title}（${item.id}）`}
+        {label}
       </button>
       {error && (
         <span className="ml-2 text-sm text-destructive" role="alert">
@@ -43,10 +48,12 @@ export function ReadResults({
   items,
   empty,
   store,
+  financeAvailable,
 }: {
   items: ResultItem[];
   empty: string;
   store: AiStore;
+  financeAvailable: boolean;
 }) {
   const enabled = store((state) => state.readEnabled);
   const known = store((state) => state.refItems);
@@ -58,7 +65,7 @@ export function ReadResults({
       <ul className="space-y-2">
         {items.map((item) => (
           <li key={item.id}>
-            <ReferenceButton item={item} store={store} />
+            <ReferenceButton item={item} store={store} financeAvailable={financeAvailable} />
             {item.badges.map((badge) => (
               <span key={badge} className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs">
                 {badges[badge]}
@@ -72,7 +79,15 @@ export function ReadResults({
 }
 
 /** 只把本地已发出且已知的短引用变成按钮，不解析 HTML、Markdown 或任意链接。 */
-export function ReferencedText({ text, store }: { text: string; store: AiStore }) {
+export function ReferencedText({
+  text,
+  store,
+  financeAvailable,
+}: {
+  text: string;
+  store: AiStore;
+  financeAvailable: boolean;
+}) {
   const items = store((state) => state.refItems);
   const enabled = store((state) => state.readEnabled);
   return (
@@ -81,7 +96,13 @@ export function ReferencedText({ text, store }: { text: string; store: AiStore }
         .split(/(\[[er][1-9]\d*\])/)
         .map((part, index) =>
           enabled && index % 2 === 1 && items[part.slice(1, -1)] ? (
-            <ReferenceButton key={index} item={items[part.slice(1, -1)]!} store={store} compact />
+            <ReferenceButton
+              key={index}
+              item={items[part.slice(1, -1)]!}
+              store={store}
+              compact
+              financeAvailable={financeAvailable}
+            />
           ) : (
             <Fragment key={index}>{part}</Fragment>
           ),

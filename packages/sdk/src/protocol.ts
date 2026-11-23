@@ -1,3 +1,18 @@
+import type {
+  FinanceCacheStatus,
+  FinanceIndicator,
+  FinanceModuleSnapshot,
+  FinanceModuleThreshold,
+  FinancePoint,
+  FinancePreferences,
+  FinanceSeries,
+  FinanceThresholdInput,
+  FinanceUpdateMode,
+} from "./finance-protocol";
+
+export type * from "./finance-protocol";
+export { outsideFinanceThreshold } from "./finance-protocol";
+
 export const MODULE_PROTOCOL = "workbench-module-v1";
 export const MODULE_CHANNEL_PARAM = "wb-channel";
 
@@ -8,6 +23,7 @@ export type ModuleTheme = "light" | "dark";
 export interface WorkbenchEventMap {
   "theme-changed": ModuleTheme;
   "data-changed": { domain: "memos" | "reminders" | "calendar" };
+  "finance-changed": FinanceModuleSnapshot;
 }
 
 export const MODULE_ERROR_CODES = [
@@ -24,7 +40,7 @@ export const MODULE_ERROR_CODES = [
 ] as const;
 export type ModuleErrorCode = (typeof MODULE_ERROR_CODES)[number];
 export interface ModuleError {
-  code: ModuleErrorCode;
+  code: string;
   message: string;
 }
 
@@ -100,9 +116,9 @@ export interface EngineTask {
 }
 export interface EngineProgress {
   status: "running" | "succeeded" | "failed" | "cancelled";
-  progress?: { done: number | null; total: number | null };
+  progress?: { done: number | null; total: number | null; current: string | number | null };
   result?: JsonValue;
-  error?: string;
+  error?: { code: string; message: string };
 }
 export interface EngineProbe {
   available: boolean;
@@ -115,6 +131,9 @@ export interface ModulePathHandle {
 
 type Rpc<Params, Result> = { params: Params; result: Result };
 type Empty = Record<string, never>;
+export type FinancePreferenceWrite = {
+  [Key in keyof FinancePreferences]: { field: Key; value: FinancePreferences[Key] };
+}[keyof FinancePreferences];
 
 export interface WorkbenchMethods {
   "app.getInfo": Rpc<Empty, { name: string; version: string }>;
@@ -146,4 +165,28 @@ export interface WorkbenchMethods {
   "engine.cancel": Rpc<EngineTask, null>;
   "engine.logs": Rpc<EngineTask, string[]>;
   "engine.probe": Rpc<Empty, EngineProbe>;
+  "finance.snapshot": Rpc<Empty, FinanceModuleSnapshot>;
+  "finance.cacheStatus": Rpc<Empty, FinanceCacheStatus>;
+  "finance.listIndicators": Rpc<Empty, FinanceIndicator[]>;
+  "finance.getRecent": Rpc<{ keys: string[] }, FinanceSeries[]>;
+  "finance.getSeries": Rpc<{ keys: string[] }, FinanceSeries[]>;
+  "finance.getOverlay": Rpc<Empty, FinancePoint[]>;
+  "finance.loadThresholds": Rpc<Empty, FinanceModuleThreshold[]>;
+  "finance.saveThreshold": Rpc<
+    { fields: FinanceThresholdInput; id?: string },
+    FinanceModuleThreshold[]
+  >;
+  "finance.deleteThreshold": Rpc<{ id: string }, FinanceModuleThreshold[]>;
+  "finance.loadPreferences": Rpc<Empty, FinancePreferences>;
+  "finance.savePreference": Rpc<FinancePreferenceWrite, null>;
+  "finance.loadFallback": Rpc<Empty, boolean>;
+  "finance.saveFallback": Rpc<{ enabled: boolean }, null>;
+  "finance.requestUpdate": Rpc<{ mode: FinanceUpdateMode }, null>;
+  "finance.cancelUpdate": Rpc<Empty, null>;
+  "finance.saveToken": Rpc<{ token: string }, null>;
+  "finance.clearToken": Rpc<Empty, null>;
+  "finance.verify": Rpc<Empty, null>;
+  "finance.openDirectory": Rpc<Empty, null>;
+  "finance.dismissBackfill": Rpc<Empty, null>;
+  "finance.approveBackfill": Rpc<Empty, null>;
 }

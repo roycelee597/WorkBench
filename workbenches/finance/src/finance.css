@@ -1,0 +1,87 @@
+@import "tailwindcss";
+@source "../../../packages/ui/src";
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-border: var(--border);
+  --color-ring: var(--primary);
+  --color-destructive: var(--destructive);
+}
+
+:root {
+  color-scheme: light;
+  font:
+    14px "Segoe UI",
+    "Microsoft YaHei UI",
+    sans-serif;
+  --background: #f9faf7;
+  --foreground: #26332e;
+  --card: #fff;
+  --muted: #f2f4ef;
+  --muted-foreground: #69746b;
+  --primary: #2f7359;
+  --primary-foreground: #fff;
+  --accent: #eaf2e9;
+  --border: #e4e9e1;
+  --destructive: #b6453e;
+}
+
+:root.dark {
+  color-scheme: dark;
+  --background: #191e1c;
+  --foreground: #e2e8e2;
+  --card: #202723;
+  --muted: #2a322d;
+  --muted-foreground: #a6b3a8;
+  --primary: #8ac5a4;
+  --primary-foreground: #14291e;
+  --accent: #2b3d31;
+  --border: #354039;
+  --destructive: #e98f83;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.settings-section {
+  padding: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+}
+
+.settings-section h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.event-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.event-field input {
+  width: 100%;
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--background);
+}

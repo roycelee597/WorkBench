@@ -10,6 +10,7 @@ import { llmRequestSchema } from "../src/core/ai/llm-client";
 import { parseLocalTime } from "../src/core/ai/local-time";
 import { fixture, type MemoryDatabase } from "./memory-database";
 import { MockLlmClient } from "./mock-llm-client";
+import { FINANCE_WORKBENCH } from "../src/core/finance/finance-target";
 
 const databases: MemoryDatabase[] = [];
 const now = Date.parse("2026-11-18T04:00:00Z");
@@ -44,6 +45,19 @@ async function setup() {
   }
   return { ...value, api, registry, refs, ctx, read };
 }
+
+it("金融卸载后，AI 仍可查询综合提醒且不会登记金融动作", async () => {
+  const { data, read, registry } = await setup();
+  await data.reminders.create({ title: "用户待办" });
+  await data.reminders.create({ title: "金融越线", source_workbench: FINANCE_WORKBENCH });
+  await data.moduleCleanup.purgeSharedData(FINANCE_WORKBENCH);
+  const result = await read("reminders_list", { status: "all" });
+  expect(JSON.stringify(result)).toContain("用户待办");
+  expect(JSON.stringify(result)).not.toContain("金融越线");
+  expect(registry.groups().map(({ workbenchId }) => workbenchId)).toEqual([
+    "com.royce.workbench.general",
+  ]);
+});
 
 describe("AI 只读日程操作", () => {
   it("严格登记两个read工具，拒绝非法日期和额外字段，不提供执行方法", async () => {

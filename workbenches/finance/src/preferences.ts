@@ -1,25 +1,9 @@
-import type { FinanceTarget } from "../../../apps/desktop/src/core/finance/finance-target";
-import type {
-  IndicatorMeta,
-  ValuationMetric,
-  ValuationView,
-  ValuationWindow,
-} from "../../../apps/desktop/src/core/finance/finance-reader";
+import type { FinanceIndicator as IndicatorMeta, FinancePreferences } from "@workbench/sdk";
 
-export type FinanceRange = "1y" | "3y" | "5y" | "all";
-export type FinancePreferences = {
-  range: FinanceRange;
-  overlay: boolean;
-  top5View: "daily" | "monthly";
-  valuationWindow: ValuationWindow;
-  valuationMetric: ValuationMetric;
-  valuationView: ValuationView;
-  valuationIndex: string;
-  indicator: string;
-};
+export type { FinancePreferences, FinanceRange } from "@workbench/sdk";
 
 export function preferencesForTarget(
-  target: FinanceTarget,
+  target: { indicatorId: string; seriesKey: string },
   indicators: IndicatorMeta[],
 ): Partial<FinancePreferences> {
   const indicator = indicators.find(({ id }) => id === target.indicatorId);

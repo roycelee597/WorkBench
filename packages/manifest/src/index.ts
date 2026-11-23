@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const CORE_MODULE_ID = "com.royce.workbench.general";
+export const FINANCE_MODULE_ID = "com.royce.workbench.finance";
 export const MODULE_PERMISSIONS = [
   "storage",
   "notifications",
@@ -13,6 +14,7 @@ export const MODULE_PERMISSIONS = [
   "dialog.open",
   "engine",
   "engine.exec_paths",
+  "finance",
 ] as const;
 export const modulePermissionSchema = z.enum(MODULE_PERMISSIONS);
 export type ModulePermission = z.infer<typeof modulePermissionSchema>;
@@ -123,6 +125,12 @@ export const manifestSchema = z
   })
   .superRefine((manifest, context) => {
     const permissions = new Set(manifest.permissions);
+    if (permissions.has("finance") && manifest.id !== FINANCE_MODULE_ID)
+      context.addIssue({
+        code: "custom",
+        path: ["permissions"],
+        message: "finance 权限仅供官方金融模块使用",
+      });
     if (permissions.has("engine") && !manifest.engine)
       context.addIssue({
         code: "custom",

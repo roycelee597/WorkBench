@@ -19,11 +19,13 @@ export function AiWorkbench({
   openSettings,
   manualCreate,
   focusVersion,
+  financeAvailable = true,
   store = useAiStore,
 }: {
   openSettings: () => void;
   manualCreate: () => void;
   focusVersion: number;
+  financeAvailable?: boolean;
   store?: AiStore;
 }) {
   const state = store();
@@ -117,6 +119,7 @@ export function AiWorkbench({
             store={store}
             messages={state.messages}
             activity={state.activity}
+            financeAvailable={financeAvailable}
             openSettings={openSettings}
             manualCreate={manualCreate}
             openPlatform={openPlatform}

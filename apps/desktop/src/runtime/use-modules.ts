@@ -5,6 +5,7 @@ import { moduleApi, type ModuleRecord } from "./module-api";
 export function useModules() {
   const [modules, setModules] = useState<ModuleRecord[]>([]);
   const [pending, setPending] = useState<string[]>([]);
+  const [officialErrors, setOfficialErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
@@ -12,6 +13,7 @@ export function useModules() {
       const next = await moduleApi.readList();
       setModules(next.modules);
       setPending(next.pending);
+      setOfficialErrors(next.officialErrors ?? {});
       setError(null);
     } catch (error) {
       setError(describeModuleError(error, "未能读取已安装模块"));
@@ -29,6 +31,7 @@ export function useModules() {
         if (!current) return;
         setModules(result.modules);
         setPending(result.pending);
+        setOfficialErrors(result.officialErrors ?? {});
         setLoading(false);
       },
       (error: unknown) => {
@@ -41,7 +44,7 @@ export function useModules() {
       current = false;
     };
   }, []);
-  return { modules, pending, refresh, loading, error };
+  return { modules, pending, officialErrors, refresh, loading, error };
 }
 
 export function describeModuleError(error: unknown, fallback: string) {

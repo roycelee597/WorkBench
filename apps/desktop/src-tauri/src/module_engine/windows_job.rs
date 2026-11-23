@@ -1,5 +1,5 @@
 use std::{
-    ffi::{OsStr, c_void},
+    ffi::{OsStr, OsString, c_void},
     fs::{File, OpenOptions},
     io,
     mem::{size_of, zeroed},
@@ -9,9 +9,10 @@ use std::{
     },
     path::Path,
     ptr::{null, null_mut},
+    time::Duration,
 };
 use windows_sys::Win32::{
-    Foundation::{HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0},
+    Foundation::{HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Security::SECURITY_ATTRIBUTES,
     System::{
         JobObjects::{
@@ -116,14 +117,21 @@ pub struct Process {
     pub process: OwnedHandle,
     pub stdin: File,
     pub stdout: File,
+    pub stderr: Option<File>,
 }
 
-fn environment() -> Vec<u16> {
+fn environment(extra: &[(&str, OsString)]) -> Vec<u16> {
     // 只传系统目录。宿主凭据和开发环境变量不会继承。
     let mut block = Vec::new();
     if let Some(root) = std::env::var_os("SystemRoot") {
         block.extend("SystemRoot=".encode_utf16());
         block.extend(wide(&root));
+    }
+    // 调用方只能提供宿主生成的环境项。TEMP 和 TMP 都指向本次任务专属目录。
+    for (key, value) in extra {
+        block.extend(key.encode_utf16());
+        block.push(b'=' as u16);
+        block.extend(wide(value));
     }
     if block.is_empty() {
         block.push(0);
@@ -132,21 +140,61 @@ fn environment() -> Vec<u16> {
     block
 }
 
-pub fn launch(executable: &Path, directory: &Path) -> io::Result<Process> {
+fn append_argument(command: &mut Vec<u16>, value: &OsStr) {
+    // Python / MSVC 都按 Windows argv 规则处理引号及其前面的反斜线。
+    const QUOTE: u16 = b'"' as u16;
+    const BACKSLASH: u16 = b'\\' as u16;
+    command.push(QUOTE);
+    let mut backslashes = 0;
+    for unit in value.encode_wide() {
+        if unit == BACKSLASH {
+            backslashes += 1;
+            continue;
+        }
+        let count = if unit == QUOTE {
+            backslashes * 2 + 1
+        } else {
+            backslashes
+        };
+        command.extend(std::iter::repeat_n(BACKSLASH, count));
+        backslashes = 0;
+        command.push(unit);
+    }
+    command.extend(std::iter::repeat_n(BACKSLASH, backslashes * 2));
+    command.push(QUOTE);
+}
+
+pub fn launch(
+    executable: &Path,
+    directory: &Path,
+    arguments: &[OsString],
+    extra_env: &[(&str, OsString)],
+    capture_stderr: bool,
+) -> io::Result<Process> {
     let app = wide(executable.as_os_str());
-    let mut argv: Vec<_> = [b'"' as u16]
-        .into_iter()
-        .chain(executable.as_os_str().encode_wide())
-        .chain([b'"' as u16, 0])
-        .collect();
+    let mut argv = Vec::new();
+    append_argument(&mut argv, executable.as_os_str());
+    for arg in arguments {
+        argv.push(b' ' as u16);
+        append_argument(&mut argv, arg);
+    }
+    argv.push(0);
     let cwd = wide(directory.as_os_str());
-    let env = environment();
+    let env = environment(extra_env);
     let (in_child, in_parent) = pipe()?;
     let (out_parent, out_child) = pipe()?;
-    let err = OpenOptions::new().write(true).open("NUL")?;
+    let (err_parent, err_child) = if capture_stderr {
+        let (read, write) = pipe()?;
+        (Some(read), write)
+    } else {
+        (None, OpenOptions::new().write(true).open("NUL")?.into())
+    };
     // 只允许子进程继承明确列出的三个句柄，同步在创建时放入 Job。
     unsafe {
-        for handle in [&in_parent, &out_parent] {
+        for handle in [&in_parent, &out_parent]
+            .into_iter()
+            .chain(err_parent.as_ref())
+        {
             last_error_if(SetHandleInformation(
                 handle.as_raw_handle(),
                 HANDLE_FLAG_INHERIT,
@@ -154,7 +202,7 @@ pub fn launch(executable: &Path, directory: &Path) -> io::Result<Process> {
             ))?;
         }
         last_error_if(SetHandleInformation(
-            err.as_raw_handle(),
+            err_child.as_raw_handle(),
             HANDLE_FLAG_INHERIT,
             HANDLE_FLAG_INHERIT,
         ))?;
@@ -174,7 +222,7 @@ pub fn launch(executable: &Path, directory: &Path) -> io::Result<Process> {
         let child_handles = [
             in_child.as_raw_handle(),
             out_child.as_raw_handle(),
-            err.as_raw_handle(),
+            err_child.as_raw_handle(),
         ];
         let job_handles = [job.as_raw_handle()];
         let mut attributes = Attributes::new()?;
@@ -206,18 +254,24 @@ pub fn launch(executable: &Path, directory: &Path) -> io::Result<Process> {
             process: OwnedHandle::from_raw_handle(created.hProcess),
             stdin: File::from(in_parent),
             stdout: File::from(out_parent),
+            stderr: err_parent.map(File::from),
         })
     }
 }
 
-pub fn wait(process: &OwnedHandle) -> io::Result<u32> {
+pub fn wait(process: &OwnedHandle, timeout: Option<Duration>) -> io::Result<Option<u32>> {
     unsafe {
-        if WaitForSingleObject(process.as_raw_handle(), INFINITE) != WAIT_OBJECT_0 {
-            return Err(io::Error::last_os_error());
+        let timeout = timeout.map_or(INFINITE, |limit| {
+            limit.as_millis().min((INFINITE - 1) as u128) as u32
+        });
+        match WaitForSingleObject(process.as_raw_handle(), timeout) {
+            WAIT_TIMEOUT => return Ok(None),
+            WAIT_OBJECT_0 => {}
+            _ => return Err(io::Error::last_os_error()),
         }
         let mut code = 1;
         last_error_if(GetExitCodeProcess(process.as_raw_handle(), &mut code))?;
-        Ok(code)
+        Ok(Some(code))
     }
 }
 
@@ -241,6 +295,13 @@ mod tests {
 use std::{io::{self, BufRead, Write}, process::Command, time::Duration};
 fn main() {
     if std::env::args().nth(1).as_deref() != Some("descendant") {
+        assert_eq!(std::env::args().nth(1).as_deref(), Some("传入 \"quoted\" path\\"));
+        assert_eq!(
+            std::fs::canonicalize(std::env::var_os("TEMP").unwrap()).unwrap(),
+            std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap(),
+        );
+        assert!(std::env::var_os("TUSHARE_TOKEN").is_none());
+        eprintln!("stderr fixture");
         let mut input = String::new();
         io::stdin().lock().read_line(&mut input).unwrap();
         let child = Command::new(std::env::current_exe().unwrap()).arg("descendant").spawn().unwrap();
@@ -264,9 +325,22 @@ fn main() {
             process,
             mut stdin,
             stdout,
-        } = launch(&executable, fixture.path()).unwrap();
+            stderr,
+        } = launch(
+            &executable,
+            fixture.path(),
+            &["传入 \"quoted\" path\\".into()],
+            &[("TEMP", fixture.path().as_os_str().to_owned())],
+            true,
+        )
+        .unwrap();
         stdin.write_all(b"{}\n").unwrap();
         drop(stdin);
+        let mut line = String::new();
+        BufReader::new(stderr.unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line.trim_end(), "stderr fixture");
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut line = String::new();

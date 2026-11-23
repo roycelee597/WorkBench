@@ -1,6 +1,11 @@
 use super::{
-    archive::{StagedPackage, linked, module_file, ordinary_dir, verify_engine},
-    manifest::{CORE_ID, Credential, Manifest, valid_id},
+    archive::{
+        StagedPackage, linked, module_file, ordinary_dir, stage_official_package, verify_engine,
+    },
+    manifest::{CORE_ID, Credential, FINANCE_ID, Manifest, OFFICIAL_IDS, valid_id},
+    official::{
+        LegacyFinancePaths, OfficialModuleDescriptor, delete_legacy_finance_token, descriptor,
+    },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -25,6 +30,8 @@ const RECORD: &str = ".installed.json";
 struct Installed {
     manifest: Manifest,
     grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    official_migration: Option<u8>,
 }
 
 #[derive(Clone)]
@@ -35,9 +42,10 @@ pub struct ActiveModule {
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
     token: String,
+    official_migration: Option<u8>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ModuleRecord {
     manifest: Manifest,
     grants: Vec<String>,
@@ -45,9 +53,11 @@ pub struct ModuleRecord {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModuleList {
     modules: Vec<ModuleRecord>,
     pending: Vec<String>,
+    official_errors: BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -72,6 +82,8 @@ pub struct ModuleStore {
     active: BTreeMap<String, ActiveModule>,
     pending: BTreeMap<String, Manifest>,
     preview: Option<PendingPackage>,
+    legacy_finance: Option<LegacyFinancePaths>,
+    official_errors: BTreeMap<String, String>,
 }
 
 impl ActiveModule {
@@ -87,6 +99,7 @@ impl ActiveModule {
             data_dir: directory.join("data"),
             cache_dir: directory.join("cache"),
             token: Uuid::new_v4().simple().to_string(),
+            official_migration: record.official_migration,
         })
     }
 
@@ -211,13 +224,15 @@ fn delete_credential(identifier: &str, id: &str, credential: &Credential) -> Res
 }
 
 impl ModuleState {
-    pub fn initialize(
+    pub(super) fn initialize(
         &self,
         root: PathBuf,
         identifier: String,
         host_version: String,
+        legacy_finance: Option<LegacyFinancePaths>,
     ) -> Result<(), String> {
-        let store = ModuleStore::new(root, identifier, host_version)?;
+        let mut store = ModuleStore::new(root, identifier, host_version)?;
+        store.legacy_finance = legacy_finance;
         store.resume_native();
         *self.0.lock().map_err(|_| "模块运行时不可用")? = Some(store);
         Ok(())
@@ -261,6 +276,8 @@ impl ModuleStore {
             active: BTreeMap::new(),
             pending: BTreeMap::new(),
             preview: None,
+            legacy_finance: None,
+            official_errors: BTreeMap::new(),
         };
         ensure_dir(&store.journal_dir())?;
         // 上次应用退出时遗留的未确认包没有生效，可以直接丢弃。
@@ -307,6 +324,8 @@ impl ModuleStore {
         };
         record.manifest.validate(&self.host_version)?;
         if record.manifest.id != id
+            || record.official_migration != descriptor(id).map(|official| official.migration)
+            || (OFFICIAL_IDS.contains(&id) && record.official_migration.is_none())
             || record
                 .grants
                 .iter()
@@ -330,6 +349,70 @@ impl ModuleStore {
         self.journal_dir().join(format!("{id}.json"))
     }
 
+    fn uninstall_choice(&self, id: &str) -> PathBuf {
+        self.root.join(format!(".uninstalled-{id}.json"))
+    }
+
+    pub(super) fn ensure_official(
+        &mut self,
+        official: &OfficialModuleDescriptor,
+        startup: bool,
+        package_path: impl FnOnce() -> Result<PathBuf, String>,
+    ) -> Result<Option<ModuleRecord>, String> {
+        if let Some(active) = self.active.get(official.id) {
+            return Ok(Some(active.record()));
+        }
+        if self.pending.contains_key(official.id) {
+            return if startup {
+                Ok(None)
+            } else {
+                Err("请先完成官方模块卸载".into())
+            };
+        }
+        if startup
+            && read_json::<bool>(&self.uninstall_choice(official.id), MAX_RECORD)?.unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        let result = (|| {
+            let path = package_path()?;
+            let staged = stage_official_package(
+                &path,
+                &self.staging_dir(),
+                &self.host_version,
+                official.id,
+            )?;
+            if staged
+                .manifest
+                .engine
+                .as_ref()
+                .is_none_or(|engine| engine.concurrency != 1)
+                || ["engine", "finance"]
+                    .iter()
+                    .any(|p| !staged.manifest.permissions.iter().any(|grant| grant == p))
+            {
+                return Err("附带的官方模块缺少引擎声明或权限".into());
+            }
+            // 行情、系统凭据和业务库原位接管。完整验包后，原子发布记录是迁移提交点。
+            self.publish(staged, Some(official.migration))
+        })();
+        match result {
+            Ok(record) => {
+                self.official_errors.remove(official.id);
+                // 发布已经完成。若删除标记失败，重启仍以已安装记录为准。
+                if let Err(error) = remove_file(&self.uninstall_choice(official.id)) {
+                    eprintln!("模块 {} 已安装，无法清理旧卸载标记：{error}", official.id);
+                }
+                Ok(Some(record))
+            }
+            Err(error) => {
+                self.official_errors
+                    .insert(official.id.into(), error.clone());
+                Err(error)
+            }
+        }
+    }
+
     pub fn active(&self, id: &str) -> Result<&ActiveModule, String> {
         ordinary_dir(&self.root)?;
         self.active
@@ -348,6 +431,7 @@ impl ModuleStore {
         ModuleList {
             modules: self.active.values().map(ActiveModule::record).collect(),
             pending: self.pending.keys().cloned().collect(),
+            official_errors: self.official_errors.clone(),
         }
     }
 
@@ -388,7 +472,18 @@ impl ModuleStore {
             return Err("模块安装确认已失效，请重新选择包".into());
         }
         let current = self.preview.take().ok_or("模块安装确认不存在")?;
-        let manifest = current.staged.manifest;
+        self.publish(current.staged, None)
+    }
+
+    fn publish(
+        &mut self,
+        staged: StagedPackage,
+        official_migration: Option<u8>,
+    ) -> Result<ModuleRecord, String> {
+        let manifest = staged.manifest;
+        if OFFICIAL_IDS.contains(&manifest.id.as_str()) && official_migration.is_none() {
+            return Err("官方模块只能从安装包附带资源安装".into());
+        }
         let destination = self.root.join(&manifest.id);
         if self.active.contains_key(&manifest.id)
             || self.pending.contains_key(&manifest.id)
@@ -398,7 +493,7 @@ impl ModuleStore {
         }
         ordinary_dir(&self.root)?;
         ordinary_dir(&self.staging_dir())?;
-        let install_dir = current.staged.dir.path().join(&manifest.version);
+        let install_dir = staged.dir.path().join(&manifest.version);
         module_file(&install_dir, &manifest.entry)?;
         if let Some(engine) = &manifest.engine {
             verify_engine(&install_dir, engine)?;
@@ -406,9 +501,10 @@ impl ModuleStore {
         let record = Installed {
             grants: manifest.permissions.clone(),
             manifest,
+            official_migration,
         };
-        write_json(&current.staged.dir.path().join(RECORD), &record, MAX_RECORD)?;
-        fs::rename(current.staged.dir.path(), &destination).map_err(|_| "无法原子发布模块目录")?;
+        write_json(&staged.dir.path().join(RECORD), &record, MAX_RECORD)?;
+        fs::rename(staged.dir.path(), &destination).map_err(|_| "无法原子发布模块目录")?;
         let module = ActiveModule::new(&self.root, record)?;
         let result = module.record();
         self.active.insert(module.manifest.id.clone(), module);
@@ -437,18 +533,26 @@ impl ModuleStore {
     }
 
     pub fn cleanup_native(&self, id: &str) -> Result<(), String> {
-        self.cleanup_with(id, delete_credential)
+        self.cleanup_with(id, delete_credential, delete_legacy_finance_token)
     }
 
     fn cleanup_with(
         &self,
         id: &str,
         delete: impl Fn(&str, &str, &Credential) -> Result<(), String>,
+        delete_finance: impl Fn(&str) -> Result<(), String>,
     ) -> Result<(), String> {
         if let Some(manifest) = self.pending.get(id) {
             ordinary_dir(&self.root)?;
             for credential in &manifest.uninstall.credentials {
                 delete(&self.identifier, id, credential)?;
+            }
+            if id == FINANCE_ID {
+                delete_finance(&self.identifier)?;
+                self.legacy_finance
+                    .as_ref()
+                    .ok_or("无法定位旧金融数据")?
+                    .cleanup()?;
             }
             // 版本文件、引擎、缓存、私有数据库、storage 和设置都以模块目录为边界。
             remove_dir(&self.root.join(id))?;
@@ -473,6 +577,9 @@ impl ModuleStore {
         if !matches!(fs::symlink_metadata(self.root.join(id)), Err(error) if error.kind() == ErrorKind::NotFound)
         {
             return Err("模块原生清理尚未完成".into());
+        }
+        if descriptor(id).is_some() {
+            write_json(&self.uninstall_choice(id), &true, MAX_RECORD)?;
         }
         remove_file(&self.journal(id))?;
         self.pending.remove(id);
@@ -499,6 +606,7 @@ impl ModuleStore {
         let record = Installed {
             manifest: module.manifest.clone(),
             grants,
+            official_migration: module.official_migration,
         };
         write_json(&directory.join(RECORD), &record, MAX_RECORD)?;
         let module = self.active.get_mut(id).ok_or("模块未安装")?;
@@ -539,8 +647,10 @@ pub fn storage_write(
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::cell::RefCell;
+    use sha2::{Digest, Sha256};
+    use std::{cell::RefCell, io::Write};
     use tempfile::TempDir;
+    use zip::{ZipWriter, write::SimpleFileOptions};
 
     const MODULE: &str = "com.example.pomodoro";
 
@@ -578,6 +688,264 @@ mod tests {
         store.install(&preview.ticket)
     }
 
+    fn finance_bundle(folder: &Path, valid_hash: bool) -> PathBuf {
+        let path = folder.join("finance.wbpkg");
+        let engine = b"offline synthetic engine";
+        let sha256 = if valid_hash {
+            format!("{:x}", Sha256::digest(engine))
+        } else {
+            "0".repeat(64)
+        };
+        let manifest = json!({
+            "id": FINANCE_ID,
+            "name": "合成金融测试模块",
+            "version": "0.1.0",
+            "minHostVersion": "0.1.0",
+            "entry": "index.html",
+            "permissions": ["engine", "finance"],
+            "engine": {"path":"finance-engine.exe", "sha256":sha256, "concurrency":1}
+        });
+        let manifest = serde_json::to_vec(&manifest).unwrap();
+        let mut writer = ZipWriter::new(File::create(&path).unwrap());
+        for (name, data) in [
+            ("manifest.json", manifest.as_slice()),
+            ("index.html", b"<p>fixture</p>"),
+            ("finance-engine.exe", engine),
+        ] {
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+        path
+    }
+
+    fn finance_paths(folder: &Path) -> LegacyFinancePaths {
+        LegacyFinancePaths {
+            local: folder.to_owned(),
+            cache: folder.join("caches"),
+            logs: folder.join("logs"),
+        }
+    }
+
+    fn reopen(dir: &TempDir, identifier: &str) -> ModuleStore {
+        let mut store = ModuleStore::new(
+            dir.path().join("modules"),
+            identifier.into(),
+            "0.1.0".into(),
+        )
+        .unwrap();
+        store.legacy_finance = Some(finance_paths(dir.path()));
+        store
+    }
+
+    #[test]
+    fn finance_upgrade_validates_and_publishes_once_with_legacy_files_intact() {
+        use super::super::official::FINANCE;
+        let (dir, mut store) = fixture();
+        let db = dir.path().join("finance.db");
+        let wal = dir.path().join("finance.db-wal");
+        let business = dir.path().join("workbench.db");
+        for (file, fixture) in [
+            (&db, b"fixture cache" as &[u8]),
+            (&wal, b"fixture wal"),
+            (&business, b"fixture threshold and prefs"),
+        ] {
+            fs::write(file, fixture).unwrap();
+        }
+        let wrong = finance_bundle(dir.path(), false);
+        assert!(
+            store
+                .ensure_official(&FINANCE, true, || Ok(wrong))
+                .unwrap_err()
+                .contains("SHA-256")
+        );
+        assert!(!store.root.join(FINANCE_ID).exists());
+        assert!(store.list().official_errors.contains_key(FINANCE_ID));
+        drop(store);
+
+        let mut store = reopen(&dir, "com.example.upgrade");
+        let correct = finance_bundle(dir.path(), true);
+        assert!(
+            super::super::archive::stage_package(
+                &correct,
+                &store.staging_dir(),
+                store.host_version()
+            )
+            .is_err()
+        );
+        // 发布目录被占用时应保留旧数据；清除冲突后重启即可继续。
+        fs::write(store.root.join(FINANCE_ID), "模拟发布失败").unwrap();
+        assert!(
+            store
+                .ensure_official(&FINANCE, true, || Ok(correct.clone()))
+                .is_err()
+        );
+        fs::remove_file(store.root.join(FINANCE_ID)).unwrap();
+        let mut store = reopen(&dir, "com.example.upgrade");
+        store
+            .ensure_official(&FINANCE, true, || Ok(correct))
+            .unwrap()
+            .unwrap();
+        let stamp = fs::read(store.root.join(FINANCE_ID).join(RECORD)).unwrap();
+        drop(store);
+
+        let mut store = reopen(&dir, "com.example.upgrade");
+        store
+            .ensure_official(&FINANCE, true, || panic!("已迁移时不得再次读取附带包"))
+            .unwrap();
+        assert_eq!(
+            fs::read(store.root.join(FINANCE_ID).join(RECORD)).unwrap(),
+            stamp
+        );
+        assert_eq!(fs::read(db).unwrap(), b"fixture cache");
+        assert_eq!(fs::read(wal).unwrap(), b"fixture wal");
+        assert_eq!(fs::read(business).unwrap(), b"fixture threshold and prefs");
+    }
+
+    #[test]
+    fn finance_uninstall_can_resume_and_only_user_can_reinstall() {
+        use super::super::official::FINANCE;
+        let dir = tempfile::tempdir().unwrap();
+        let identifier = "com.example.finance-lifecycle";
+        let mut store = reopen(&dir, identifier);
+        let bundle = finance_bundle(dir.path(), true);
+        store
+            .ensure_official(&FINANCE, true, || Ok(bundle.clone()))
+            .unwrap();
+        let paths = finance_paths(dir.path());
+        fs::create_dir_all(paths.cache.join("finance-runs/stale")).unwrap();
+        fs::create_dir_all(&paths.logs).unwrap();
+        for (folder, name) in [
+            (&paths.local, "finance.db"),
+            (&paths.local, "finance.db-wal"),
+            (&paths.logs, "finance-engine.log.1"),
+        ] {
+            fs::write(folder.join(name), b"test").unwrap();
+        }
+        fs::write(
+            paths.local.join("workbench.db"),
+            b"unrelated shared records",
+        )
+        .unwrap();
+        assert!(store.mark_uninstall(FINANCE_ID).unwrap());
+        assert!(
+            store
+                .cleanup_with(
+                    FINANCE_ID,
+                    |_, _, _| unreachable!(),
+                    |_| Err("模拟凭据管理器失败".into())
+                )
+                .is_err()
+        );
+        assert!(store.finish_uninstall(FINANCE_ID).is_err());
+        drop(store);
+
+        let mut store = reopen(&dir, identifier);
+        assert!(store.active(FINANCE_ID).is_err());
+        assert!(
+            store
+                .ensure_official(&FINANCE, true, || panic!("卸载恢复期间不得自动安装"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .ensure_official(&FINANCE, false, || Ok(bundle.clone()))
+                .is_err()
+        );
+        store
+            .cleanup_with(
+                FINANCE_ID,
+                |_, _, _| unreachable!(),
+                |user| {
+                    assert_eq!(user, identifier);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        store.finish_uninstall(FINANCE_ID).unwrap();
+        assert!(!paths.local.join("finance.db").exists());
+        assert!(!paths.local.join("finance.db-wal").exists());
+        assert!(!paths.logs.join("finance-engine.log.1").exists());
+        assert!(!paths.cache.join("finance-runs").exists());
+        assert_eq!(
+            fs::read(paths.local.join("workbench.db")).unwrap(),
+            b"unrelated shared records"
+        );
+        drop(store);
+
+        let mut store = reopen(&dir, identifier);
+        assert!(
+            store
+                .ensure_official(&FINANCE, true, || panic!("尊重用户卸载选择"))
+                .unwrap()
+                .is_none()
+        );
+        store
+            .ensure_official(&FINANCE, false, || Ok(bundle))
+            .unwrap()
+            .unwrap();
+        assert!(!store.uninstall_choice(FINANCE_ID).exists());
+        let module = store.active(FINANCE_ID).unwrap();
+        assert!(storage_read(module).unwrap().is_empty());
+        assert!(
+            verify_engine(
+                &module.install_dir,
+                module.manifest.engine.as_ref().unwrap()
+            )
+            .is_ok()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finance_upgrade_keeps_legacy_windows_credential_and_uninstall_removes_it() {
+        use super::super::official::FINANCE;
+        struct Cleanup(keyring::Entry);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.delete_credential();
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let identifier = format!("com.example.finance-upgrade.{}", Uuid::new_v4().simple());
+        let token =
+            Cleanup(keyring::Entry::new(&format!("{identifier}.finance"), "tushare").unwrap());
+        let neighbor =
+            Cleanup(keyring::Entry::new(&format!("{identifier}.ai"), "deepseek").unwrap());
+        token.0.set_password("synthetic test data").unwrap();
+        neighbor.0.set_password("unrelated synthetic data").unwrap();
+        let mut store = reopen(&dir, &identifier);
+        let corrupt = finance_bundle(dir.path(), false);
+        assert!(
+            store
+                .ensure_official(&FINANCE, true, || Ok(corrupt))
+                .is_err()
+        );
+        let bundle = finance_bundle(dir.path(), true);
+        store
+            .ensure_official(&FINANCE, true, || Ok(bundle.clone()))
+            .unwrap();
+        assert_eq!(token.0.get_password().unwrap(), "synthetic test data");
+        assert!(store.mark_uninstall(FINANCE_ID).unwrap());
+        store.cleanup_native(FINANCE_ID).unwrap();
+        store.finish_uninstall(FINANCE_ID).unwrap();
+        store
+            .ensure_official(&FINANCE, false, || Ok(bundle))
+            .unwrap();
+        assert!(matches!(
+            token.0.get_password(),
+            Err(keyring::Error::NoEntry)
+        ));
+        assert_eq!(
+            neighbor.0.get_password().unwrap(),
+            "unrelated synthetic data"
+        );
+    }
+
     #[test]
     fn uninstall_resumes_after_failed_credentials_and_releases_all_private_state() {
         let (dir, mut store) = fixture();
@@ -599,7 +967,11 @@ mod tests {
         assert!(store.active(MODULE).is_err());
         assert!(
             store
-                .cleanup_with(MODULE, |_, _, _| Err("模拟凭据删除失败".into()))
+                .cleanup_with(
+                    MODULE,
+                    |_, _, _| Err("模拟凭据删除失败".into()),
+                    |_| unreachable!()
+                )
                 .is_err()
         );
         assert!(store.finish_uninstall(MODULE).is_err());
@@ -617,14 +989,18 @@ mod tests {
         let credentials = RefCell::new(vec![("fixture".to_string(), "test".to_string())]);
         for _ in 0..2 {
             reboot
-                .cleanup_with(MODULE, |identifier, id, item| {
-                    assert_eq!(identifier, "com.example.isolated");
-                    assert_eq!(id, MODULE);
-                    credentials.borrow_mut().retain(|(service, account)| {
-                        service != &item.service || account != &item.account
-                    });
-                    Ok(())
-                })
+                .cleanup_with(
+                    MODULE,
+                    |identifier, id, item| {
+                        assert_eq!(identifier, "com.example.isolated");
+                        assert_eq!(id, MODULE);
+                        credentials.borrow_mut().retain(|(service, account)| {
+                            service != &item.service || account != &item.account
+                        });
+                        Ok(())
+                    },
+                    |_| unreachable!(),
+                )
                 .unwrap();
         }
         assert!(credentials.into_inner().is_empty());
@@ -661,6 +1037,7 @@ mod tests {
                 dir.path().join("modules"),
                 "com.example.isolated".into(),
                 "0.1.0".into(),
+                None,
             )
             .unwrap();
         assert!(

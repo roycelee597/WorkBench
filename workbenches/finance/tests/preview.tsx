@@ -179,13 +179,6 @@ const api: FinanceDashboardData = {
       fixtureThresholds.push({
         ...input,
         id: crypto.randomUUID(),
-        default_key: null,
-        created_at: 0,
-        updated_at: 0,
-        deleted_at: null,
-        device_id: "preview",
-        deletion_group_id: null,
-        purged_at: null,
       });
     return [...fixtureThresholds];
   },

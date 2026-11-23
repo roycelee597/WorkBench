@@ -34,17 +34,11 @@ export function FinanceWorkbench({ openSettings }: { openSettings: () => void })
 
   return (
     <section className="general-workbench" aria-label="金融指标工作台">
-      <header className="workspace-header">
-        <div>
-          <span className="workspace-eyebrow">我的工作空间 / 金融指标</span>
-          <h1>金融指标</h1>
-        </div>
-      </header>
       <div className="workspace-panel space-y-4 p-6">
         <section className="rounded-xl border border-border bg-card p-5" role="status">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <strong>{text}</strong>
-            {busy && (
+            {busy ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -57,13 +51,17 @@ export function FinanceWorkbench({ openSettings }: { openSettings: () => void })
               >
                 停止更新
               </Button>
+            ) : (
+              <Button variant="outline" size="sm" onClick={openSettings}>
+                金融设置
+              </Button>
             )}
           </div>
           {progress && (
             <>
               <p className="mt-2 text-muted-foreground">
-                {progress.done}/{progress.total} 天，预计还需 {Math.ceil(progress.eta_seconds / 60)}{" "}
-                分钟
+                {progress.done}/{progress.total} 天 · {progress.current} · 预计还需{" "}
+                {Math.ceil(progress.eta_seconds / 60)} 分钟
               </p>
               <progress
                 className="mt-3 w-full"

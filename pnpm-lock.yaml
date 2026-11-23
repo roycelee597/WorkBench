@@ -62,9 +62,6 @@ importers:
       '@workbench/ai':
         specifier: workspace:*
         version: link:../../workbenches/ai
-      '@workbench/finance':
-        specifier: workspace:*
-        version: link:../../workbenches/finance
       '@workbench/general':
         specifier: workspace:*
         version: link:../../workbenches/general
@@ -178,9 +175,9 @@ importers:
 
   workbenches/finance:
     dependencies:
-      '@tauri-apps/api':
-        specifier: ^2
-        version: 2.12.4
+      '@workbench/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@workbench/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -197,12 +194,24 @@ importers:
         specifier: ^5.0.16
         version: 5.0.16(@types/react@19.3.0)(react@19.3.1)(use-sync-external-store@1.7.0(react@19.3.1))
     devDependencies:
+      '@tailwindcss/vite':
+        specifier: ^4.3.4
+        version: 4.3.4(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))
       '@types/react':
         specifier: ^19.1.8
         version: 19.3.0
       '@types/react-dom':
         specifier: ^19.1.6
         version: 19.3.0(@types/react@19.3.0)
+      '@vitejs/plugin-react':
+        specifier: ^6.0.2
+        version: 6.2.1(vite@8.3.5(@types/node@24.19.2)(jiti@2.7.0))
+      tailwindcss:
+        specifier: ^4.3.4
+        version: 4.3.4
+      vite:
+        specifier: ^8.0.16
+        version: 8.3.5(@types/node@24.19.2)(jiti@2.7.0)
 
   workbenches/general:
     dependencies:

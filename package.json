@@ -12,8 +12,9 @@
   },
   "scripts": {
     "finance:engine": "uv run --project engines/finance --locked --group build python engines/finance/scripts/build_sidecar.py",
+    "finance:package": "pnpm finance:engine && pnpm --filter @workbench/finance build && uv run --project engines/finance --locked python engines/finance/scripts/package_module.py",
     "dev": "pnpm --filter desktop tauri dev",
-    "build": "pnpm finance:engine && pnpm --filter desktop tauri build",
+    "build": "pnpm finance:package && pnpm --filter desktop tauri build",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run --passWithNoTests",

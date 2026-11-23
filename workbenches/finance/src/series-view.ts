@@ -1,7 +1,4 @@
-import type {
-  FinancePoint,
-  IndicatorMeta,
-} from "../../../apps/desktop/src/core/finance/finance-reader";
+import type { FinancePoint, FinanceIndicator as IndicatorMeta } from "@workbench/sdk";
 import type { FinancePreferences, FinanceRange } from "./preferences";
 
 export const metricLabels = { pe_ttm: "PE-TTM", pb: "PB" } as const;

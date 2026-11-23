@@ -7,6 +7,7 @@ import {
   reminderOccurrenceDefinition,
 } from "./record-codecs";
 import { updateStatement } from "./sql-statements";
+import { FINANCE_WORKBENCH } from "../finance/finance-target";
 
 export class ModuleCleanupRepository {
   constructor(
@@ -32,7 +33,17 @@ export class ModuleCleanupRepository {
       { definition: eventDefinition, where: "source_workbench = ?", params: [moduleId] },
       { definition: memoDefinition, where: "source_workbench = ?", params: [moduleId] },
     ];
-    const statements: SqlStatement[] = [];
+    // 金融旧版将私有状态存于主库。固定的官方清理规则完全清除这些行，
+    // 第三方清单不能选择或删除主库里的表和设置。
+    const statements: SqlStatement[] =
+      moduleId === FINANCE_WORKBENCH
+        ? [
+            { query: "DELETE FROM finance_alert_states", values: [] },
+            { query: "DELETE FROM finance_thresholds", values: [] },
+            { query: "DELETE FROM settings WHERE key GLOB 'finance.*'", values: [] },
+            { query: "DELETE FROM workbench_kv WHERE workbench_id = ?", values: [moduleId] },
+          ]
+        : [];
     for (const { definition, where, params } of records) {
       // 先补齐同步墓碑，再清空内容和来源。整个过程共用事务，可重复执行。
       statements.push(

@@ -3,12 +3,7 @@ import type { FinanceThreshold } from "../repositories/finance-thresholds";
 
 export type ThresholdPoint = { trade_date: number; value: number };
 
-export function outsideThreshold(
-  value: number,
-  threshold: Pick<FinanceThreshold, "direction" | "level">,
-): boolean {
-  return threshold.direction === "above" ? value > threshold.level : value < threshold.level;
-}
+export const outsideThreshold = outsideFinanceThreshold;
 
 export function evaluateThreshold(
   threshold: FinanceThreshold,
@@ -63,3 +58,4 @@ export function evaluateThreshold(
     ? { next, crossing: { firstDate, latest } }
     : { next };
 }
+import { outsideFinanceThreshold } from "@workbench/sdk";

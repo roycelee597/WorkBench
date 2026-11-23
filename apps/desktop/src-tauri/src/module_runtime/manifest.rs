@@ -3,7 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashSet, path::Path};
 
 pub const CORE_ID: &str = "com.royce.workbench.general";
-pub const OFFICIAL_IDS: &[&str] = &["com.royce.workbench.finance", "com.royce.workbench.ai"];
+pub const FINANCE_ID: &str = "com.royce.workbench.finance";
+pub const OFFICIAL_IDS: &[&str] = &[FINANCE_ID, "com.royce.workbench.ai"];
 const PERMISSIONS: &[&str] = &[
     "storage",
     "notifications",
@@ -16,6 +17,7 @@ const PERMISSIONS: &[&str] = &[
     "dialog.open",
     "engine",
     "engine.exec_paths",
+    "finance",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -193,6 +195,14 @@ impl Manifest {
     pub fn validate(&self, host_version: &str) -> Result<(), String> {
         if !valid_id(&self.id) || self.id == CORE_ID {
             return Err("模块 ID 格式无效或属于综合工作台".into());
+        }
+        if self.id != FINANCE_ID
+            && self
+                .permissions
+                .iter()
+                .any(|permission| permission == "finance")
+        {
+            return Err("金融数据权限仅限官方金融模块".into());
         }
         let minimum = portable_version(&self.min_host_version);
         if portable_version(&self.version).is_none() || minimum.is_none() {

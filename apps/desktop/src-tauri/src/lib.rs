@@ -12,7 +12,6 @@ pub fn run() {
     tauri::Builder::default()
         .manage(desktop::ShellState::default())
         .manage(quick_create::QuickState::default())
-        .manage(finance::FinanceState::default())
         .manage(ai::AiState::default())
         .manage(module_runtime::ModuleState::default())
         .manage(module_engine::EngineState::default())
@@ -117,9 +116,6 @@ pub fn run() {
             ai::ai_open_platform,
             finance::finance_token_status,
             finance::finance_token_clear,
-            finance::finance_update_start,
-            finance::finance_update_cancel,
-            finance::finance_verify,
             finance::finance_db_path,
             finance::finance_db_size,
             finance::finance_reader_open,
@@ -131,6 +127,7 @@ pub fn run() {
             quick_create::take_quick_requests,
             quick_create::finish_quick_request,
             module_runtime::module_list,
+            module_runtime::module_reinstall_bundled,
             module_runtime::module_preview,
             module_runtime::install_module,
             module_runtime::module_discard,
@@ -145,11 +142,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("启动 WorkBench 失败")
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                module_engine::stop_all(app);
-            }
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                if finance::defer_exit(app, code.unwrap_or(0)) {
+                if module_engine::defer_exit(app, code.unwrap_or(0)) {
                     api.prevent_exit();
                 }
             }
