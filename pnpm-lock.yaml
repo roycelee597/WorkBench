@@ -68,6 +68,12 @@ importers:
       '@workbench/general':
         specifier: workspace:*
         version: link:../../workbenches/general
+      '@workbench/manifest':
+        specifier: workspace:*
+        version: link:../../packages/manifest
+      '@workbench/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@workbench/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -115,7 +121,11 @@ importers:
         specifier: ^8.0.16
         version: 8.3.5(@types/node@24.19.2)(jiti@2.7.0)
 
-  packages/manifest: {}
+  packages/manifest:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
 
   packages/sdk: {}
 
@@ -263,6 +273,16 @@ importers:
       '@types/react-dom':
         specifier: ^19.1.6
         version: 19.3.0(@types/react@19.3.0)
+
+  workbenches/sample-pomodoro:
+    dependencies:
+      '@workbench/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+    devDependencies:
+      vite:
+        specifier: ^8.0.16
+        version: 8.3.5(@types/node@24.19.2)(jiti@2.7.0)
 
 packages:
 

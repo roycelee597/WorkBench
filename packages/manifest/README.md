@@ -1,7 +1,7 @@
 # @workbench/manifest
 
-分工作台 manifest 类型与校验的预留包。目前为空包，尚未实现校验逻辑。
-
-后续按 `ARCHITECTURE.md` 第 6.1 节使用 zod 校验 manifest，并拒绝未知权限。
+用 zod 校验本地模块的 `manifest.json`。从 JSON 解析出未知值后，
+调用 `validateManifest(value)` 获取经过校验的 `ModuleManifest`，或使用
+`manifestSchema.safeParse(value)` 读取结构化校验结果。
 
 在仓库根目录运行 `pnpm --filter @workbench/manifest typecheck` 可检查本包类型。

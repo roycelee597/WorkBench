@@ -130,5 +130,8 @@ jobs:
       - name: 打包并运行金融 sidecar 冒烟测试
         run: pnpm finance:engine
 
+      - name: 验证模块安装、清理及引擎进程树
+        run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --lib module_
+
       - name: 编译 Windows 桌面应用
         run: pnpm --filter desktop tauri build --no-bundle

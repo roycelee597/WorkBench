@@ -82,9 +82,9 @@ export interface RecordDefinition<T> {
 
 export const memoDefinition: RecordDefinition<Memo> = {
   table: "memos",
-  columns: ["title", "content", "pinned", "tags"],
+  columns: ["title", "content", "pinned", "tags", "source_workbench"],
   order: "pinned DESC, updated_at DESC, id",
-  cleared: { title: "", content: "", pinned: 0, tags: "[]" },
+  cleared: { title: "", content: "", pinned: 0, tags: "[]", source_workbench: null },
   decode: (row) => ({
     ...metadata(row),
     title: text(row, "title"),

@@ -2,6 +2,8 @@ mod ai;
 mod database;
 mod desktop;
 mod finance;
+mod module_engine;
+mod module_runtime;
 mod quick_create;
 use tauri::Manager;
 
@@ -12,7 +14,19 @@ pub fn run() {
         .manage(quick_create::QuickState::default())
         .manage(finance::FinanceState::default())
         .manage(ai::AiState::default())
+        .manage(module_runtime::ModuleState::default())
+        .manage(module_engine::EngineState::default())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        // 包协议只用于不透明 iframe，禁止在有权限的顶层 WebView 打开。
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("module-navigation")
+                .on_navigation(|_, url| {
+                    url.scheme() != "wbpkg" && url.host_str() != Some("wbpkg.localhost")
+                })
+                .build(),
+        )
+        .register_uri_scheme_protocol("wbpkg", module_runtime::protocol)
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|argument| argument == "--background") {
                 desktop::request(app, "open");
@@ -53,11 +67,20 @@ pub fn run() {
                             sql: include_str!("../migrations/0004_ai.sql"),
                             kind: tauri_plugin_sql::MigrationKind::Up,
                         },
+                        tauri_plugin_sql::Migration {
+                            version: 5,
+                            description: "模块备忘录所有权",
+                            sql: include_str!("../migrations/0005_module_memo_owner.sql"),
+                            kind: tauri_plugin_sql::MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
         )
         .setup(|app| {
+            if let Err(error) = module_runtime::setup(app.handle()) {
+                eprintln!("模块运行时不可用：{error}");
+            }
             ai::setup(app.handle());
             desktop::setup(app)?;
             quick_create::setup(app)?;
@@ -106,11 +129,25 @@ pub fn run() {
             quick_create::hide_quick_create,
             quick_create::quick_request,
             quick_create::take_quick_requests,
-            quick_create::finish_quick_request
+            quick_create::finish_quick_request,
+            module_runtime::module_list,
+            module_runtime::module_preview,
+            module_runtime::install_module,
+            module_runtime::module_discard,
+            module_runtime::uninstall_module,
+            module_runtime::module_finish_uninstall,
+            module_runtime::module_revoke,
+            module_runtime::module_storage_read,
+            module_runtime::module_storage_write,
+            module_engine::module_dialog_open,
+            module_engine::module_engine_call,
         ])
         .build(tauri::generate_context!())
         .expect("启动 WorkBench 失败")
         .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                module_engine::stop_all(app);
+            }
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
                 if finance::defer_exit(app, code.unwrap_or(0)) {
                     api.prevent_exit();
