@@ -150,8 +150,8 @@ import json
 import os
 import sys
 assert sys.stdin.read() == ""
-print("测试 stdout")
-print("测试 stderr", file=sys.stderr)
+print("stdout sentinel")
+print("stderr sentinel", file=sys.stderr)
 Path(sys.argv[1]).write_text(json.dumps([sys.argv[2], os.getcwd(), os.environ["WB_JOB_TEST"]]))
 """
     with WindowsJob() as job:
