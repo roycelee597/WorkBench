@@ -167,8 +167,12 @@ def run_recording(task: RecordTask) -> None:
         emit("log", level="warning", message=message)
 
     clip = record_segment(task, command, report, warning)
+    width, height = task.capture_size
     result = {
         "output": str(clip.output),
+        "aspect": task.aspect,
+        "source_width": width,
+        "source_height": height,
         "duration_s": clip.duration_s,
         "recording_method": clip.method,
         "recording_elapsed_s": round(clip.capture_elapsed_s, 3),

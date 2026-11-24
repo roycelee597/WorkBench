@@ -4,7 +4,37 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
+from .record_task import CAPTURE_SIZES, CaptureAspect
+
 type RecordingMethod = Literal["hlae", "startmovie"]
+
+# 播放进度条、观战资料和提示均为独立面板。保留准星、生命值／护甲、弹药和击杀提示。
+_HIDDEN_HUD_PANELS = (
+    "HudDemoController",
+    "HudTeamCounter",
+    "jsHudSpecplayer__Bg",
+    "HudSpecplayer__Avatar",
+    "JsHudLegendPanel",
+    "HudSpectatorVignetting",
+    "trueview_row",
+    "HudTopLeft",
+    "HudLowerLeft",
+    "HudChat",
+    "HudWeaponSelection",
+)
+_CLEAN_HUD = "; ".join(
+    (
+        "cl_draw_only_deathnotices 0",
+        "cl_spec_show_bindings 0",
+        "cl_trueview_show_status 0",
+        "r_show_build_info 0",
+        "cl_showpos 0",
+        "cl_showfps 0",
+        "cl_drawhud_force_teamid_overhead -1",
+        *(f"mirv_panorama panelStyle panelId={name} opacity=0" for name in _HIDDEN_HUD_PANELS),
+        "mirv_panorama panelStyle panelClassName=HudPerfStatsBasics opacity=0",
+    )
+)
 
 
 def _console_path(path: Path) -> str:
@@ -14,7 +44,8 @@ def _console_path(path: Path) -> str:
     return f'"{value}"'
 
 
-def hlae_argv(hlae: Path, cs2: Path, profile: Path) -> list[str]:
+def hlae_argv(hlae: Path, cs2: Path, profile: Path, *, aspect: CaptureAspect = "16:9") -> list[str]:
+    width, height = CAPTURE_SIZES[aspect]
     game_arguments = subprocess.list2cmdline(
         [
             "-steam",
@@ -25,9 +56,9 @@ def hlae_argv(hlae: Path, cs2: Path, profile: Path) -> list[str]:
             "-console",
             "-sw",
             "-w",
-            "1920",
+            str(width),
             "-h",
-            "1080",
+            str(height),
             "+exec",
             "workbench_p2",
         ]
@@ -80,6 +111,7 @@ def write_capture_config(
         "start": start_tick,
         "end": end_tick,
         "seek": max(0, start_tick - 128),
+        "hud": _CLEAN_HUD,
         "setup": setup,
         "begin": begin,
         "stop": end,
@@ -93,6 +125,7 @@ def write_capture_config(
     (cfg / "workbench_p2.cfg").write_text(
         'mirv_script_load "mirv_script_spec_lock.js"\n'
         f"mirv_script_load {_console_path(script)}\n"
+        "demo_ui_mode 0\n"
         f"playdemo {_console_path(demo)}\n",
         encoding="ascii",
     )
@@ -150,9 +183,9 @@ mirv.events.clientFrameStageNotify.on("workbench-p2", (event) => {
             return;
         }
         mirv.exec("sv_cheats 1; hideconsole; volume 1; cl_demo_freecam 0; " +
-            "spec_mode 1; spec_show_xray 0; cl_draw_only_deathnotices 0; " +
-            "cl_trueview_show_status 0; cl_demo_predict 1");
+            "spec_mode 1; spec_show_xray 0; cl_demo_predict 1");
         mirv.exec(`spec_player ${index}; mirv_script_spec_lock ${index}`);
+        mirv.exec(options.hud);
         mirv.exec(options.setup);
         if (mirv.isDemoPaused()) mirv.exec("demo_resume");
         selectedAt = tick;
@@ -162,6 +195,7 @@ mirv.events.clientFrameStageNotify.on("workbench-p2", (event) => {
     if (phase === "armed" && tick > selectedAt && tick >= options.start) {
         if (tick > options.start + 2 || tick >= options.end) { leave(); return; }
         phase = "record";
+        mirv.exec(options.hud);
         mirv.exec(options.begin);
     }
     if (phase === "record" && tick >= options.end) {

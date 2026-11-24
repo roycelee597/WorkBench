@@ -1,5 +1,6 @@
 import json
 import os
+import struct
 import wave
 from pathlib import Path
 
@@ -45,6 +46,8 @@ def test_record_task_paths_and_selected_segment_are_resolved(tmp_path):
     assert task.demo_path == tmp_path / "测试 对局.dem"
     assert task.output_dir == tmp_path / "成品 输出"
     assert task.segment == Segment(1, 1000, 1064, 1)
+    assert task.aspect == "16:9"
+    assert task.capture_size == (1920, 1080)
 
 
 @pytest.mark.parametrize(
@@ -54,6 +57,8 @@ def test_record_task_paths_and_selected_segment_are_resolved(tmp_path):
         ({"segment_index": True}, "INVALID_TASK"),
         ({"player": {"steamid64": "00000000000000002"}}, "PLAYER_NOT_FOUND"),
         ({"resolution": "1440p"}, "INVALID_TASK"),
+        ({"aspect": "4:3"}, "INVALID_TASK"),
+        ({"aspect": None}, "INVALID_TASK"),
         ({"demo_path": "match.zip"}, "INVALID_TASK"),
     ],
 )
@@ -85,11 +90,12 @@ def test_staging_copies_chinese_and_spaced_demo_to_stable_name(tmp_path):
     assert copied.read_bytes() == original.read_bytes()
 
 
-def test_hlae_arguments_isolate_game_and_preserve_spaces():
+@pytest.mark.parametrize("aspect, width", [("16:9", 1920), ("4:3-stretched", 1440)])
+def test_hlae_arguments_isolate_game_and_preserve_spaces(aspect, width):
     hlae = Path("Tools with spaces") / "HLAE.exe"
     cs2 = Path("Game with spaces") / "cs2.exe"
     profile = Path("Capture with spaces") / "profile"
-    argv = hlae_argv(hlae, cs2, profile)
+    argv = hlae_argv(hlae, cs2, profile, aspect=aspect)
     cmdline = argv[argv.index("-cmdLine") + 1]
 
     assert argv[argv.index("-programPath") + 1] == str(cs2)
@@ -97,7 +103,7 @@ def test_hlae_arguments_isolate_game_and_preserve_spaces():
     assert argv[argv.index("-addEnv") + 1] == f"USRLOCALCSGO={profile}"
     assert "-noConfig" in argv and "-noGui" in argv
     assert "-insecure" in cmdline and "-afxDisableSteamStorage" in cmdline
-    assert "+exec workbench_p2" in cmdline and "-w 1920 -h 1080" in cmdline
+    assert "+exec workbench_p2" in cmdline and f"-sw -w {width} -h 1080" in cmdline
 
 
 @pytest.mark.parametrize(
@@ -125,10 +131,24 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(tmp_path, method, s
 
     assert 'playdemo "demo with spaces.dem"' in cfg
     assert 'mirv_script_load "mirv_script_spec_lock.js"' in cfg
+    assert cfg.index("demo_ui_mode 0") < cfg.index("playdemo")
     assert settings["steamid"] == PLAYER
     assert (settings["seek"], settings["start"], settings["end"]) == (872, 1000, 1064)
     assert settings["begin"] == start and settings["stop"] == stop
     assert "getSteamId() === wanted" in script and "spec_mode 1" in script
+    hud_commands = settings["hud"].split("; ")
+    assert "r_show_build_info 0" in hud_commands
+    assert "cl_draw_only_deathnotices 0" in hud_commands
+    for panel in (
+        "HudDemoController",
+        "HudTeamCounter",
+        "jsHudSpecplayer__Bg",
+        "HudSpecplayer__Avatar",
+    ):
+        assert f"mirv_panorama panelStyle panelId={panel} opacity=0" in hud_commands
+    for panel in ("HudReticle", "jsHudHealthArmorAmmoMore", "HudDeathNotice"):
+        assert f"mirv_panorama panelStyle panelId={panel} opacity=0" not in hud_commands
+    assert script.index("mirv.exec(options.hud)") < script.index("mirv.exec(options.begin)")
     if method == "hlae":
         assert "afxClassic" in settings["setup"] and "startMovieWav 1" in settings["setup"]
     else:
@@ -149,12 +169,14 @@ def test_unsafe_console_path_is_rejected_without_launch(tmp_path):
         )
 
 
-def _write_tga_wav(directory: Path, frames=60) -> list[Path]:
+def _write_tga_wav(directory: Path, frames=60, *, size=(1920, 1080)) -> list[Path]:
     directory.mkdir(parents=True, exist_ok=True)
     paths = []
+    frame_bytes = bytearray(24)
+    struct.pack_into("<HH", frame_bytes, 12, *size)
     for index in range(frames):
         path = directory / f"{index:05d}.tga"
-        path.write_bytes(bytes(24))
+        path.write_bytes(frame_bytes)
         paths.append(path)
     wav = directory / "audio.wav"
     with wave.open(str(wav), "wb") as audio:
@@ -163,25 +185,47 @@ def _write_tga_wav(directory: Path, frames=60) -> list[Path]:
     return [*paths, wav]
 
 
-def test_raw_frames_and_audio_build_explicit_1080p_60fps_ffmpeg_command(tmp_path):
-    raw = recording._capture_sequence(_write_tga_wav(tmp_path / "影片 素材"), 60)
+@pytest.mark.parametrize(
+    "source_size, video_filter",
+    [
+        ((1920, 1080), "setsar=1"),
+        ((1440, 1080), "scale=1920:1080:flags=lanczos,setsar=1"),
+    ],
+)
+def test_raw_frames_and_audio_build_explicit_1080p_60fps_ffmpeg_command(
+    tmp_path, source_size, video_filter
+):
+    files = _write_tga_wav(tmp_path / "影片 素材", size=source_size)
+    raw = recording._capture_sequence(files, 60, source_size)
     args = recording.ffmpeg_argv(Path("ffmpeg.exe"), raw, tmp_path / "clip.mp4")
 
     assert args[args.index("-framerate") + 1] == "60"
     assert args[args.index("-start_number") + 1] == "0"
-    assert "scale=1920:1080:flags=lanczos,setsar=1" in args
+    assert args[args.index("-vf") + 1] == video_filter
     assert "1:a:0" in args and "aac" in args and "libx264" in args
     assert raw.pattern.name == "%05d.tga" and raw.audio.name == "audio.wav"
 
 
+def test_4_3_capture_rejects_any_widescreen_frame(tmp_path):
+    expected_size = (1440, 1080)
+    files = _write_tga_wav(tmp_path, size=expected_size)
+    frame_bytes = bytearray(files[42].read_bytes())
+    struct.pack_into("<HH", frame_bytes, 12, 1920, 1080)
+    files[42].write_bytes(frame_bytes)
+
+    with pytest.raises(recording.CaptureIncomplete, match="1920×1080.*1440×1080"):
+        recording._capture_sequence(files, 60, expected_size)
+
+
 def test_incomplete_frames_or_missing_audio_cannot_be_reported_as_a_clip(tmp_path):
     files = _write_tga_wav(tmp_path)
+    expected_size = (1920, 1080)
     with pytest.raises(recording.CaptureIncomplete):
-        recording._capture_sequence(files[:-1], 60)
+        recording._capture_sequence(files[:-1], 60, expected_size)
     with pytest.raises(recording.CaptureIncomplete, match="编号不连续"):
-        recording._capture_sequence(files[:5] + files[6:], 60)
+        recording._capture_sequence(files[:5] + files[6:], 60, expected_size)
     with pytest.raises(recording.CaptureIncomplete, match="帧数"):
-        recording._capture_sequence(files[:30] + files[-1:], 60)
+        recording._capture_sequence(files[:30] + files[-1:], 60, expected_size)
 
 
 def test_native_files_are_scoped_to_the_unique_recording_prefix(tmp_path):
@@ -199,6 +243,7 @@ def test_native_files_are_scoped_to_the_unique_recording_prefix(tmp_path):
 
 def test_cli_record_success_and_cancellation_are_structured(tmp_path, monkeypatch, capsys):
     payload = _task(tmp_path)
+    payload["aspect"] = "4:3-stretched"
     task_file = tmp_path / "task.json"
     task_file.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -212,6 +257,8 @@ def test_cli_record_success_and_cancellation_are_structured(tmp_path, monkeypatc
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert events[0]["segment_id"] == 1
     assert events[-1]["type"] == "done" and events[-1]["gameinfo_restored"] is True
+    assert events[-1]["aspect"] == "4:3-stretched"
+    assert (events[-1]["source_width"], events[-1]["source_height"]) == (1440, 1080)
 
     def cancel(*args):
         raise KeyboardInterrupt

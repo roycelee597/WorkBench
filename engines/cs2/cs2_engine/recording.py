@@ -4,6 +4,7 @@ import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
@@ -20,7 +21,7 @@ from .gameinfo import (
     recover_gameinfo,
 )
 from .native_capture import native_outputs
-from .record_task import RecordError, RecordTask, validate_record_path
+from .record_task import OUTPUT_SIZE, CaptureAspect, RecordError, RecordTask, validate_record_path
 from .recording_commands import RecordingMethod, hlae_argv, write_capture_config
 from .windows_job import WindowsJob, WindowsProcess
 
@@ -45,6 +46,7 @@ class RawCapture:
     first_frame: int
     frame_count: int
     audio: Path
+    source_size: tuple[int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +156,9 @@ def _stage_demo(source: Path, directory: Path, required: int) -> Path:
     return staged
 
 
-def _capture_sequence(files: Sequence[Path], expected_frames: int) -> RawCapture:
+def _capture_sequence(
+    files: Sequence[Path], expected_frames: int, expected_size: tuple[int, int]
+) -> RawCapture:
     audio = [file for file in files if file.suffix.lower() == ".wav"]
     frames = [file for file in files if file.suffix.lower() == ".tga"]
     if not frames or len(audio) != 1:
@@ -163,8 +167,18 @@ def _capture_sequence(files: Sequence[Path], expected_frames: int) -> RawCapture
     groups = set()
     for frame in frames:
         match = re.fullmatch(r"(.*?)([0-9]+)(\.tga)", frame.name, re.IGNORECASE)
-        if match is None or frame.stat().st_size <= 18:
+        with frame.open("rb") as stream:
+            header = stream.read(19)
+        if match is None or len(header) != 19:
             raise CaptureIncomplete("录制图像命名无效或文件不完整。")
+        # TGA 的宽度和高度各占两个字节，从偏移 12 开始按小端存放。
+        width, height = struct.unpack_from("<HH", header, 12)
+        if (width, height) != expected_size:
+            expected_width, expected_height = expected_size
+            raise CaptureIncomplete(
+                f"游戏实际录制分辨率为 {width}×{height}，"
+                f"预期为 {expected_width}×{expected_height}。"
+            )
         prefix, number, suffix = match.groups()
         groups.add((frame.parent, prefix, len(number), suffix))
         ordered.append(int(number))
@@ -197,10 +211,14 @@ def _capture_sequence(files: Sequence[Path], expected_frames: int) -> RawCapture
     pattern = (
         Path(str(parent).replace("%", "%%")) / f"{prefix.replace('%', '%%')}%0{digits}d{suffix}"
     )
-    return RawCapture(pattern, ordered[0], frame_count, audio[0])
+    return RawCapture(pattern, ordered[0], frame_count, audio[0], expected_size)
 
 
 def ffmpeg_argv(executable: Path, raw: RawCapture, output: Path) -> list[str]:
+    width, height = OUTPUT_SIZE
+    video_filter = "setsar=1"
+    if raw.source_size != OUTPUT_SIZE:
+        video_filter = f"scale={width}:{height}:flags=lanczos,{video_filter}"
     return [
         str(executable),
         "-nostdin",
@@ -221,7 +239,7 @@ def ffmpeg_argv(executable: Path, raw: RawCapture, output: Path) -> list[str]:
         "-map",
         "1:a:0",
         "-vf",
-        "scale=1920:1080:flags=lanczos,setsar=1",
+        video_filter,
         "-r",
         "60",
         "-fps_mode",
@@ -246,9 +264,12 @@ def ffmpeg_argv(executable: Path, raw: RawCapture, output: Path) -> list[str]:
     ]
 
 
-def _wait_for_game(job: WindowsJob, tools: CaptureTools, profile: Path, timeout: float) -> None:
+def _wait_for_game(
+    job: WindowsJob, tools: CaptureTools, profile: Path, timeout: float, aspect: CaptureAspect
+) -> None:
     try:
-        launch = job.start(hlae_argv(tools.hlae, tools.cs2, profile), cwd=tools.hlae.parent)
+        argv = hlae_argv(tools.hlae, tools.cs2, profile, aspect=aspect)
+        launch = job.start(argv, cwd=tools.hlae.parent)
         deadline = time.monotonic() + timeout
         # HLAE 的无界面启动器先退出，Job 仍跟踪它启动的 CS2。
         while job.active_processes():
@@ -288,7 +309,8 @@ def _run_encoder(
                 "-of",
                 "json",
                 "-show_entries",
-                "stream=codec_type,codec_name,width,height,avg_frame_rate:format=duration",
+                "stream=codec_type,codec_name,width,height,avg_frame_rate,sample_aspect_ratio"
+                ":format=duration",
                 "-o",
                 str(report),
                 str(output),
@@ -303,9 +325,9 @@ def _run_encoder(
         good_video = any(
             stream["codec_type"] == "video"
             and stream["codec_name"] == "h264"
-            and stream.get("width") == 1920
-            and stream.get("height") == 1080
+            and (stream.get("width"), stream.get("height")) == OUTPUT_SIZE
             and stream.get("avg_frame_rate") == "60/1"
+            and stream.get("sample_aspect_ratio") == "1:1"
             for stream in streams
         )
         good_audio = any(
@@ -366,14 +388,14 @@ def _record_attempt(
             _ensure_cs2_closed()
             notify("record", 0, "已校验 gameinfo.gi 备份，正在启动离线回放。")
             started = time.monotonic()
-            _wait_for_game(job, tools, profile, max(180, segment.duration_s * 60))
+            _wait_for_game(job, tools, profile, max(180, segment.duration_s * 60), task.aspect)
             elapsed = time.monotonic() - started
             files = (
                 list(capture.rglob("*.tga")) + list(capture.glob("take*/audio.wav"))
                 if method == "hlae"
                 else sorted(native_outputs(native_roots, prefix))
             )
-            raw = _capture_sequence(files, math.ceil(segment.duration_s * 60))
+            raw = _capture_sequence(files, math.ceil(segment.duration_s * 60), task.capture_size)
             notify("record", 1, "逐帧录制完成，已退出 CS2。")
             notify("compose", 0, "正在编码并验证 1080p 60 fps MP4。")
             duration = _run_encoder(job, tools, raw, temporary_mp4, directory / "probe.json")
@@ -394,7 +416,8 @@ def record_segment(
     tools = _capture_tools(task)
     state_dir = _recovery_dir()
     expected = math.ceil(task.segment.duration_s * 60)
-    raw_bytes = expected * 1920 * 1080 * 4 + 64 * 1024**2
+    width, height = task.capture_size
+    raw_bytes = expected * width * height * 4 + 64 * 1024**2
     fallback_reason = None
     try:
         task.work_dir.mkdir(parents=True, exist_ok=True)

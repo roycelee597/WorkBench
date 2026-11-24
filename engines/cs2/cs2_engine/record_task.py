@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import Literal
 
 type CaptureMethod = Literal["auto", "hlae", "startmovie"]
+type CaptureAspect = Literal["16:9", "4:3-stretched"]
+
+OUTPUT_SIZE = (1920, 1080)
+CAPTURE_SIZES: dict[CaptureAspect, tuple[int, int]] = {
+    "16:9": OUTPUT_SIZE,
+    "4:3-stretched": (1440, 1080),
+}
 
 
 class RecordError(Exception):
@@ -32,6 +39,11 @@ class RecordTask:
     player_id: str
     segment: Segment
     method: CaptureMethod
+    aspect: CaptureAspect = "16:9"
+
+    @property
+    def capture_size(self) -> tuple[int, int]:
+        return CAPTURE_SIZES[self.aspect]
 
 
 def validate_record_path(path: Path) -> Path:
@@ -95,12 +107,14 @@ def read_record_task(task: dict, base: Path) -> RecordTask:
 
     if (
         task.get("resolution", "1080p") != "1080p"
-        or task.get("aspect", "16:9") != "16:9"
         or task.get("fps", 60) != 60
         or task.get("victim_pov", False) is not False
         or task.get("resume", False) is not False
     ):
-        raise RecordError("INVALID_TASK", "P2 支持单段 16:9 1080p、60 fps 的目标玩家视角。")
+        raise RecordError("INVALID_TASK", "P2 支持单段 1080p、60 fps 的目标玩家视角。")
+    aspect = task.get("aspect", "16:9")
+    if aspect not in ("16:9", "4:3-stretched"):
+        raise RecordError("INVALID_TASK", "aspect 必须是 16:9 或 4:3-stretched。")
     method = task.get("recording_method", "auto")
     if method not in ("auto", "hlae", "startmovie"):
         raise RecordError("INVALID_TASK", "recording_method 必须是 auto、hlae 或 startmovie。")
@@ -120,4 +134,5 @@ def read_record_task(task: dict, base: Path) -> RecordTask:
             _task_path(task, "highlights_path", base), task.get("segment_index"), steamid64
         ),
         method=method,
+        aspect=aspect,
     )
