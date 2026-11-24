@@ -7,7 +7,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from .batch_plan import format_highlights, number_highlights, plan_batch, select_highlights
 from .gameinfo import GameInfoError, run_gameinfo_watchdog
+from .models import Demo
 from .parser import DemoParseError, parse_demo
 from .record_task import RecordError, RecordTask, read_record_task, validate_record_path
 from .recording import record_segment, recover_recording
@@ -130,12 +132,16 @@ def progress(stage: str, current: int, message: str, *, segment_id: int | None =
     emit("progress", stage=stage, current=current, total=1, message=message, segment_id=segment_id)
 
 
-def inspect_demo(task: InspectTask) -> None:
-    progress("parse", 0, "正在解析 demo。")
+def _parse_demo(path: Path) -> Demo:
     try:
-        demo = parse_demo(task.demo_path)
+        return parse_demo(path)
     except DemoParseError as error:
         raise InspectError("DEMO_PARSE_FAILED", str(error)) from None
+
+
+def inspect_demo(task: InspectTask) -> None:
+    progress("parse", 0, "正在解析 demo。")
+    demo = _parse_demo(task.demo_path)
     progress("parse", 1, "demo 解析完成。")
 
     players = [asdict(player) for player in demo.players]
@@ -144,8 +150,10 @@ def inspect_demo(task: InspectTask) -> None:
         if not any(player.steamid64 == task.player_id for player in demo.players):
             raise InspectError("PLAYER_NOT_FOUND", "demo 里没有找到所选玩家。")
         progress("score", 0, "正在计算高光。")
-        highlights = score_demo(
-            demo, task.player_id, task.highlights, task.rules, victim_pov=task.victim_pov
+        highlights = number_highlights(
+            score_demo(
+                demo, task.player_id, task.highlights, task.rules, victim_pov=task.victim_pov
+            )
         )
     result = {"players": players, "highlights": highlights}
     write_result(task.work_dir / "parsed.json", asdict(demo))
@@ -155,18 +163,23 @@ def inspect_demo(task: InspectTask) -> None:
     emit("result", inspect=result)
 
 
-def run_recording(task: RecordTask) -> None:
+def _worker_command() -> list[str]:
     command = [sys.executable]
     if not getattr(sys, "frozen", False):
         command.extend(("-m", "cs2_engine"))
+    return command
+
+
+def _warning(message: str) -> None:
+    emit("log", level="warning", message=message)
+
+
+def run_recording(task: RecordTask) -> None:
 
     def report(stage: str, current: int, message: str) -> None:
         progress(stage, current, message, segment_id=task.segment.index)
 
-    def warning(message: str) -> None:
-        emit("log", level="warning", message=message)
-
-    clip = record_segment(task, command, report, warning)
+    clip = record_segment(task, _worker_command(), report, _warning)
     width, height = task.capture_size
     result = {
         "output": str(clip.output),
@@ -186,13 +199,92 @@ def run_recording(task: RecordTask) -> None:
     emit("done", segments=1, **result)
 
 
+def _batch_player(demo: Demo, value: str) -> str:
+    for player in demo.players:
+        if player.steamid64 == value:
+            return player.steamid64
+    matches = [player.steamid64 for player in demo.players if player.name == value]
+    if len(matches) > 1:
+        raise InspectError("PLAYER_NOT_FOUND", "存在同名玩家，请改用 SteamID64。")
+    if not matches:
+        raise InspectError("PLAYER_NOT_FOUND", "demo 里没有找到指定玩家。")
+    return matches[0]
+
+
+def run_batch_command(args: argparse.Namespace) -> int:
+    path = validate_record_path(args.demo)
+    if path.suffix.lower() != ".dem":
+        raise RecordError("INVALID_TASK", "--demo 必须指向解压后的 .dem 文件。")
+    if args.command == "record-batch":
+        progress("parse", 0, "正在解析 demo 并计算高光。")
+    demo = _parse_demo(path)
+    player = _batch_player(demo, args.player)
+    highlights = number_highlights(
+        score_demo(demo, player, HIGHLIGHT_TYPES, Rules(), victim_pov=False)
+    )
+    if args.command == "list-highlights":
+        print(format_highlights(highlights))
+        return 0
+
+    from .batch import record_batch
+
+    clips = plan_batch(
+        demo,
+        player,
+        select_highlights(highlights, args.select, args.all),
+        victim_before=args.victim_before,
+        victim_after=args.victim_after,
+    )
+    destination = validate_record_path(args.output_dir)
+    template = RecordTask(
+        demo_path=path,
+        work_dir=destination,
+        output_dir=destination,
+        cs2_path=validate_record_path(args.cs2_path),
+        hlae_path=validate_record_path(args.hlae_path),
+        ffmpeg_path=validate_record_path(args.ffmpeg_path),
+        player_id=player,
+        segment=clips[0].segment,
+        method=args.recording_method,
+        aspect=args.aspect,
+    )
+
+    def report(stage: str, current: int, total: int, message: str) -> None:
+        emit("progress", stage=stage, current=current, total=total, message=message)
+
+    results = record_batch(template, clips, _worker_command(), report, _warning)
+    summary = Path(results["output_dir"]) / "batch-results.json"
+    write_result(summary, results)
+    if not results["compilations"]:
+        emit("error", code="BATCH_FAILED", message="没有可用的合集成品。", summary=str(summary))
+        return 1
+    emit("done", **results, summary=str(summary))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="cs2-engine", description="解析 CS2 demo 并录制单段高光。"
+        prog="cs2-engine", description="解析 CS2 demo 并录制高光合集。"
     )
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="读取任务 JSON。")
     run.add_argument("--task", required=True, type=Path, help="任务 JSON 文件路径")
+    listing = commands.add_parser("list-highlights", help="列出高光编号与时长。")
+    batch = commands.add_parser("record-batch", help="批量录制并生成两个视角的合集。")
+    for command in (listing, batch):
+        command.add_argument("--demo", required=True, type=Path, help="CS2 .dem 文件")
+        command.add_argument("--player", required=True, help="SteamID64 或完整玩家名")
+    selection = batch.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--select", help="用逗号分隔的高光编号，例如 1,3,5")
+    selection.add_argument("--all", action="store_true", help="录制所选玩家的全部高光")
+    batch.add_argument("--output-dir", required=True, type=Path, help="批量成品目录")
+    batch.add_argument("--cs2-path", required=True, type=Path, help="CS2 安装目录或 cs2.exe")
+    batch.add_argument("--hlae-path", required=True, type=Path, help="HLAE.exe")
+    batch.add_argument("--ffmpeg-path", required=True, type=Path, help="FFmpeg.exe")
+    batch.add_argument("--aspect", choices=("16:9", "4:3-stretched"), default="16:9")
+    batch.add_argument("--recording-method", choices=("auto", "hlae", "startmovie"), default="auto")
+    batch.add_argument("--victim-before", type=float, default=3, help="死亡前的秒数，默认 3")
+    batch.add_argument("--victim-after", type=float, default=1, help="死亡后的秒数，默认 1")
     recover = commands.add_parser("recover-gameinfo", help="从本机记录恢复 CS2 的 gameinfo.gi。")
     recover.add_argument("--cs2-path", required=True, type=Path, help="CS2 安装目录或 cs2.exe")
     recover.add_argument(
@@ -218,6 +310,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "recover-gameinfo":
             handled = recover_recording(args.cs2_path, accept_current=args.accept_current)
             emit("result", recovery={"restored": handled})
+        elif args.command in ("list-highlights", "record-batch"):
+            return run_batch_command(args)
         else:
             task = read_task(args.task)
             if isinstance(task, RecordTask):

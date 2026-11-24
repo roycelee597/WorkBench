@@ -1,6 +1,6 @@
 # CS2 demo 高光引擎
 
-P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和剪辑时间。P2 在 Windows 上尝试录制 P1 选出的一段第一人称画面。预览和录制边界都使用 demo 的 tick。
+P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和剪辑时间。P2 在 Windows 上录制单段第一人称画面。P3 支持按编号批量录制，并生成玩家与受害者视角的合集。预览和录制边界都使用 demo 的 tick。
 
 ## 在 Windows 上预览一场对局
 
@@ -49,7 +49,27 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
 
 任务、demo、玩家和输出目录出错时分别返回 `INVALID_TASK`、`DEMO_PARSE_FAILED`、`PLAYER_NOT_FOUND`、`OUTPUT_WRITE_FAILED`。录制还会返回 `CS2_NOT_FOUND`、`HLAE_NOT_FOUND`、`RECORD_FAILED`、`FFMPEG_FAILED`、`GAMEINFO_FAILED` 或 `PERMISSION_DENIED`。终端中断返回 `CANCELLED`。其他异常返回 `INTERNAL_ERROR`，异常堆栈只写到标准错误。失败的最后一行是 `error`，退出状态为非零。
 
-工作目录内的 `parsed.json` 保存归一化事件，`highlights.json` 对应 `result.inspect`。每段预览带回合号 `round`、类别 `types`、标签 `tags`、`start_tick`、`end_tick`、`duration_s` 和 `victim_povs`。受害者窗口包含 `steamid64`（机器人或无法识别时为 `null`）、`death_tick`、起止 tick 和时长。
+工作目录内的 `parsed.json` 保存归一化事件，`highlights.json` 对应 `result.inspect`。每段预览带从 1 开始的编号 `id`、回合号 `round`、类别 `types`、标签 `tags`、`start_tick`、`end_tick`、`duration_s` 和 `victim_povs`。同一 demo、玩家和判定规则会生成相同编号。受害者窗口包含 `steamid64`（机器人或无法识别时为 `null`）、`death_tick`、起止 tick 和时长。
+
+## 在 Windows 上批量录制 P3
+
+先按 P2 的准备步骤安装 HLAE 和 FFmpeg，保持 Steam 运行，并退出正在游玩的 CS2。在仓库根目录运行以下命令，路径和玩家名均换成本机的值。也可用 SteamID64 指定玩家。
+
+```powershell
+uv run --project engines/cs2 --locked cs2-engine list-highlights --demo 'D:/DemoTest/match.dem' --player 'DemoPlayer'
+uv run --project engines/cs2 --locked cs2-engine record-batch `
+  --demo 'D:/DemoTest/match.dem' --player 'DemoPlayer' --select '1,3,5' `
+  --cs2-path 'D:/Games/Counter-Strike Global Offensive' --hlae-path 'D:/Tools/HLAE/HLAE.exe' `
+  --ffmpeg-path 'D:/Tools/FFmpeg/bin/ffmpeg.exe' --output-dir 'D:/DemoTest/output'
+```
+
+`list-highlights` 和 `record-batch` 使用默认判定规则。列表会显示编号、回合、类型、标签及片段时长。可把 `--select '1,3,5'` 换成 `--all`。编号错误时会列出可选编号。
+
+- 受害者片段默认从死亡前 3 秒录到死亡后 1 秒，可用 `--victim-before` 和 `--victim-after` 修改。死亡前时长须大于 0 秒，死亡后时长可设为 0 秒。窗口按实际回合和 demo 的边界截断。同一次击杀若落在多个选中高光里，只录一次受害者片段。
+- 默认以 `--aspect 16:9` 录制，也可指定 `--aspect 4:3-stretched`。玩家与受害者均沿用 P2 的 HUD 和准星设置。受害者死亡后如游戏自动切换观战对象，录制保留受害者最后的视角。
+- 默认优先使用一次 HLAE 会话批量捕获，未通过校验的片段逐段重试。`--recording-method startmovie` 使用逐段启动的原生录制方式。需要按 `Ctrl+C` 中断时，引擎会结束受托管的录制和编码进程，并执行原有的配置校验与恢复流程。
+- `--output-dir` 请使用仓库外的目录。每份 demo 有独立的目录，每次运行创建新的 `batch-*` 子目录。单段保存在 `player-clips` 和 `victim-clips` 中，文件名包含高光编号、回合和类型。播放器可打开 `highlights.mp4` 和 `victims.mp4` 检查合集，每个接缝约有 0.3 秒的音画淡出淡入。
+- `record-batch` 标准输出为 JSON Lines。`batch-results.json` 保存成功单段和合集的 ffprobe 校验、耗时与失败原因。有可用合集时，`done` 也包含失败明细。任何一个完整合集都未生成时返回 `BATCH_FAILED`。
 
 ## 在 Windows 上录制 P2 单段
 

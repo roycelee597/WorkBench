@@ -377,6 +377,7 @@ def _record_attempt(
         method=method,
         native_prefix=prefix,
         observer_crosshair=observer_crosshair,
+        death_tick=task.death_tick,
     )
     with (
         WindowsJob(job_name) as job,

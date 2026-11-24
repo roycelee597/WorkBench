@@ -40,6 +40,7 @@ class RecordTask:
     segment: Segment
     method: CaptureMethod
     aspect: CaptureAspect = "16:9"
+    death_tick: int | None = None
 
     @property
     def capture_size(self) -> tuple[int, int]:
