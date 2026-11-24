@@ -141,12 +141,17 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(tmp_path, method, s
     assert "cl_draw_only_deathnotices 0" in hud_commands
     for panel in (
         "HudDemoController",
-        "HudTeamCounter",
         "jsHudSpecplayer__Bg",
         "HudSpecplayer__Avatar",
     ):
         assert f"mirv_panorama panelStyle panelId={panel} opacity=0" in hud_commands
-    for panel in ("HudReticle", "jsHudHealthArmorAmmoMore", "HudDeathNotice"):
+    for panel in (
+        "HudTeamCounter",
+        "HudWeaponSelection",
+        "HudReticle",
+        "jsHudHealthArmorAmmoMore",
+        "HudDeathNotice",
+    ):
         assert f"mirv_panorama panelStyle panelId={panel} opacity=0" not in hud_commands
     assert script.index("mirv.exec(options.hud)") < script.index("mirv.exec(options.begin)")
     if method == "hlae":

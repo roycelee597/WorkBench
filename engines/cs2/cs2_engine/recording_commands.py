@@ -8,10 +8,9 @@ from .record_task import CAPTURE_SIZES, CaptureAspect
 
 type RecordingMethod = Literal["hlae", "startmovie"]
 
-# 播放进度条、观战资料和提示均为独立面板。保留准星、生命值／护甲、弹药和击杀提示。
+# 按面板隐藏回放控件和观战资料，保留队伍头像栏、武器栏及战斗提示。
 _HIDDEN_HUD_PANELS = (
     "HudDemoController",
-    "HudTeamCounter",
     "jsHudSpecplayer__Bg",
     "HudSpecplayer__Avatar",
     "JsHudLegendPanel",
@@ -20,7 +19,6 @@ _HIDDEN_HUD_PANELS = (
     "HudTopLeft",
     "HudLowerLeft",
     "HudChat",
-    "HudWeaponSelection",
 )
 _CLEAN_HUD = "; ".join(
     (
