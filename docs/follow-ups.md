@@ -14,3 +14,8 @@
 - [ ] 设计同步时处理 `finance_thresholds` 和 `workbench_kv` 的卸载语义。当前卸载会硬删除金融记录，不保留墓碑。
 - [ ] 禁止金融模块直接调用通用 `engine.start`，仅允许通过 `finance.requestUpdate` 和 `finance.verify` 启动，避免绕过首次回补确认。
 - [ ] 在隔离实例升级后，检查安装目录是否残留旧的 `finance-engine-*.exe`。
+
+## PR #41 后续待办
+
+- [ ] CS2 更新若重命名 HUD 面板，`mirv_panorama` 会静默失效。增加检测，或在 CS2 引擎的 README 写明每次 CS2 更新后都要试录并核对 HUD。
+- [ ] 确认切换武器时是否保留武器栏。目前录制时会隐藏 `HudWeaponSelection`。
