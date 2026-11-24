@@ -7,7 +7,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from .gameinfo import GameInfoError, run_gameinfo_watchdog
 from .parser import DemoParseError, parse_demo
+from .record_task import RecordError, RecordTask, read_record_task, validate_record_path
+from .recording import record_segment, recover_recording
 from .rules import HIGHLIGHT_TYPES, Rules, parse_rules
 from .scoring import score_demo
 
@@ -35,8 +38,9 @@ def task_path_field(task: dict, key: str, directory: Path) -> Path:
     return directory / value
 
 
-def read_task(path: Path) -> InspectTask:
+def read_task(path: Path) -> InspectTask | RecordTask:
     try:
+        path = validate_record_path(path)
         task = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         raise InspectError("INVALID_TASK", "无法读取任务文件，请提供有效的 JSON 文件。") from None
@@ -44,8 +48,10 @@ def read_task(path: Path) -> InspectTask:
     try:
         if not isinstance(task, dict) or type(task.get("schema_version")) is not int:
             raise ValueError("任务必须包含整数 schema_version。")
-        if task["schema_version"] != 1 or task.get("mode") != "inspect":
-            raise ValueError("当前引擎只支持 schema_version 为 1 的 inspect 任务。")
+        if task["schema_version"] != 1 or task.get("mode") not in ("inspect", "record"):
+            raise ValueError("当前引擎支持 schema_version 为 1 的 inspect 和 record 任务。")
+        if task["mode"] == "record":
+            return read_record_task(task, path.parent)
 
         demo_path = task_path_field(task, "demo_path", path.parent)
         if demo_path.suffix.lower() != ".dem":
@@ -120,8 +126,8 @@ def emit(message_type: str, **fields: object) -> None:
     print(json.dumps({"type": message_type, **fields}, allow_nan=False), flush=True)
 
 
-def progress(stage: str, current: int, message: str) -> None:
-    emit("progress", stage=stage, current=current, total=1, message=message, segment_id=None)
+def progress(stage: str, current: int, message: str, *, segment_id: int | None = None) -> None:
+    emit("progress", stage=stage, current=current, total=1, message=message, segment_id=segment_id)
 
 
 def inspect_demo(task: InspectTask) -> None:
@@ -149,19 +155,83 @@ def inspect_demo(task: InspectTask) -> None:
     emit("result", inspect=result)
 
 
+def run_recording(task: RecordTask) -> None:
+    command = [sys.executable]
+    if not getattr(sys, "frozen", False):
+        command.extend(("-m", "cs2_engine"))
+
+    def report(stage: str, current: int, message: str) -> None:
+        progress(stage, current, message, segment_id=task.segment.index)
+
+    def warning(message: str) -> None:
+        emit("log", level="warning", message=message)
+
+    clip = record_segment(task, command, report, warning)
+    width, height = task.capture_size
+    result = {
+        "output": str(clip.output),
+        "aspect": task.aspect,
+        "source_width": width,
+        "source_height": height,
+        "duration_s": clip.duration_s,
+        "recording_method": clip.method,
+        "recording_elapsed_s": round(clip.capture_elapsed_s, 3),
+        "size_bytes": clip.size_bytes,
+        "gameinfo_restored": True,
+        "fallback_reason": clip.fallback_reason,
+    }
+    write_result(
+        task.work_dir / "segments.json", {"segments": [{**asdict(task.segment), **result}]}
+    )
+    emit("done", segments=1, **result)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="cs2-engine", description="解析 CS2 demo 并预览高光。")
+    parser = argparse.ArgumentParser(
+        prog="cs2-engine", description="解析 CS2 demo 并录制单段高光。"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="读取任务 JSON。")
     run.add_argument("--task", required=True, type=Path, help="任务 JSON 文件路径")
+    recover = commands.add_parser("recover-gameinfo", help="从本机记录恢复 CS2 的 gameinfo.gi。")
+    recover.add_argument("--cs2-path", required=True, type=Path, help="CS2 安装目录或 cs2.exe")
+    recover.add_argument(
+        "--accept-current",
+        action="store_true",
+        help="在 Steam 验证游戏文件后，保留当前 gameinfo.gi 并清除旧备份。",
+    )
+    watchdog = commands.add_parser("gameinfo-watchdog")
+    watchdog.add_argument("--gameinfo", required=True, type=Path)
+    watchdog.add_argument("--state-dir", required=True, type=Path)
+    watchdog.add_argument("--job-name")
     args = parser.parse_args(argv)
+    if args.command == "gameinfo-watchdog":
+        try:
+            return run_gameinfo_watchdog(
+                validate_record_path(args.gameinfo),
+                validate_record_path(args.state_dir),
+                args.job_name,
+            )
+        except (RecordError, OSError, RuntimeError):
+            return 1
     try:
-        inspect_demo(read_task(args.task))
-    except InspectError as error:
+        if args.command == "recover-gameinfo":
+            handled = recover_recording(args.cs2_path, accept_current=args.accept_current)
+            emit("result", recovery={"restored": handled})
+        else:
+            task = read_task(args.task)
+            if isinstance(task, RecordTask):
+                run_recording(task)
+            else:
+                inspect_demo(task)
+    except (InspectError, RecordError) as error:
         emit("error", code=error.code, message=str(error))
         return 1
+    except GameInfoError as error:
+        emit("error", code="GAMEINFO_FAILED", message=str(error))
+        return 1
     except KeyboardInterrupt:
-        emit("error", code="CANCELLED", message="已取消预览。")
+        emit("error", code="CANCELLED", message="任务已取消。")
         return 1
     except Exception:
         emit("error", code="INTERNAL_ERROR", message="引擎内部错误，请查看日志")

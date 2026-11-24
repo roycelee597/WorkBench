@@ -1,3 +1,7 @@
 *.dem
 parsed.json
 highlights.json
+segments.json
+*.mp4
+*.tga
+*.wav
