@@ -72,9 +72,9 @@ def _recovery_dir() -> Path:
     return validate_record_path(Path(base) / "WorkBench-CS2-Prototype")
 
 
-def recover_recording(cs2: Path) -> bool:
+def recover_recording(cs2: Path, *, accept_current: bool = False) -> bool:
     _, gameinfo = _game_location(validate_record_path(cs2))
-    return recover_gameinfo(gameinfo, _recovery_dir())
+    return recover_gameinfo(gameinfo, _recovery_dir(), accept_current=accept_current)
 
 
 def _capture_tools(task: RecordTask) -> CaptureTools:

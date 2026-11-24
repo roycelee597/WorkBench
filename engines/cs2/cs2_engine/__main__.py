@@ -191,6 +191,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.add_argument("--task", required=True, type=Path, help="任务 JSON 文件路径")
     recover = commands.add_parser("recover-gameinfo", help="从本机记录恢复 CS2 的 gameinfo.gi。")
     recover.add_argument("--cs2-path", required=True, type=Path, help="CS2 安装目录或 cs2.exe")
+    recover.add_argument(
+        "--accept-current",
+        action="store_true",
+        help="在 Steam 验证游戏文件后，保留当前 gameinfo.gi 并清除旧备份。",
+    )
     watchdog = commands.add_parser("gameinfo-watchdog")
     watchdog.add_argument("--gameinfo", required=True, type=Path)
     watchdog.add_argument("--state-dir", required=True, type=Path)
@@ -207,7 +212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
     try:
         if args.command == "recover-gameinfo":
-            emit("result", recovery={"restored": recover_recording(args.cs2_path)})
+            handled = recover_recording(args.cs2_path, accept_current=args.accept_current)
+            emit("result", recovery={"restored": handled})
         else:
             task = read_task(args.task)
             if isinstance(task, RecordTask):

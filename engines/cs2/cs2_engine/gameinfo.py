@@ -28,7 +28,8 @@ _WATCHDOG_LOCK_TIMEOUT_S = 15
 _WATCHDOG_READY = b"R"
 _JOB_NAME_PREFIX = "Local\\WorkBench-CS2-"
 _UNKNOWN_GAMEINFO = (
-    "当前 gameinfo.gi 缺失或属于未知版本，已保留备份。请在 Steam 中使用「验证游戏文件完整性」。"
+    "当前 gameinfo.gi 缺失或属于未知版本，已保留备份。请先在 Steam 中使用「验证游戏文件完整性」，"
+    "再运行 recover-gameinfo 并加上 --accept-current，保留当前文件并清除旧备份。"
 )
 
 
@@ -307,15 +308,27 @@ def _cleanup_capture(state: _State, journal: _Journal) -> None:
     cleanup_native_outputs(roots, native_prefix_for_job(journal.job_name))
 
 
+def _delete_completed_record(state: _State, *, accept_current: bool) -> None:
+    try:
+        state.backup.unlink(missing_ok=True)
+        state.journal.unlink(missing_ok=True)
+    except OSError:
+        if accept_current:
+            raise GameInfoError("无法删除旧的 CS2 配置备份或记录，请重试恢复命令。") from None
+
+
 def _recover_locked(
-    state: _State, *, session: str | None = None, job: WindowsJob | None = None
+    state: _State,
+    *,
+    session: str | None = None,
+    job: WindowsJob | None = None,
+    accept_current: bool = False,
 ) -> bool:
     journal = _read_journal(state)
-    if (
-        journal is None
-        or not journal.active
-        or (session is not None and journal.session != session)
-    ):
+    if journal is None or (session is not None and journal.session != session):
+        return False
+    if not journal.active:
+        _delete_completed_record(state, accept_current=accept_current)
         return False
 
     with ExitStack() as stack:
@@ -337,8 +350,8 @@ def _recover_locked(
                 current = state.target.read_bytes()
             except FileNotFoundError:
                 raise GameInfoError(_UNKNOWN_GAMEINFO) from None
-            # P2 不写入 gameinfo.gi，因此没有可授权写回的临时版本。
-            if current != original:
+            # 只有手动确认才能结束记录并保留 Steam 验证后的新版本。
+            if current != original and not accept_current:
                 raise GameInfoError(_UNKNOWN_GAMEINFO)
             if cleanup_failed:
                 raise GameInfoError("无法清理本次录制的临时文件，已保留恢复记录和备份。")
@@ -346,18 +359,15 @@ def _recover_locked(
             _write_journal(state, replace(journal, active=False))
         except OSError:
             raise GameInfoError("无法恢复 CS2 配置，已保留恢复记录和备份。") from None
-        with suppress(OSError):
-            state.backup.unlink()
-        with suppress(OSError):
-            state.journal.unlink()
+        _delete_completed_record(state, accept_current=accept_current)
         return True
 
 
-def recover_gameinfo(gameinfo_path: Path, state_dir: Path) -> bool:
+def recover_gameinfo(gameinfo_path: Path, state_dir: Path, *, accept_current: bool = False) -> bool:
     """恢复一次未完成的录制会话，返回是否处理了恢复记录。"""
     state = _State.for_install(gameinfo_path, state_dir)
     with _installation_lock(state):
-        return _recover_locked(state)
+        return _recover_locked(state, accept_current=accept_current)
 
 
 def _read_ready(pipe: BinaryIO, result: Queue[bytes]) -> None:

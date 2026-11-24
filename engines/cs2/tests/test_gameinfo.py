@@ -229,7 +229,7 @@ def test_invalid_backup_hash_preserves_target_and_recovery_record(install):
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_recover_cli_keeps_steam_update_and_reports_gameinfo_failed(
+def test_recover_cli_can_accept_steam_update_and_start_another_recording(
     install, monkeypatch, capsys, legacy
 ):
     target, state = install
@@ -255,29 +255,51 @@ def test_recover_cli_keeps_steam_update_and_reports_gameinfo_failed(
     exe.touch()
     monkeypatch.setattr(recording, "_recovery_dir", lambda: state)
 
-    assert cli.main(["recover-gameinfo", "--cs2-path", str(game)]) == 1
+    command = ["recover-gameinfo", "--cs2-path", str(game)]
+    assert cli.main(command) == 1
     error = json.loads(capsys.readouterr().out)
     assert error["code"] == "GAMEINFO_FAILED"
     assert "验证游戏文件完整性" in error["message"]
+    assert "--accept-current" in error["message"]
     assert target.read_bytes() == newer
     assert backup.read_bytes() == _ORIGINAL
     assert json.loads(journal.read_bytes())["active"] is True
 
+    with pytest.raises(GameInfoError, match="验证游戏文件完整性"):
+        with GameInfoProtection(target, state):
+            pytest.fail("recording started with an unaccepted version")
 
-def test_recovery_does_not_recreate_missing_gameinfo(install):
+    assert cli.main([*command, "--accept-current"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"type": "result", "recovery": {"restored": True}}
+    assert target.read_bytes() == newer
+    assert target.stat().st_mtime_ns == snapshot.st_mtime_ns
+    assert not backup.exists()
+    assert not journal.exists()
+
+    with GameInfoProtection(target, state):
+        assert backup.read_bytes() == newer
+        assert json.loads(journal.read_bytes())["active"] is True
+
+    assert target.read_bytes() == newer
+    assert not backup.exists()
+
+
+@pytest.mark.parametrize("accept_current", [False, True])
+def test_recovery_does_not_recreate_missing_gameinfo(install, accept_current):
     target, state = install
     _run_script(_ABORTED_ENGINE, target, state)
     target.unlink()
 
     with pytest.raises(GameInfoError, match="验证游戏文件完整性"):
-        recover_gameinfo(target, state)
+        recover_gameinfo(target, state, accept_current=accept_current)
 
     assert not target.exists()
     assert list(state.glob("*/original.gi"))
 
 
-@pytest.mark.parametrize("updated", [False, True])
-def test_manual_recovery_cleans_only_registered_native_files(install, tmp_path, updated):
+@pytest.mark.skipif(os.name != "nt", reason="需要 Windows Job Object")
+@pytest.mark.parametrize("recovery", ["unchanged", "updated", "accepted"])
+def test_manual_recovery_cleans_only_registered_native_files(install, tmp_path, recovery):
     target, state = install
     profile = tmp_path / "workbench-cs2-testing" / "startmovie" / "profile"
     name = new_recording_job_name()
@@ -294,14 +316,16 @@ def test_manual_recovery_cleans_only_registered_native_files(install, tmp_path, 
         file.touch()
     _run_script(_ABORTED_NATIVE_ENGINE, target, state, profile, name)
 
-    if updated:
+    if recovery != "unchanged":
         target.write_bytes(b"steam update")
+
+    if recovery == "updated":
         with pytest.raises(GameInfoError, match="验证游戏文件完整性"):
             recover_gameinfo(target, state)
         assert target.read_bytes() == b"steam update"
         assert list(state.glob("*/original.gi"))
     else:
-        assert recover_gameinfo(target, state) is True
+        assert recover_gameinfo(target, state, accept_current=recovery == "accepted") is True
 
     assert all(not file.exists() for file in outputs)
     assert other_session.exists()
