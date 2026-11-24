@@ -21,6 +21,7 @@ from .gameinfo import (
     recover_gameinfo,
 )
 from .native_capture import native_outputs
+from .parser import has_recorded_crosshair
 from .record_task import OUTPUT_SIZE, CaptureAspect, RecordError, RecordTask, validate_record_path
 from .recording_commands import RecordingMethod, hlae_argv, write_capture_config
 from .windows_job import WindowsJob, WindowsProcess
@@ -355,6 +356,8 @@ def _record_attempt(
     worker_command: Sequence[str],
     method: RecordingMethod,
     notify: Callable[[str, int, str], None],
+    *,
+    observer_crosshair: bool,
 ) -> tuple[float, float]:
     profile = directory / "profile"
     capture = directory / "capture"
@@ -373,6 +376,7 @@ def _record_attempt(
         segment.end_tick,
         method=method,
         native_prefix=prefix,
+        observer_crosshair=observer_crosshair,
     )
     with (
         WindowsJob(job_name) as job,
@@ -431,6 +435,11 @@ def record_segment(
             temporary_mp4 = Path(encoding) / "clip.mp4"
             notify("prepare", 0, "正在把 demo 放入独立录制目录。")
             staged = _stage_demo(task.demo_path, private_path, raw_bytes)
+            observer_crosshair = has_recorded_crosshair(
+                staged, task.player_id, task.segment.start_tick
+            )
+            if not observer_crosshair:
+                warning("未能从 demo 读取目标玩家的准星，使用 CS2 默认准星。")
             notify("prepare", 1, "录制输入已就绪。")
             methods = ("hlae", "startmovie") if task.method == "auto" else (task.method,)
             for method in methods:
@@ -447,6 +456,7 @@ def record_segment(
                         worker_command,
                         method,
                         notify,
+                        observer_crosshair=observer_crosshair,
                     )
                 except CaptureIncomplete as error:
                     if task.method != "auto" or method != "hlae":

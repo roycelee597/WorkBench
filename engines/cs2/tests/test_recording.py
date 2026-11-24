@@ -113,7 +113,10 @@ def test_hlae_arguments_isolate_game_and_preserve_spaces(aspect, width):
         ("startmovie", "startmovie wbp2_test", "endmovie; host_framerate 0"),
     ],
 )
-def test_generated_config_uses_exact_steamid_and_tick_bounds(tmp_path, method, start, stop):
+@pytest.mark.parametrize("observer_crosshair, mode", [(True, 2), (False, 0)])
+def test_generated_config_uses_exact_steamid_and_tick_bounds(
+    tmp_path, method, start, stop, observer_crosshair, mode
+):
     profile = tmp_path / "profile"
     write_capture_config(
         profile,
@@ -124,6 +127,7 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(tmp_path, method, s
         1064,
         method=method,
         native_prefix="wbp2_test",
+        observer_crosshair=observer_crosshair,
     )
     cfg = (profile / "cfg/workbench_p2.cfg").read_text(encoding="ascii")
     script = (profile / "cfg/workbench_p2.js").read_text(encoding="ascii")
@@ -135,6 +139,7 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(tmp_path, method, s
     assert settings["steamid"] == PLAYER
     assert (settings["seek"], settings["start"], settings["end"]) == (872, 1000, 1064)
     assert settings["begin"] == start and settings["stop"] == stop
+    assert settings["crosshair"] == f"crosshair 1; cl_show_observer_crosshair {mode}"
     assert "getSteamId() === wanted" in script and "spec_mode 1" in script
     hud_commands = settings["hud"].split("; ")
     assert "r_show_build_info 0" in hud_commands
@@ -154,6 +159,7 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(tmp_path, method, s
     ):
         assert f"mirv_panorama panelStyle panelId={panel} opacity=0" not in hud_commands
     assert script.index("mirv.exec(options.hud)") < script.index("mirv.exec(options.begin)")
+    assert script.index("mirv.exec(options.crosshair)") < script.index("mirv.exec(options.begin)")
     if method == "hlae":
         assert "afxClassic" in settings["setup"] and "startMovieWav 1" in settings["setup"]
     else:
@@ -171,6 +177,7 @@ def test_unsafe_console_path_is_rejected_without_launch(tmp_path):
             200,
             method="hlae",
             native_prefix="wbp2_test",
+            observer_crosshair=True,
         )
 
 
@@ -327,14 +334,16 @@ def test_capture_cancel_terminates_job_before_restoring_config(tmp_path, monkeyp
             ["synthetic"],
             "hlae",
             lambda *args: None,
+            observer_crosshair=True,
         )
 
     assert calls == ["backup", "launch", "terminate", "restore", "close"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="单段录制是 Windows 功能")
+@pytest.mark.parametrize("observer_crosshair", [True, False])
 def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, observer_crosshair
 ):
     task = read_record_task(_task(tmp_path), tmp_path)
     task.demo_path.write_bytes(b"PBDEMS2\x00synthetic")
@@ -349,21 +358,43 @@ def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
     monkeypatch.setattr(recording, "_capture_tools", lambda _task: tools)
     monkeypatch.setattr(recording, "_staging_root", lambda _work_dir: tmp_path)
     monkeypatch.setattr(recording, "_check_space", lambda *_args: None)
+    checks = []
     attempts = []
     warnings = []
 
-    def attempt(_task, _tools, _demo, _directory, mp4, _state, _worker, method, _notify):
-        attempts.append(method)
+    def check_crosshair(demo, player_id, tick):
+        assert demo.read_bytes() == task.demo_path.read_bytes()
+        checks.append((player_id, tick))
+        return observer_crosshair
+
+    def attempt(
+        _task,
+        _tools,
+        _demo,
+        _directory,
+        mp4,
+        _state,
+        _worker,
+        method,
+        _notify,
+        *,
+        observer_crosshair,
+    ):
+        attempts.append((method, observer_crosshair))
         if method == "hlae":
             raise recording.CaptureIncomplete("图像未生成。")
         mp4.write_bytes(b"synthetic mp4")
         return 1, 2
 
+    monkeypatch.setattr(recording, "has_recorded_crosshair", check_crosshair)
     monkeypatch.setattr(recording, "_record_attempt", attempt)
     clip = recording.record_segment(task, ["synthetic"], lambda *args: None, warnings.append)
 
-    assert attempts == ["hlae", "startmovie"]
-    assert len(warnings) == 1 and "图像未生成" in warnings[0]
+    assert checks == [(PLAYER, 1000)]
+    assert attempts == [("hlae", observer_crosshair), ("startmovie", observer_crosshair)]
+    assert sum("默认准星" in message for message in warnings) == (0 if observer_crosshair else 1)
+    assert len(warnings) == (1 if observer_crosshair else 2)
+    assert "图像未生成" in warnings[-1]
     assert clip.method == "startmovie" and clip.fallback_reason == "图像未生成。"
     assert list(task.output_dir.iterdir()) == [clip.output]
 
