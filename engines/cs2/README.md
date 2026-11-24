@@ -80,7 +80,7 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
    uv run --project engines/cs2 --locked cs2-engine run --task 'D:/DemoTest/record-task.json'
    ```
 
-4. 成功后打开 `output` 里的 MP4，检查是否为目标玩家第一人称，并检查准星、血量、护甲、弹药、击杀提示和音画同步。底部回放控制条、左下角版本信息、观战队伍栏和选手资料应当隐藏。`done` 和 `record-work/segments.json` 保存录制比例、原始画面分辨率、录制方式、文件时长和大小、从启动 HLAE 到退出 CS2 的耗时，以及 `gameinfo.gi` 的校验结果。可在录制前后分别用 PowerShell 的 `Get-FileHash -Algorithm SHA256 -LiteralPath` 比较游戏安装目录 `game/csgo/gameinfo.gi` 的哈希。
+4. 成功后打开 `output` 里的 MP4，检查是否为目标玩家第一人称，并检查准星、血量、护甲、弹药、击杀提示和音画同步。确认顶部队伍头像栏可见，切换武器时右侧武器栏出现。底部回放控制条、左下角版本信息和观战选手卡应当隐藏。`done` 和 `record-work/segments.json` 保存录制比例、原始画面分辨率、录制方式、文件时长和大小、从启动 HLAE 到退出 CS2 的耗时，以及 `gameinfo.gi` 的校验结果。可在录制前后分别用 PowerShell 的 `Get-FileHash -Algorithm SHA256 -LiteralPath` 比较游戏安装目录 `game/csgo/gameinfo.gi` 的哈希。
 5. 复验取消时，录制中按 `Ctrl+C`，检查 CS2 已退出、没有留下成品，并再次核对 `gameinfo.gi` 的哈希。P2 引擎本身不修改 `gameinfo.gi`。备份和启动时的 SHA-256、大小、修改时间用于防范 HLAE 或游戏意外改动。恢复时发现配置缺失或属于未知版本，会保留原备份和现有文件，并返回 `GAMEINFO_FAILED`。
 
    正常退出、失败或取消时，任务先结束受托管的进程，再处理恢复记录。引擎进程崩溃由独立看护进程接手。它和下方恢复命令都会清理本次 `startmovie` 在 `game/csgo`、`bin/win64` 和隔离配置目录里留下的 TGA/WAV。清理限于登记的 `wbp2_<32 位十六进制>` 前缀，并跳过链接。整机断电后，下一次录制会检查持久化恢复记录，也可以先执行以下命令。恢复记录放在 `%LOCALAPPDATA%/WorkBench-CS2-Prototype`。
@@ -97,7 +97,7 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
 
 `aspect` 可选，默认为 `"16:9"`，CS2 以 1920×1080 渲染。`"4:3-stretched"` 让 CS2 以 1440×1080 渲染，FFmpeg 再横向拉伸至 1920×1080。两种模式均输出 60 fps 的 1080p MP4。录制时会校验原始帧尺寸，确保 CS2 实际按选定比例渲染。
 
-CS2 回放继续使用 Valve 的第一人称观战画面。录制时通过 HLAE 的 `mirv_panorama` 定向隐藏观战专用面板，保留游戏生成的准星、血量、护甲、弹药和击杀提示。[HLAE 面板控制文档](https://github.com/advancedfx/advancedfx/wiki/Source2%3Amirv_panorama)
+CS2 回放继续使用 Valve 的第一人称观战画面。录制时通过 HLAE 的 `mirv_panorama` 定向隐藏部分面板。CS2 更新可能重命名 HUD 面板，使对应的隐藏规则静默失效。每次 CS2 更新后，请试录一段包含武器切换的片段，并按第 4 步核对 HUD。[HLAE 面板控制文档](https://github.com/advancedfx/advancedfx/wiki/Source2%3Amirv_panorama)
 
 `recording_method` 默认是 `auto`。先用 HLAE `mirv_streams` 输出 TGA 帧和 WAV，交给 FFmpeg 合成。原始捕获校验失败时会记录原因，并改用 CS2 的 `host_framerate`、`startmovie`、`endmovie` 捕获。备用方式仍用 HLAE 控制跳转、锁定视角、隐藏面板和隔离配置。可填写 `hlae` 或 `startmovie` 单独复验相应方式。两种方式都需要已能启动离线回放的 HLAE。[HLAE 逐帧录制文档](https://github.com/advancedfx/advancedfx/wiki/Source2%3Amirv_streams) · [CS2 Windows 回放控制说明](https://cs-demo-manager.com/docs/development/cs-server-plugin)
 

@@ -17,5 +17,5 @@
 
 ## PR #41 后续待办
 
-- [ ] CS2 更新若重命名 HUD 面板，`mirv_panorama` 会静默失效。增加检测，或在 CS2 引擎的 README 写明每次 CS2 更新后都要试录并核对 HUD。
-- [ ] 确认切换武器时是否保留武器栏。目前录制时会隐藏 `HudWeaponSelection`。
+- [ ] 检测 CS2 更新是否重命名了 `mirv_panorama` 要隐藏的 HUD 面板，避免隐藏规则静默失效。README 已要求每次 CS2 更新后试录并核对 HUD。
+- [x] 保留切换武器时显示的右侧武器栏（`HudWeaponSelection`）。
