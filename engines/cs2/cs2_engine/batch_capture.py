@@ -8,7 +8,6 @@ from pathlib import Path
 
 from .compilation import _read_video_info
 from .gameinfo import GameInfoProtection, new_recording_job_name
-from .parser import has_recorded_crosshair
 from .record_task import RecordError, RecordTask
 from .recording import (
     RecordedClip,
@@ -21,7 +20,7 @@ from .recording import (
     _staging_root,
     _wait_for_game,
 )
-from .recording_commands import _CLEAN_HUD, _POV_SCRIPT, _console_path
+from .recording_commands import _CLEAN_HUD, _POV_SCRIPT, _console_path, _validated_target
 from .windows_job import WindowsJob
 
 
@@ -36,12 +35,13 @@ def _write_batch_config(
         "hud": _CLEAN_HUD,
         "clips": [
             {
-                "target": task.player_id,
+                "target": _validated_target(task.player_id),
                 "start": task.segment.start_tick,
                 "end": task.segment.end_tick,
                 "death": task.death_tick,
                 "nameCommand": f"mirv_streams record name {_console_path(capture)}",
                 "crosshair": f"crosshair 1; cl_show_observer_crosshair {2 if crosshair else 0}",
+                "xray": f"spec_show_xray {int(task.xray)}",
             }
             for task, capture, crosshair in zip(tasks, captures, crosshairs, strict=True)
         ],
@@ -67,6 +67,8 @@ def record_multiple(
     worker_command: Sequence[str],
     notify: Callable[[str, int, str], None],
     warning: Callable[[str], None],
+    *,
+    crosshairs: Sequence[bool],
 ) -> dict[int, RecordedClip]:
     """保护一次离线游戏会话，逐段独立验证已完成的录制。"""
     if not items:
@@ -91,10 +93,6 @@ def record_multiple(
             staged = _stage_demo(first.demo_path, private, required)
             profile = private / "profile"
             captures = [private / f"take-{index:04d}" for index in range(len(items))]
-            crosshairs = [
-                has_recorded_crosshair(staged, task.player_id, task.segment.start_tick)
-                for task, _ in items
-            ]
             if not all(crosshairs):
                 warning("部分片段未能读取目标准星，使用 CS2 默认准星。")
             _write_batch_config(profile, staged, [task for task, _ in items], captures, crosshairs)
@@ -120,13 +118,14 @@ def record_multiple(
                     job.terminate()
             # 游戏结束并完成恢复后，每段编码使用独立的 Job。即使游戏超时，
             # 此前已写完的片段仍能编码，单段卡住也不会影响下一段。
-            for index, (_, output) in enumerate(items):
+            for index, (task, output) in enumerate(items):
                 capture = captures[index]
                 try:
                     raw = _capture_sequence(
                         list(capture.rglob("*.tga")) + list(capture.glob("take*/audio.wav")),
                         frames[index],
                         first.capture_size,
+                        pad_tail=task.death_tick is not None,
                     )
                     output.parent.mkdir(parents=True, exist_ok=True)
                     with tempfile.TemporaryDirectory(
@@ -232,9 +231,10 @@ mirv.events.clientFrameStageNotify.on("workbench-p3", (event) => {
         const index = targetIndex(clip.target);
         if (!index) return;
         mirv.exec("sv_cheats 1; hideconsole; volume 1; cl_demo_freecam 0; " +
-            "spec_mode 1; spec_show_xray 0; cl_demo_predict 1");
+            "spec_mode 1; cl_demo_predict 1");
         mirv.exec(clip.crosshair);
         mirv.exec(`spec_player ${index}; mirv_script_spec_lock ${index}`);
+        mirv.exec(clip.xray);
         mirv.exec(options.hud);
         mirv.exec(clip.nameCommand);
         if (mirv.isDemoPaused()) mirv.exec("demo_resume");
@@ -251,6 +251,7 @@ mirv.events.clientFrameStageNotify.on("workbench-p3", (event) => {
         phase = "record";
         mirv.exec(options.hud);
         mirv.exec(clip.crosshair);
+        mirv.exec(clip.xray);
         mirv.exec("mirv_streams record start");
     }
     if (phase === "record" && tick >= clip.end) finishClip(true);

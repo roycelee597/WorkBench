@@ -42,6 +42,12 @@ def _console_path(path: Path) -> str:
     return f'"{value}"'
 
 
+def _validated_target(player_id: str) -> str:
+    if re.fullmatch(r"(?:[0-9]{17}|bot:[1-9][0-9]?)", player_id) is None:
+        raise ValueError("回放目标无效。")
+    return player_id
+
+
 def hlae_argv(hlae: Path, cs2: Path, profile: Path, *, aspect: CaptureAspect = "16:9") -> list[str]:
     width, height = CAPTURE_SIZES[aspect]
     game_arguments = subprocess.list2cmdline(
@@ -90,9 +96,9 @@ def write_capture_config(
     native_prefix: str,
     observer_crosshair: bool,
     death_tick: int | None = None,
+    xray: bool = False,
 ) -> None:
-    if re.fullmatch(r"(?:[0-9]{17}|bot:[1-9][0-9]?)", player_id) is None:
-        raise ValueError("回放目标无效。")
+    target = _validated_target(player_id)
     if re.fullmatch(r"[a-z0-9_]+", native_prefix) is None:
         raise ValueError("原生录制临时名称无效。")
     if method == "hlae":
@@ -107,13 +113,14 @@ def write_capture_config(
         begin, end = f"startmovie {native_prefix}", "endmovie; host_framerate 0"
 
     values = {
-        "steamid": player_id,
+        "steamid": target,
         "start": start_tick,
         "end": end_tick,
         "death": death_tick,
         "seek": max(0, start_tick - 128),
         "hud": _CLEAN_HUD,
         "crosshair": f"crosshair 1; cl_show_observer_crosshair {2 if observer_crosshair else 0}",
+        "xray": f"spec_show_xray {int(xray)}",
         "setup": setup,
         "begin": begin,
         "stop": end,
@@ -224,9 +231,10 @@ mirv.events.clientFrameStageNotify.on("workbench-p2", (event) => {
             return;
         }
         mirv.exec("sv_cheats 1; hideconsole; volume 1; cl_demo_freecam 0; " +
-            "spec_mode 1; spec_show_xray 0; cl_demo_predict 1");
+            "spec_mode 1; cl_demo_predict 1");
         mirv.exec(options.crosshair);
         mirv.exec(`spec_player ${index}; mirv_script_spec_lock ${index}`);
+        mirv.exec(options.xray);
         mirv.exec(options.hud);
         mirv.exec(options.setup);
         if (mirv.isDemoPaused()) mirv.exec("demo_resume");
@@ -241,6 +249,7 @@ mirv.events.clientFrameStageNotify.on("workbench-p2", (event) => {
         phase = "record";
         mirv.exec(options.hud);
         mirv.exec(options.crosshair);
+        mirv.exec(options.xray);
         mirv.exec(options.begin);
     }
     if (phase === "record" && tick >= options.end) {

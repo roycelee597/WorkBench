@@ -3,7 +3,7 @@ import json
 import sys
 import traceback
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -247,6 +247,7 @@ def run_batch_command(args: argparse.Namespace) -> int:
         segment=clips[0].segment,
         method=args.recording_method,
         aspect=args.aspect,
+        xray=args.xray,
     )
 
     def report(stage: str, current: int, total: int, message: str) -> None:
@@ -254,7 +255,6 @@ def run_batch_command(args: argparse.Namespace) -> int:
 
     results = record_batch(template, clips, _worker_command(), report, _warning)
     summary = Path(results["output_dir"]) / "batch-results.json"
-    write_result(summary, results)
     if not results["compilations"]:
         emit("error", code="BATCH_FAILED", message="没有可用的合集成品。", summary=str(summary))
         return 1
@@ -269,8 +269,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="读取任务 JSON。")
     run.add_argument("--task", required=True, type=Path, help="任务 JSON 文件路径")
-    listing = commands.add_parser("list-highlights", help="列出高光编号与时长。")
+    listing = commands.add_parser(
+        "list-highlights",
+        help="列出高光编号与时长。",
+        description="列出高光编号与时长。编号只与使用默认类型和规则的 inspect 结果一致。",
+    )
     batch = commands.add_parser("record-batch", help="批量录制并生成两个视角的合集。")
+    for command in (run, batch):
+        command.add_argument(
+            "--xray",
+            action=argparse.BooleanOptionalAction,
+            default=None if command is run else False,
+            help="开启或关闭录制中的观战 X 光，默认关闭。",
+        )
     for command in (listing, batch):
         command.add_argument("--demo", required=True, type=Path, help="CS2 .dem 文件")
         command.add_argument("--player", required=True, help="SteamID64 或完整玩家名")
@@ -284,7 +295,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     batch.add_argument("--aspect", choices=("16:9", "4:3-stretched"), default="16:9")
     batch.add_argument("--recording-method", choices=("auto", "hlae", "startmovie"), default="auto")
     batch.add_argument("--victim-before", type=float, default=3, help="死亡前的秒数，默认 3")
-    batch.add_argument("--victim-after", type=float, default=1, help="死亡后的秒数，默认 1")
+    batch.add_argument("--victim-after", type=float, default=1.5, help="死亡后的秒数，默认 1.5")
     recover = commands.add_parser("recover-gameinfo", help="从本机记录恢复 CS2 的 gameinfo.gi。")
     recover.add_argument("--cs2-path", required=True, type=Path, help="CS2 安装目录或 cs2.exe")
     recover.add_argument(
@@ -315,8 +326,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             task = read_task(args.task)
             if isinstance(task, RecordTask):
+                if args.xray is not None:
+                    task = replace(task, xray=args.xray)
                 run_recording(task)
             else:
+                if args.xray is not None:
+                    raise InspectError("INVALID_TASK", "X 光选项仅用于录制任务。")
                 inspect_demo(task)
     except (InspectError, RecordError) as error:
         emit("error", code=error.code, message=str(error))

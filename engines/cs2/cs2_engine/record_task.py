@@ -41,6 +41,7 @@ class RecordTask:
     method: CaptureMethod
     aspect: CaptureAspect = "16:9"
     death_tick: int | None = None
+    xray: bool = False
 
     @property
     def capture_size(self) -> tuple[int, int]:
@@ -116,6 +117,9 @@ def read_record_task(task: dict, base: Path) -> RecordTask:
     aspect = task.get("aspect", "16:9")
     if aspect not in ("16:9", "4:3-stretched"):
         raise RecordError("INVALID_TASK", "aspect 必须是 16:9 或 4:3-stretched。")
+    xray = task.get("xray", False)
+    if type(xray) is not bool:
+        raise RecordError("INVALID_TASK", "xray 必须是布尔值。")
     method = task.get("recording_method", "auto")
     if method not in ("auto", "hlae", "startmovie"):
         raise RecordError("INVALID_TASK", "recording_method 必须是 auto、hlae 或 startmovie。")
@@ -136,4 +140,5 @@ def read_record_task(task: dict, base: Path) -> RecordTask:
         ),
         method=method,
         aspect=aspect,
+        xray=xray,
     )

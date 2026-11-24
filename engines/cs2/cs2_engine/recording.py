@@ -48,6 +48,7 @@ class RawCapture:
     frame_count: int
     audio: Path
     source_size: tuple[int, int]
+    tail_padding_frames: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +159,11 @@ def _stage_demo(source: Path, directory: Path, required: int) -> Path:
 
 
 def _capture_sequence(
-    files: Sequence[Path], expected_frames: int, expected_size: tuple[int, int]
+    files: Sequence[Path],
+    expected_frames: int,
+    expected_size: tuple[int, int],
+    *,
+    pad_tail: bool = False,
 ) -> RawCapture:
     audio = [file for file in files if file.suffix.lower() == ".wav"]
     frames = [file for file in files if file.suffix.lower() == ".tga"]
@@ -212,7 +217,9 @@ def _capture_sequence(
     pattern = (
         Path(str(parent).replace("%", "%%")) / f"{prefix.replace('%', '%%')}%0{digits}d{suffix}"
     )
-    return RawCapture(pattern, ordered[0], frame_count, audio[0], expected_size)
+    # 受害者窗口保留指定时长，帧率量化导致的少量缺口延续最后一帧。
+    padding = expected_frames - frame_count if pad_tail else 0
+    return RawCapture(pattern, ordered[0], frame_count + padding, audio[0], expected_size, padding)
 
 
 def ffmpeg_argv(executable: Path, raw: RawCapture, output: Path) -> list[str]:
@@ -220,6 +227,8 @@ def ffmpeg_argv(executable: Path, raw: RawCapture, output: Path) -> list[str]:
     video_filter = "setsar=1"
     if raw.source_size != OUTPUT_SIZE:
         video_filter = f"scale={width}:{height}:flags=lanczos,{video_filter}"
+    if raw.tail_padding_frames:
+        video_filter += f",tpad=stop_mode=clone:stop={raw.tail_padding_frames}"
     return [
         str(executable),
         "-nostdin",
@@ -378,6 +387,7 @@ def _record_attempt(
         native_prefix=prefix,
         observer_crosshair=observer_crosshair,
         death_tick=task.death_tick,
+        xray=task.xray,
     )
     with (
         WindowsJob(job_name) as job,
@@ -400,7 +410,12 @@ def _record_attempt(
                 if method == "hlae"
                 else sorted(native_outputs(native_roots, prefix))
             )
-            raw = _capture_sequence(files, math.ceil(segment.duration_s * 60), task.capture_size)
+            raw = _capture_sequence(
+                files,
+                math.ceil(segment.duration_s * 60),
+                task.capture_size,
+                pad_tail=task.death_tick is not None,
+            )
             notify("record", 1, "逐帧录制完成，已退出 CS2。")
             notify("compose", 0, "正在编码并验证 1080p 60 fps MP4。")
             duration = _run_encoder(job, tools, raw, temporary_mp4, directory / "probe.json")
@@ -415,6 +430,8 @@ def record_segment(
     worker_command: Sequence[str],
     notify: Callable[[str, int, str], None],
     warning: Callable[[str], None],
+    *,
+    observer_crosshair: bool | None = None,
 ) -> RecordedClip:
     if os.name != "nt":
         raise RecordError("RECORD_FAILED", "P2 录制原型需要 Windows。")
@@ -436,9 +453,11 @@ def record_segment(
             temporary_mp4 = Path(encoding) / "clip.mp4"
             notify("prepare", 0, "正在把 demo 放入独立录制目录。")
             staged = _stage_demo(task.demo_path, private_path, raw_bytes)
-            observer_crosshair = has_recorded_crosshair(
-                staged, task.player_id, task.segment.start_tick
-            )
+            if observer_crosshair is None:
+                notify("prepare", 0, "正在读取准星…")
+                observer_crosshair = has_recorded_crosshair(
+                    staged, task.player_id, task.segment.start_tick
+                )
             if not observer_crosshair:
                 warning("未能从 demo 读取目标玩家的准星，使用 CS2 默认准星。")
             notify("prepare", 1, "录制输入已就绪。")

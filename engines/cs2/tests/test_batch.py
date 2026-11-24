@@ -1,4 +1,6 @@
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -51,14 +53,23 @@ def test_batch_retries_missing_segments_and_skips_a_failed_victim(tmp_path, monk
     retries = []
     compositions = {}
     warnings = []
+    progress = []
+    queries = []
 
-    def record_multiple(items, *_args):
+    def recorded_crosshairs(demo, targets):
+        assert demo == task.demo_path
+        assert progress[-1] == "正在读取准星…"
+        queries.append(targets)
+        return {(_PLAYER, 100), (_VICTIM, 140)}
+
+    def record_multiple(items, *_args, crosshairs):
+        assert crosshairs == [True, False, True]
         _, target = items[0]
         target.write_bytes(b"synthetic")
         return {0: RecordedClip(target, "hlae", 1, 2, 9)}
 
-    def record_segment(item, *_args):
-        retries.append(item.death_tick)
+    def record_segment(item, *_args, observer_crosshair):
+        retries.append((item.death_tick, observer_crosshair))
         if item.death_tick == 168:
             raise RecordError("RECORD_FAILED", "片段未生成。")
         target = item.output_dir / "temporary.mp4"
@@ -71,14 +82,21 @@ def test_batch_retries_missing_segments_and_skips_a_failed_victim(tmp_path, monk
         return _Probe()
 
     monkeypatch.setattr(batch, "_capture_tools", lambda _task: tools)
+    monkeypatch.setattr(batch, "recorded_crosshairs", recorded_crosshairs)
     monkeypatch.setattr(batch, "record_multiple", record_multiple)
     monkeypatch.setattr(batch, "record_segment", record_segment)
     monkeypatch.setattr(batch, "probe_video", lambda *_args: _Probe())
     monkeypatch.setattr(batch, "compile_videos", compile_videos)
 
-    summary = batch.record_batch(task, clips, ["synthetic"], lambda *_: None, warnings.append)
+    summary = batch.record_batch(
+        task, clips, ["synthetic"], lambda *args: progress.append(args[-1]), warnings.append
+    )
+    saved = Path(summary["output_dir"]) / "batch-results.json"
 
-    assert retries == [168, 188]
+    assert json.loads(saved.read_text(encoding="utf-8")) == summary
+    assert queries == [[(_PLAYER, 100), (_VICTIM, 120), (_VICTIM, 140)]]
+    assert progress.count("正在读取准星…") == 1
+    assert retries == [(168, False), (188, True)]
     assert compositions == {
         "highlights.mp4": [clips[0].filename],
         "victims.mp4": [clips[2].filename],
@@ -101,7 +119,8 @@ def test_batch_leaves_no_unverified_mp4_or_victim_without_a_living_frame(tmp_pat
         BatchClip("victim", Segment(1, 120, 184, 1), 4, "multikill", _VICTIM, 1, 120),
     )
 
-    def record_segment(item, *_args):
+    def record_segment(item, *_args, observer_crosshair):
+        assert observer_crosshair is False
         target = item.output_dir / "unverified.mp4"
         target.write_bytes(b"invalid")
         return RecordedClip(target, "hlae", 1, 1, 7)
@@ -110,6 +129,7 @@ def test_batch_leaves_no_unverified_mp4_or_victim_without_a_living_frame(tmp_pat
         raise RecordError("FFMPEG_FAILED", "音视频时长不符。")
 
     monkeypatch.setattr(batch, "_capture_tools", lambda _task: tools)
+    monkeypatch.setattr(batch, "recorded_crosshairs", lambda *_args: set())
     monkeypatch.setattr(batch, "record_segment", record_segment)
     monkeypatch.setattr(batch, "probe_video", probe_video)
     summary = batch.record_batch(task, clips, ["synthetic"], lambda *_: None, lambda _: None)
@@ -127,18 +147,40 @@ def test_batch_leaves_no_unverified_mp4_or_victim_without_a_living_frame(tmp_pat
 
 def test_batch_cancellation_propagates_and_does_not_start_fallback(tmp_path, monkeypatch):
     task, tools = _task_and_tools(tmp_path)
-    clip = BatchClip("player", task.segment, 1, "multikill", _PLAYER)
+    completed = BatchClip("player", task.segment, 1, "multikill", _PLAYER)
+    unfinished = BatchClip("victim", Segment(1, 120, 184, 1), 1, "multikill", _VICTIM, 1, 168)
+    published = []
+    warnings = []
 
-    def cancel(*_args):
+    def cancel(items, *_args, **_kwargs):
+        _, output = items[0]
+        output.write_bytes(b"verified MP4")
+        published.append(output)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(batch, "_capture_tools", lambda _task: tools)
+    monkeypatch.setattr(batch, "recorded_crosshairs", lambda *_args: set())
     monkeypatch.setattr(batch, "record_multiple", cancel)
     monkeypatch.setattr(
-        batch, "record_segment", lambda *_: pytest.fail("entered retry after cancel")
+        batch, "record_segment", lambda *_args, **_kwargs: pytest.fail("entered retry after cancel")
     )
     with pytest.raises(KeyboardInterrupt):
-        batch.record_batch(task, (clip, clip), ["synthetic"], lambda *_: None, lambda _: None)
+        batch.record_batch(
+            task, (completed, unfinished), ["synthetic"], lambda *_: None, warnings.append
+        )
+
+    assert published[0].read_bytes() == b"verified MP4"
+    (summary_path,) = tmp_path.rglob("batch-results.json")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["cancelled"] is True
+    assert [item["output"] for item in summary["segments"]] == [str(published[0])]
+    assert [(item["perspective"], item["kill_index"]) for item in summary["uncompleted"]] == [
+        ("victim", 1)
+    ]
+    assert summary["single_session_segments"] == 1
+    assert summary["individual_attempts"] == 0
+    assert str(summary_path) in warnings[-1]
+    assert not list(tmp_path.rglob(".batch-summary-*"))
 
 
 def test_list_command_prints_number_round_type_tags_and_duration(tmp_path, monkeypatch, capsys):

@@ -1,12 +1,14 @@
 import pytest
 
+from cs2_engine import __main__ as cli
+from cs2_engine import batch
 from cs2_engine.batch_plan import (
     format_highlights,
     number_highlights,
     plan_batch,
     select_highlights,
 )
-from cs2_engine.models import Demo, Kill, Round
+from cs2_engine.models import Demo, Kill, Player, Round
 from cs2_engine.record_task import RecordError
 
 
@@ -140,3 +142,59 @@ def test_overlapping_highlights_include_each_enemy_death_once_and_keep_unknown_v
 def test_invalid_victim_timing_is_rejected(before, after):
     with pytest.raises(RecordError, match="死亡前秒数须大于零"):
         plan_batch(Demo(64.0, (), ()), "target", [], victim_before=before, victim_after=after)
+
+
+@pytest.mark.parametrize(
+    "flags, xray, windows",
+    [
+        ([], False, (128, 416)),
+        (["--xray"], True, (128, 416)),
+        (["--no-xray", "--victim-before", "2", "--victim-after", "0.5"], False, (192, 352)),
+    ],
+)
+def test_batch_cli_victim_defaults_and_xray(tmp_path, monkeypatch, flags, xray, windows):
+    player = Player("target", "Synthetic")
+    demo = Demo(64.0, (player,), (Round(1, 0, 500, 2, kills=(_kill(320, "victim"),)),))
+    monkeypatch.setattr(cli, "_parse_demo", lambda _: demo)
+    monkeypatch.setattr(cli, "score_demo", lambda *_args, **_kwargs: [_highlight(1, 250, 350)])
+
+    def record_batch(template, clips, *_args):
+        assert template.xray is xray
+        player_clip, victim_clip = clips
+        assert player_clip.perspective == "player"
+        assert victim_clip.perspective == "victim"
+        assert (victim_clip.segment.start_tick, victim_clip.segment.end_tick) == windows
+        assert victim_clip.segment.duration_s == (windows[1] - windows[0]) / 64
+        return {"output_dir": str(tmp_path), "compilations": {"player": {}}}
+
+    monkeypatch.setattr(batch, "record_batch", record_batch)
+    assert (
+        cli.main(
+            [
+                "record-batch",
+                "--demo",
+                str(tmp_path / "demo.dem"),
+                "--player",
+                "Synthetic",
+                "--all",
+                "--output-dir",
+                str(tmp_path),
+                "--cs2-path",
+                str(tmp_path),
+                "--hlae-path",
+                str(tmp_path),
+                "--ffmpeg-path",
+                str(tmp_path),
+                *flags,
+            ]
+        )
+        == 0
+    )
+
+
+def test_list_help_explains_which_inspect_numbers_match(capsys):
+    with pytest.raises(SystemExit) as result:
+        cli.main(["list-highlights", "--help"])
+
+    assert result.value.code == 0
+    assert "只与使用默认类型和规则的 inspect 结果一致" in capsys.readouterr().out

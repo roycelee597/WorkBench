@@ -66,8 +66,9 @@ def test_batch_encodes_valid_clips_after_game_timeout_and_skips_individual_failu
             capture.mkdir()
             (capture / f"frame-{index}.tga").touch()
 
-    def capture_sequence(files, _frames, _size):
+    def capture_sequence(files, _frames, _size, *, pad_tail):
         index = int(files[0].stem.split("-")[1])
+        assert pad_tail is False
         if index == 1:
             raise OSError("synthetic read failure")
         return index
@@ -89,7 +90,6 @@ def test_batch_encodes_valid_clips_after_game_timeout_and_skips_individual_failu
     monkeypatch.setattr(batch_capture, "_stage_demo", lambda *_: task.demo_path)
     monkeypatch.setattr(batch_capture, "_ensure_cs2_closed", lambda: None)
     monkeypatch.setattr(batch_capture, "_recovery_dir", lambda: tmp_path)
-    monkeypatch.setattr(batch_capture, "has_recorded_crosshair", lambda *_: True)
     monkeypatch.setattr(batch_capture, "_write_batch_config", write_config)
     monkeypatch.setattr(batch_capture, "_wait_for_game", wait_for_game)
     monkeypatch.setattr(batch_capture, "_capture_sequence", capture_sequence)
@@ -97,7 +97,11 @@ def test_batch_encodes_valid_clips_after_game_timeout_and_skips_individual_failu
     monkeypatch.setattr(batch_capture, "_read_video_info", read_video_info)
 
     completed = batch_capture.record_multiple(
-        [(task, output) for output in outputs], ["synthetic"], lambda *_: None, warnings.append
+        [(task, output) for output in outputs],
+        ["synthetic"],
+        lambda *_: None,
+        warnings.append,
+        crosshairs=[True] * len(outputs),
     )
 
     assert list(completed) == [0, 3]

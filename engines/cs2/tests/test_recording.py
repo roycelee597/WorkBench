@@ -2,12 +2,14 @@ import json
 import os
 import struct
 import wave
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from cs2_engine import __main__ as cli
 from cs2_engine import recording
+from cs2_engine.batch_capture import _write_batch_config
 from cs2_engine.native_capture import native_outputs
 from cs2_engine.record_task import RecordError, Segment, read_record_task
 from cs2_engine.recording_commands import hlae_argv, write_capture_config
@@ -47,6 +49,7 @@ def test_record_task_paths_and_selected_segment_are_resolved(tmp_path):
     assert task.output_dir == tmp_path / "成品 输出"
     assert task.segment == Segment(1, 1000, 1064, 1)
     assert task.aspect == "16:9"
+    assert task.xray is False
     assert task.capture_size == (1920, 1080)
 
 
@@ -59,6 +62,7 @@ def test_record_task_paths_and_selected_segment_are_resolved(tmp_path):
         ({"resolution": "1440p"}, "INVALID_TASK"),
         ({"aspect": "4:3"}, "INVALID_TASK"),
         ({"aspect": None}, "INVALID_TASK"),
+        ({"xray": "true"}, "INVALID_TASK"),
         ({"demo_path": "match.zip"}, "INVALID_TASK"),
     ],
 )
@@ -114,8 +118,9 @@ def test_hlae_arguments_isolate_game_and_preserve_spaces(aspect, width):
     ],
 )
 @pytest.mark.parametrize("observer_crosshair, mode", [(True, 2), (False, 0)])
+@pytest.mark.parametrize("xray", [False, True])
 def test_generated_config_uses_exact_steamid_and_tick_bounds(
-    tmp_path, method, start, stop, observer_crosshair, mode
+    tmp_path, method, start, stop, observer_crosshair, mode, xray
 ):
     profile = tmp_path / "profile"
     write_capture_config(
@@ -128,6 +133,7 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(
         method=method,
         native_prefix="wbp2_test",
         observer_crosshair=observer_crosshair,
+        xray=xray,
     )
     cfg = (profile / "cfg/workbench_p2.cfg").read_text(encoding="ascii")
     script = (profile / "cfg/workbench_p2.js").read_text(encoding="ascii")
@@ -140,6 +146,7 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(
     assert (settings["seek"], settings["start"], settings["end"]) == (872, 1000, 1064)
     assert settings["begin"] == start and settings["stop"] == stop
     assert settings["crosshair"] == f"crosshair 1; cl_show_observer_crosshair {mode}"
+    assert settings["xray"] == f"spec_show_xray {int(xray)}"
     assert "getSteamId() === wanted" in script and "spec_mode 1" in script
     hud_commands = settings["hud"].split("; ")
     assert "r_show_build_info 0" in hud_commands
@@ -160,10 +167,61 @@ def test_generated_config_uses_exact_steamid_and_tick_bounds(
         assert f"mirv_panorama panelStyle panelId={panel} opacity=0" not in hud_commands
     assert script.index("mirv.exec(options.hud)") < script.index("mirv.exec(options.begin)")
     assert script.index("mirv.exec(options.crosshair)") < script.index("mirv.exec(options.begin)")
+    assert script.rindex("mirv.exec(options.xray)") < script.index("mirv.exec(options.begin)")
     if method == "hlae":
         assert "afxClassic" in settings["setup"] and "startMovieWav 1" in settings["setup"]
     else:
         assert settings["setup"] == "host_framerate 60"
+
+
+@pytest.mark.parametrize("xray", [False, True])
+def test_batch_config_applies_xray_to_human_and_bot_targets(tmp_path, xray):
+    task = replace(read_record_task(_task(tmp_path), tmp_path), xray=xray)
+    victim = replace(task, player_id="bot:9", death_tick=1020)
+    profile = tmp_path / "profile"
+
+    _write_batch_config(
+        profile, Path("demo.dem"), [task, victim], [Path("one"), Path("two")], [True, False]
+    )
+
+    script = (profile / "cfg/workbench_p3.js").read_text(encoding="ascii")
+    settings = json.loads(script.splitlines()[0].removeprefix("const options = ").rstrip(";"))
+    assert [(clip["target"], clip["death"], clip["xray"]) for clip in settings["clips"]] == [
+        (PLAYER, None, f"spec_show_xray {int(xray)}"),
+        ("bot:9", 1020, f"spec_show_xray {int(xray)}"),
+    ]
+    assert script.rindex("mirv.exec(clip.xray)") < script.index(
+        'mirv.exec("mirv_streams record start")'
+    )
+
+
+@pytest.mark.parametrize("target", ["short", "bot:0", "bot:1;quit", "９" * 17])
+def test_batch_config_rejects_invalid_targets(tmp_path, target):
+    task = replace(read_record_task(_task(tmp_path), tmp_path), player_id=target)
+    profile = tmp_path / "profile"
+
+    with pytest.raises(ValueError, match="回放目标无效"):
+        _write_batch_config(profile, Path("demo.dem"), [task], [Path("one")], [False])
+
+    assert not profile.exists()
+
+
+@pytest.mark.parametrize(
+    "json_xray, flags, expected",
+    [(False, [], False), (True, [], True), (False, ["--xray"], True), (True, ["--no-xray"], False)],
+)
+def test_single_recording_cli_can_override_task_xray(
+    tmp_path, monkeypatch, json_xray, flags, expected
+):
+    task = {**_task(tmp_path), "xray": json_xray}
+    path = tmp_path / "task.json"
+    path.write_text(json.dumps(task), encoding="utf-8")
+    recorded = []
+    monkeypatch.setattr(cli, "run_recording", recorded.append)
+
+    assert cli.main(["run", "--task", str(path), *flags]) == 0
+
+    assert [task.xray for task in recorded] == [expected]
 
 
 def test_unsafe_console_path_is_rejected_without_launch(tmp_path):
@@ -227,6 +285,22 @@ def test_4_3_capture_rejects_any_widescreen_frame(tmp_path):
 
     with pytest.raises(recording.CaptureIncomplete, match="1920×1080.*1440×1080"):
         recording._capture_sequence(files, 60, expected_size)
+
+
+def test_victim_capture_pads_a_short_tail_to_its_planned_duration(tmp_path):
+    expected_size = (1920, 1080)
+    files = _write_tga_wav(tmp_path, frames=59)
+    ordinary = recording._capture_sequence(files, 60, expected_size)
+    victim = recording._capture_sequence(files, 60, expected_size, pad_tail=True)
+    args = recording.ffmpeg_argv(Path("ffmpeg.exe"), victim, tmp_path / "clip.mp4")
+
+    assert ordinary.frame_count == 59 and ordinary.tail_padding_frames == 0
+    assert victim.frame_count == 60 and victim.tail_padding_frames == 1
+    assert args[args.index("-vf") + 1] == "setsar=1,tpad=stop_mode=clone:stop=1"
+    assert args[args.index("-t") + 1] == "1.00000000"
+    assert args[args.index("-af") + 1] == "apad"
+    with pytest.raises(recording.CaptureIncomplete, match="帧数"):
+        recording._capture_sequence([*files[:56], files[-1]], 60, expected_size, pad_tail=True)
 
 
 def test_incomplete_frames_or_missing_audio_cannot_be_reported_as_a_clip(tmp_path):
@@ -342,8 +416,9 @@ def test_capture_cancel_terminates_job_before_restoring_config(tmp_path, monkeyp
 
 @pytest.mark.skipif(os.name != "nt", reason="单段录制是 Windows 功能")
 @pytest.mark.parametrize("observer_crosshair", [True, False])
+@pytest.mark.parametrize("precomputed", [True, False])
 def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
-    tmp_path, monkeypatch, observer_crosshair
+    tmp_path, monkeypatch, observer_crosshair, precomputed
 ):
     task = read_record_task(_task(tmp_path), tmp_path)
     task.demo_path.write_bytes(b"PBDEMS2\x00synthetic")
@@ -361,9 +436,11 @@ def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
     checks = []
     attempts = []
     warnings = []
+    progress_messages = []
 
     def check_crosshair(demo, player_id, tick):
         assert demo.read_bytes() == task.demo_path.read_bytes()
+        assert progress_messages[-1] == "正在读取准星…"
         checks.append((player_id, tick))
         return observer_crosshair
 
@@ -388,9 +465,16 @@ def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
 
     monkeypatch.setattr(recording, "has_recorded_crosshair", check_crosshair)
     monkeypatch.setattr(recording, "_record_attempt", attempt)
-    clip = recording.record_segment(task, ["synthetic"], lambda *args: None, warnings.append)
+    clip = recording.record_segment(
+        task,
+        ["synthetic"],
+        lambda _stage, _current, message: progress_messages.append(message),
+        warnings.append,
+        observer_crosshair=observer_crosshair if precomputed else None,
+    )
 
-    assert checks == [(PLAYER, 1000)]
+    assert checks == ([] if precomputed else [(PLAYER, 1000)])
+    assert progress_messages.count("正在读取准星…") == (0 if precomputed else 1)
     assert attempts == [("hlae", observer_crosshair), ("startmovie", observer_crosshair)]
     assert sum("默认准星" in message for message in warnings) == (0 if observer_crosshair else 1)
     assert len(warnings) == (1 if observer_crosshair else 2)
