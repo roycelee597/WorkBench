@@ -53,7 +53,7 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
 
 ## 在 Windows 上录制 P2 单段
 
-1. 安装新版 HLAE，保留安装目录下的 `HLAE.exe`、`x64/AfxHookSource2.dll` 和官方脚本。解压 FFmpeg Windows 构建，让 `ffmpeg.exe` 和 `ffprobe.exe` 保持在同一个 `bin` 目录。Steam 保持运行，先退出平时游玩的 CS2。[HLAE 官方发布](https://github.com/advancedfx/advancedfx/releases/latest) · [FFmpeg 官网列出的 Windows 构建](https://ffmpeg.org/download.html#build-windows)
+1. 安装新版 HLAE，保留安装目录下的 `HLAE.exe`、`x64/AfxHookSource2.dll` 和随附的 `resources/AfxHookSource2/snippets/mirv_script_spec_lock.js`。引擎依赖这个官方脚本锁定第一人称。解压 FFmpeg Windows 构建，让 `ffmpeg.exe` 和 `ffprobe.exe` 保持在同一个 `bin` 目录。Steam 保持运行，先退出平时游玩的 CS2。[HLAE 官方发布](https://github.com/advancedfx/advancedfx/releases/latest) · [FFmpeg 官网列出的 Windows 构建](https://ffmpeg.org/download.html#build-windows)
 2. 在本机解压 `.dem`，用 P1 为目标玩家生成 `highlights.json`，从 `highlights` 数组选择一个片段，记下序号。第一段的序号是 `1`。把下面的 `record-task.json` 示例放到本机测试目录，换成自己的路径、片段序号和目标玩家 SteamID64。真实 demo、名单、任务文件及成品留在本机。
 
    ```json
@@ -80,7 +80,9 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
    ```
 
 4. 成功后打开 `output` 里的 MP4，检查是否为目标玩家第一人称、HUD 是否符合预期、音画是否同步。`done` 和 `record-work/segments.json` 保存录制方式、文件时长和大小、从启动 HLAE 到退出 CS2 的耗时，以及 `gameinfo.gi` 的校验结果。可在录制前后分别用 PowerShell 的 `Get-FileHash -Algorithm SHA256 -LiteralPath` 比较游戏安装目录 `game/csgo/gameinfo.gi` 的哈希。
-5. 复验取消时，录制中按 `Ctrl+C`，检查 CS2 已退出、没有留下成品，并再次核对 `gameinfo.gi` 的哈希。正常退出、录制失败或取消时，任务先清理受托管的进程，再校验并按需恢复配置。引擎进程崩溃会触发独立看护进程。整机断电后，下一次录制会检查持久化备份，也可以先手动执行以下恢复命令。恢复记录放在 `%LOCALAPPDATA%/WorkBench-CS2-Prototype`。
+5. 复验取消时，录制中按 `Ctrl+C`，检查 CS2 已退出、没有留下成品，并再次核对 `gameinfo.gi` 的哈希。P2 引擎本身不修改 `gameinfo.gi`。备份和启动时的 SHA-256、大小、修改时间用于防范 HLAE 或游戏意外改动。恢复时发现配置缺失或属于未知版本，会保留原备份和现有文件，返回 `GAMEINFO_FAILED`，并提示在 Steam 使用「验证游戏文件完整性」。
+
+   正常退出、失败或取消时，任务先结束受托管的进程，再处理恢复记录。引擎进程崩溃由独立看护进程接手。它和下方恢复命令都会清理本次 `startmovie` 在 `game/csgo`、`bin/win64` 和隔离配置目录里留下的 TGA/WAV。清理限于登记的 `wbp2_<32 位十六进制>` 前缀，并跳过链接。整机断电后，下一次录制会检查持久化恢复记录，也可以先执行以下命令。恢复记录放在 `%LOCALAPPDATA%/WorkBench-CS2-Prototype`。
 
    ```powershell
    uv run --project engines/cs2 --locked cs2-engine recover-gameinfo --cs2-path 'D:/Games/Counter-Strike Global Offensive'

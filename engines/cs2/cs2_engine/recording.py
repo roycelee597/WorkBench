@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from .gameinfo import GameInfoProtection, new_recording_job_name, recover_gameinfo
+from .gameinfo import (
+    GameInfoProtection,
+    native_prefix_for_job,
+    new_recording_job_name,
+    recover_gameinfo,
+)
+from .native_capture import native_outputs
 from .record_task import RecordError, RecordTask, validate_record_path
 from .recording_commands import RecordingMethod, hlae_argv, write_capture_config
 from .windows_job import WindowsJob, WindowsProcess
@@ -75,8 +81,15 @@ def _capture_tools(task: RecordTask) -> CaptureTools:
     cs2, gameinfo = _game_location(task.cs2_path)
     hlae = task.hlae_path
     hook = validate_record_path(hlae.parent / "x64" / "AfxHookSource2.dll")
-    if hlae.name.lower() != "hlae.exe" or not hlae.is_file() or not hook.is_file():
-        raise RecordError("HLAE_NOT_FOUND", "找不到 HLAE.exe 或 CS2 组件。请指定完整的 HLAE 安装。")
+    spec_lock = validate_record_path(
+        hlae.parent / "resources" / "AfxHookSource2" / "snippets" / "mirv_script_spec_lock.js"
+    )
+    if hlae.name.lower() != "hlae.exe" or not all(
+        path.is_file() for path in (hlae, hook, spec_lock)
+    ):
+        raise RecordError(
+            "HLAE_NOT_FOUND", "请指定包含 CS2 组件和 mirv_script_spec_lock.js 的完整 HLAE 安装。"
+        )
     ffmpeg = task.ffmpeg_path
     ffprobe = validate_record_path(ffmpeg.with_name("ffprobe.exe"))
     if ffmpeg.name.lower() != "ffmpeg.exe" or not ffmpeg.is_file() or not ffprobe.is_file():
@@ -139,24 +152,6 @@ def _stage_demo(source: Path, directory: Path, required: int) -> Path:
             "OUTPUT_WRITE_FAILED", "无法暂存 demo，请检查读取权限和可用空间。"
         ) from None
     return staged
-
-
-def _native_outputs(roots: Sequence[Path], prefix: str) -> set[Path]:
-    if re.fullmatch(r"wbp2_[0-9a-f]{32}", prefix) is None:
-        raise ValueError("原生录制临时名称无效。")
-    files: set[Path] = set()
-    for root in roots:
-        for container in (root, root / "movie"):
-            for directory, pattern in ((container, f"{prefix}*"), (container / prefix, "*")):
-                for file in directory.glob(pattern):
-                    if (
-                        file.suffix.lower() in {".tga", ".wav"}
-                        and file.is_file()
-                        and not directory.is_symlink()
-                        and file.resolve().is_relative_to(root)
-                    ):
-                        files.add(file)
-    return files
 
 
 def _capture_sequence(files: Sequence[Path], expected_frames: int) -> RawCapture:
@@ -342,8 +337,10 @@ def _record_attempt(
     profile = directory / "profile"
     capture = directory / "capture"
     capture.mkdir(parents=True)
-    prefix = f"wbp2_{uuid4().hex}"
-    native_roots = [tools.gameinfo.parent, tools.cs2.parent, profile]
+    job_name = new_recording_job_name()
+    prefix = native_prefix_for_job(job_name)
+    csgo = tools.gameinfo.parent
+    native_roots = (csgo, csgo.parent / "bin" / "win64", profile)
     segment = task.segment
     write_capture_config(
         profile,
@@ -355,48 +352,34 @@ def _record_attempt(
         method=method,
         native_prefix=prefix,
     )
-    job_name = new_recording_job_name()
-    try:
-        with (
-            WindowsJob(job_name) as job,
-            GameInfoProtection(
-                tools.gameinfo,
-                state_dir,
-                worker_command,
-                job_name=job_name,
-            ),
-        ):
-            try:
-                _ensure_cs2_closed()
-                notify("record", 0, "已校验 gameinfo.gi 备份，正在启动离线回放。")
-                started = time.monotonic()
-                _wait_for_game(job, tools, profile, max(180, segment.duration_s * 60))
-                elapsed = time.monotonic() - started
-                files = (
-                    list(capture.rglob("*.tga")) + list(capture.glob("take*/audio.wav"))
-                    if method == "hlae"
-                    else sorted(_native_outputs(native_roots, prefix))
-                )
-                raw = _capture_sequence(files, math.ceil(segment.duration_s * 60))
-                notify("record", 1, "逐帧录制完成，已退出 CS2。")
-                notify("compose", 0, "正在编码并验证 1080p 60 fps MP4。")
-                duration = _run_encoder(job, tools, raw, temporary_mp4, directory / "probe.json")
-            finally:
-                # 先结束子进程，再退出保护上下文。看护进程在引擎崩溃时按同样顺序恢复。
-                job.terminate()
-    finally:
-        if method == "startmovie":
-            for raw_file in _native_outputs(native_roots, prefix):
-                raw_file.unlink(missing_ok=True)
-            for root in native_roots:
-                for generated in (root / prefix, root / "movie" / prefix):
-                    if (
-                        generated.is_dir()
-                        and not generated.is_symlink()
-                        and generated.resolve().is_relative_to(root)
-                        and not any(generated.iterdir())
-                    ):
-                        generated.rmdir()
+    with (
+        WindowsJob(job_name) as job,
+        GameInfoProtection(
+            tools.gameinfo,
+            state_dir,
+            worker_command,
+            job_name=job_name,
+            native_profile=profile if method == "startmovie" else None,
+        ),
+    ):
+        try:
+            _ensure_cs2_closed()
+            notify("record", 0, "已校验 gameinfo.gi 备份，正在启动离线回放。")
+            started = time.monotonic()
+            _wait_for_game(job, tools, profile, max(180, segment.duration_s * 60))
+            elapsed = time.monotonic() - started
+            files = (
+                list(capture.rglob("*.tga")) + list(capture.glob("take*/audio.wav"))
+                if method == "hlae"
+                else sorted(native_outputs(native_roots, prefix))
+            )
+            raw = _capture_sequence(files, math.ceil(segment.duration_s * 60))
+            notify("record", 1, "逐帧录制完成，已退出 CS2。")
+            notify("compose", 0, "正在编码并验证 1080p 60 fps MP4。")
+            duration = _run_encoder(job, tools, raw, temporary_mp4, directory / "probe.json")
+        finally:
+            # 先结束子进程，再退出保护上下文。看护进程在引擎崩溃时按同样顺序恢复。
+            job.terminate()
     return duration, elapsed
 
 
@@ -458,5 +441,5 @@ def record_segment(
         raise RecordError(
             "OUTPUT_WRITE_FAILED", "录制工作目录、游戏临时文件或成品无法读写。"
         ) from None
-    notify("compose", 1, "MP4 已验证，gameinfo.gi 已校验还原。")
+    notify("compose", 1, "MP4 已验证，gameinfo.gi 校验通过。")
     return RecordedClip(target, method, duration, elapsed, size, fallback_reason)

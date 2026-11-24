@@ -18,6 +18,7 @@ from types import TracebackType
 from typing import BinaryIO
 from uuid import uuid4
 
+from .native_capture import cleanup_native_outputs
 from .windows_job import WindowsJob
 
 _POLL_S = 0.05
@@ -26,6 +27,9 @@ _WATCHDOG_READY_TIMEOUT_S = 30
 _WATCHDOG_LOCK_TIMEOUT_S = 15
 _WATCHDOG_READY = b"R"
 _JOB_NAME_PREFIX = "Local\\WorkBench-CS2-"
+_UNKNOWN_GAMEINFO = (
+    "当前 gameinfo.gi 缺失或属于未知版本，已保留备份。请在 Steam 中使用「验证游戏文件完整性」。"
+)
 
 
 class GameInfoError(RuntimeError):
@@ -63,6 +67,9 @@ class _Journal:
     session: str
     sha256: str
     job_name: str | None
+    size_bytes: int | None = None
+    mtime_ns: int | None = None
+    native_profile: str | None = None
     active: bool = True
 
 
@@ -86,6 +93,25 @@ def _valid_job_name(value: object) -> bool:
     )
 
 
+def native_prefix_for_job(job_name: str) -> str:
+    if not _valid_job_name(job_name):
+        raise GameInfoError("CS2 录制进程组名称无效。")
+    return "wbp2_" + job_name.removeprefix(_JOB_NAME_PREFIX)
+
+
+def _valid_native_profile(value: object) -> bool:
+    if not isinstance(value, str) or "\0" in value:
+        return False
+    path = Path(value)
+    return (
+        path.is_absolute()
+        and ".." not in path.parts
+        and path.name == "profile"
+        and path.parent.name == "startmovie"
+        and path.parent.parent.name.startswith("workbench-cs2-")
+    )
+
+
 def _read_journal(state: _State) -> _Journal | None:
     try:
         record = json.loads(state.journal.read_bytes())
@@ -96,7 +122,7 @@ def _read_journal(state: _State) -> _Journal | None:
     if (
         not isinstance(record, dict)
         or type(record.get("version")) is not int
-        or record.get("version") != 1
+        or record.get("version") not in (1, 2)
         or record.get("install") != state.key
         or not _hex_string(record.get("session"), 32)
         or not _hex_string(record.get("sha256"), 64)
@@ -105,8 +131,32 @@ def _read_journal(state: _State) -> _Journal | None:
         or not _valid_job_name(record["job_name"])
     ):
         raise GameInfoError("CS2 配置恢复记录校验失败，已保留备份。")
+    version = record["version"]
+    size, mtime, profile = None, None, None
+    if version == 2:
+        size = record.get("size_bytes")
+        mtime = record.get("mtime_ns")
+        profile = record.get("native_profile")
+        if (
+            type(size) is not int
+            or size < 0
+            or type(mtime) is not int
+            or (
+                profile is not None
+                and (not _valid_native_profile(profile) or not record["job_name"])
+            )
+        ):
+            raise GameInfoError("CS2 配置恢复记录校验失败，已保留备份。")
     return _Journal(
-        1, state.key, record["session"], record["sha256"], record["job_name"], record["active"]
+        version,
+        state.key,
+        record["session"],
+        record["sha256"],
+        record["job_name"],
+        size,
+        mtime,
+        profile,
+        record["active"],
     )
 
 
@@ -187,16 +237,28 @@ def _write_journal(state: _State, journal: _Journal) -> None:
     _write_atomic(state.journal, json.dumps(asdict(journal)).encode("utf-8"))
 
 
-def _backup(state: _State, job_name: str | None) -> _Journal:
+def _backup(state: _State, job_name: str | None, native_profile: str | None) -> _Journal:
     try:
         original = state.target.read_bytes()
         digest = sha256(original).hexdigest()
         _write_atomic(state.backup, original)
         if sha256(state.backup.read_bytes()).hexdigest() != digest:
             raise GameInfoError("CS2 配置备份的 SHA-256 校验失败。")
-        if sha256(state.target.read_bytes()).hexdigest() != digest:
+        with state.target.open("rb") as stream:
+            current = stream.read()
+            started = os.fstat(stream.fileno())
+        if current != original or started.st_size != len(original):
             raise GameInfoError("备份期间 CS2 配置发生变化，无法开始录制。")
-        journal = _Journal(1, state.key, uuid4().hex, digest, job_name)
+        journal = _Journal(
+            2,
+            state.key,
+            uuid4().hex,
+            digest,
+            job_name,
+            started.st_size,
+            started.st_mtime_ns,
+            native_profile,
+        )
         _write_journal(state, journal)
         return journal
     except OSError:
@@ -230,6 +292,21 @@ def _stop_job(job: WindowsJob | None) -> None:
         raise GameInfoError("无法确认录制进程结束，已保留 CS2 配置备份。") from None
 
 
+def _cleanup_capture(state: _State, journal: _Journal) -> None:
+    if journal.native_profile is None or journal.job_name is None:
+        return
+    profile = Path(journal.native_profile)
+    csgo = state.target.parent
+    roots = (csgo, csgo.parent / "bin" / "win64", profile)
+    # profile 保留登记时的路径，清理函数将在遍历前跳过链接与重分析点。
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data and any(
+        root.is_relative_to(Path(local_app_data) / "com.royce.workbench") for root in roots
+    ):
+        raise GameInfoError("录制清理不能访问正式版 WorkBench 数据目录。")
+    cleanup_native_outputs(roots, native_prefix_for_job(journal.job_name))
+
+
 def _recover_locked(
     state: _State, *, session: str | None = None, job: WindowsJob | None = None
 ) -> bool:
@@ -245,18 +322,26 @@ def _recover_locked(
         if job is None and (opened := _open_job(journal.job_name)) is not None:
             job = stack.enter_context(opened)
         _stop_job(job)
+        cleanup_failed = False
+        try:
+            _cleanup_capture(state, journal)
+        except (OSError, GameInfoError):
+            cleanup_failed = True
         try:
             original = state.backup.read_bytes()
-            if sha256(original).hexdigest() != journal.sha256:
+            if sha256(original).hexdigest() != journal.sha256 or (
+                journal.size_bytes is not None and journal.size_bytes != len(original)
+            ):
                 raise GameInfoError("CS2 配置备份的 SHA-256 校验失败，已保留现场。")
             try:
                 current = state.target.read_bytes()
             except FileNotFoundError:
-                current = None
+                raise GameInfoError(_UNKNOWN_GAMEINFO) from None
+            # P2 不写入 gameinfo.gi，因此没有可授权写回的临时版本。
             if current != original:
-                _write_atomic(state.target, original)
-            if sha256(state.target.read_bytes()).hexdigest() != journal.sha256:
-                raise GameInfoError("CS2 配置恢复后校验失败，已保留备份。")
+                raise GameInfoError(_UNKNOWN_GAMEINFO)
+            if cleanup_failed:
+                raise GameInfoError("无法清理本次录制的临时文件，已保留恢复记录和备份。")
             # 先持久化完成标记。即使系统在删除记录和备份之间重启，也不会使用旧备份。
             _write_journal(state, replace(journal, active=False))
         except OSError:
@@ -283,7 +368,7 @@ def _read_ready(pipe: BinaryIO, result: Queue[bytes]) -> None:
 
 
 class GameInfoProtection:
-    """录制期间锁定安装目录，正常退出时恢复配置。"""
+    """保护录制配置快照，并在结束时校验和清理本次任务。"""
 
     def __init__(
         self,
@@ -292,11 +377,16 @@ class GameInfoProtection:
         worker_command: Sequence[str] | None = None,
         *,
         job_name: str | None = None,
+        native_profile: Path | None = None,
     ) -> None:
         if not _valid_job_name(job_name):
             raise GameInfoError("CS2 录制进程组名称无效。")
+        profile = str(native_profile) if native_profile is not None else None
+        if profile is not None and (not _valid_native_profile(profile) or not job_name):
+            raise GameInfoError("CS2 原生录制临时目录无效。")
         self._state = _State.for_install(gameinfo_path, state_dir)
         self._job_name = job_name
+        self._native_profile = profile
         self._worker_command = tuple(worker_command) if worker_command is not None else None
         self._worker: subprocess.Popen[bytes] | None = None
         self._worker_ready = False
@@ -363,7 +453,7 @@ class GameInfoProtection:
             scope.callback(self._finish_watchdog)
             scope.enter_context(_installation_lock(self._state))
             _recover_locked(self._state)
-            journal = _backup(self._state, self._job_name)
+            journal = _backup(self._state, self._job_name, self._native_profile)
             scope.callback(_recover_locked, self._state, session=journal.session)
             if self._worker_command is not None:
                 self._start_watchdog(self._worker_command)

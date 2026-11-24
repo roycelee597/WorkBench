@@ -7,6 +7,7 @@ import pytest
 
 from cs2_engine import __main__ as cli
 from cs2_engine import recording
+from cs2_engine.native_capture import native_outputs
 from cs2_engine.record_task import RecordError, Segment, read_record_task
 from cs2_engine.recording_commands import hlae_argv, write_capture_config
 
@@ -193,7 +194,7 @@ def test_native_files_are_scoped_to_the_unique_recording_prefix(tmp_path):
     for file in (this_frame, this_audio, unrelated):
         file.touch()
 
-    assert recording._native_outputs([tmp_path], prefix) == {this_frame, this_audio}
+    assert native_outputs([tmp_path], prefix) == {this_frame, this_audio}
 
 
 def test_cli_record_success_and_cancellation_are_structured(tmp_path, monkeypatch, capsys):
