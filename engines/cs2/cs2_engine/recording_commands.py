@@ -88,6 +88,7 @@ def write_capture_config(
     *,
     method: RecordingMethod,
     native_prefix: str,
+    observer_crosshair: bool,
 ) -> None:
     if re.fullmatch(r"[0-9]{17}", player_id) is None:
         raise ValueError("玩家 SteamID64 无效。")
@@ -110,6 +111,7 @@ def write_capture_config(
         "end": end_tick,
         "seek": max(0, start_tick - 128),
         "hud": _CLEAN_HUD,
+        "crosshair": f"crosshair 1; cl_show_observer_crosshair {2 if observer_crosshair else 0}",
         "setup": setup,
         "begin": begin,
         "stop": end,
@@ -182,6 +184,7 @@ mirv.events.clientFrameStageNotify.on("workbench-p2", (event) => {
         }
         mirv.exec("sv_cheats 1; hideconsole; volume 1; cl_demo_freecam 0; " +
             "spec_mode 1; spec_show_xray 0; cl_demo_predict 1");
+        mirv.exec(options.crosshair);
         mirv.exec(`spec_player ${index}; mirv_script_spec_lock ${index}`);
         mirv.exec(options.hud);
         mirv.exec(options.setup);
@@ -194,6 +197,7 @@ mirv.events.clientFrameStageNotify.on("workbench-p2", (event) => {
         if (tick > options.start + 2 || tick >= options.end) { leave(); return; }
         phase = "record";
         mirv.exec(options.hud);
+        mirv.exec(options.crosshair);
         mirv.exec(options.begin);
     }
     if (phase === "record" && tick >= options.end) {

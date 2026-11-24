@@ -242,6 +242,29 @@ def _make_rounds(
     )
 
 
+def has_recorded_crosshair(path: Path, player_id: str, tick: int) -> bool:
+    """检查目标玩家在片段起点是否有准星设置，由 CS2 回放负责读取样式。"""
+    try:
+        from demoparser2 import DemoParser
+
+        rows = (
+            DemoParser(str(path))
+            .parse_ticks(["crosshair_code"], players=[int(player_id)], ticks=[tick])
+            .to_dict("records")
+        )
+    except BaseException as error:
+        # 旧 demo 可能无法读取这个字段。解析失败只影响准星，用户取消仍向上传递。
+        if not isinstance(error, Exception) and type(error).__module__ != "pyo3_runtime":
+            raise
+        return False
+
+    for row in rows:
+        code = row.get("crosshair_code")
+        if _steam_id(row.get("steamid")) == player_id and isinstance(code, str) and code.strip():
+            return True
+    return False
+
+
 def parse_demo(path: Path) -> Demo:
     try:
         with path.open("rb") as source:

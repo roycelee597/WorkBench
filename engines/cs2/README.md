@@ -97,7 +97,9 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
 
 `aspect` 可选，默认为 `"16:9"`，CS2 以 1920×1080 渲染。`"4:3-stretched"` 让 CS2 以 1440×1080 渲染，FFmpeg 再横向拉伸至 1920×1080。两种模式均输出 60 fps 的 1080p MP4。录制时会校验原始帧尺寸，确保 CS2 实际按选定比例渲染。
 
-CS2 回放继续使用 Valve 的第一人称观战画面。录制时通过 HLAE 的 `mirv_panorama` 定向隐藏部分面板。CS2 更新可能重命名 HUD 面板，使对应的隐藏规则静默失效。每次 CS2 更新后，请试录一段包含武器切换的片段，并按第 4 步核对 HUD。[HLAE 面板控制文档](https://github.com/advancedfx/advancedfx/wiki/Source2%3Amirv_panorama)
+CS2 回放继续使用 Valve 的第一人称观战画面。录制会自动使用 demo 中目标玩家的准星设置。片段起点的准星设置缺失或无法读取时，引擎会输出一条提示，并使用独立录制配置中的 CS2 默认准星。
+
+录制时通过 HLAE 的 `mirv_panorama` 定向隐藏部分面板。CS2 更新可能重命名 HUD 面板，使对应的隐藏规则静默失效。每次 CS2 更新后，请试录一段包含武器切换的片段，并按第 4 步核对 HUD。[HLAE 面板控制文档](https://github.com/advancedfx/advancedfx/wiki/Source2%3Amirv_panorama)
 
 `recording_method` 默认是 `auto`。先用 HLAE `mirv_streams` 输出 TGA 帧和 WAV，交给 FFmpeg 合成。原始捕获校验失败时会记录原因，并改用 CS2 的 `host_framerate`、`startmovie`、`endmovie` 捕获。备用方式仍用 HLAE 控制跳转、锁定视角、隐藏面板和隔离配置。可填写 `hlae` 或 `startmovie` 单独复验相应方式。两种方式都需要已能启动离线回放的 HLAE。[HLAE 逐帧录制文档](https://github.com/advancedfx/advancedfx/wiki/Source2%3Amirv_streams) · [CS2 Windows 回放控制说明](https://cs-demo-manager.com/docs/development/cs-server-plugin)
 

@@ -6,7 +6,7 @@ import demoparser2
 import pytest
 
 from cs2_engine.models import AliveState, Demo, Kill, Player, Round, Shot
-from cs2_engine.parser import DemoParseError, _weapon, parse_demo
+from cs2_engine.parser import DemoParseError, _weapon, has_recorded_crosshair, parse_demo
 from cs2_engine.rules import Rules
 from cs2_engine.scoring import score_demo
 
@@ -209,6 +209,46 @@ def test_parse_demo_rejects_invalid_or_missing_input_without_exposing_path(tmp_p
     demo.write_bytes(b"HL2DEMO\x00" + bytes(8))
     with pytest.raises(DemoParseError, match="^文件不是有效的 CS2 录像。$"):
         parse_demo(demo)
+
+
+@pytest.mark.parametrize(
+    "crosshair_code, available",
+    [("CSGO-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA", True), (None, False), ("  ", False)],
+)
+def test_crosshair_probe_reads_only_selected_player_and_tick(
+    tmp_path, monkeypatch, crosshair_code, available
+):
+    demo = tmp_path / "demo.dem"
+
+    class Parser:
+        def __init__(self, filename):
+            assert filename == str(demo)
+
+        def parse_ticks(self, properties, *, players, ticks):
+            assert properties == ["crosshair_code"]
+            assert players == [_PLAYER]
+            assert ticks == [120]
+            return _Frame(
+                _snapshot(120, _OPPONENT, 2, crosshair_code="CSGO-BBBBB-BBBBB-BBBBB-BBBBB-BBBBB"),
+                _snapshot(120, _PLAYER, 3, crosshair_code=crosshair_code),
+            )
+
+    monkeypatch.setattr(demoparser2, "DemoParser", Parser)
+
+    assert has_recorded_crosshair(demo, str(_PLAYER), 120) is available
+
+
+def test_crosshair_probe_treats_parser_failure_as_unavailable(tmp_path, monkeypatch):
+    class Parser:
+        def __init__(self, _filename):
+            pass
+
+        def parse_ticks(self, *_args, **_kwargs):
+            raise RuntimeError("当前解析器无法读取准星")
+
+    monkeypatch.setattr(demoparser2, "DemoParser", Parser)
+
+    assert has_recorded_crosshair(tmp_path / "demo.dem", str(_PLAYER), 120) is False
 
 
 @pytest.mark.parametrize(
