@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -242,27 +243,45 @@ def _make_rounds(
     )
 
 
-def has_recorded_crosshair(path: Path, player_id: str, tick: int) -> bool:
-    """检查目标玩家在片段起点是否有准星设置，由 CS2 回放负责读取样式。"""
+def recorded_crosshairs(path: Path, targets: Iterable[tuple[str, int]]) -> set[tuple[str, int]]:
+    """一次读取多个玩家和片段起点，返回有录像准星设置的玩家与 tick。"""
+    requested = {(player, tick) for player, tick in targets if _steam_id(player) == player}
+    if not requested:
+        return set()
+
     try:
         from demoparser2 import DemoParser
 
         rows = (
             DemoParser(str(path))
-            .parse_ticks(["crosshair_code"], players=[int(player_id)], ticks=[tick])
+            .parse_ticks(
+                ["crosshair_code"],
+                players=sorted({int(player) for player, _ in requested}),
+                ticks=sorted({tick for _, tick in requested}),
+            )
             .to_dict("records")
         )
     except BaseException as error:
         # 旧 demo 可能无法读取这个字段。解析失败只影响准星，用户取消仍向上传递。
         if not isinstance(error, Exception) and type(error).__module__ != "pyo3_runtime":
             raise
-        return False
+        return set()
 
+    available = set()
     for row in rows:
+        player_id = _steam_id(row.get("steamid"))
+        tick = _tick(row)
         code = row.get("crosshair_code")
-        if _steam_id(row.get("steamid")) == player_id and isinstance(code, str) and code.strip():
-            return True
-    return False
+        if player_id is not None and tick is not None and isinstance(code, str) and code.strip():
+            target = (player_id, tick)
+            if target in requested:
+                available.add(target)
+    return available
+
+
+def has_recorded_crosshair(path: Path, player_id: str, tick: int) -> bool:
+    """检查目标玩家在片段起点是否有准星设置，由 CS2 回放负责读取样式。"""
+    return bool(recorded_crosshairs(path, ((player_id, tick),)))
 
 
 def parse_demo(path: Path) -> Demo:

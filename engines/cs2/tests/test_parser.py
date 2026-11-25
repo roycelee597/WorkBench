@@ -6,7 +6,13 @@ import demoparser2
 import pytest
 
 from cs2_engine.models import AliveState, Demo, Kill, Player, Round, Shot
-from cs2_engine.parser import DemoParseError, _weapon, has_recorded_crosshair, parse_demo
+from cs2_engine.parser import (
+    DemoParseError,
+    _weapon,
+    has_recorded_crosshair,
+    parse_demo,
+    recorded_crosshairs,
+)
 from cs2_engine.rules import Rules
 from cs2_engine.scoring import score_demo
 
@@ -249,6 +255,33 @@ def test_crosshair_probe_treats_parser_failure_as_unavailable(tmp_path, monkeypa
     monkeypatch.setattr(demoparser2, "DemoParser", Parser)
 
     assert has_recorded_crosshair(tmp_path / "demo.dem", str(_PLAYER), 120) is False
+
+
+def test_crosshair_probe_reads_all_requested_pairs_once(tmp_path, monkeypatch):
+    demo = tmp_path / "demo.dem"
+    calls = []
+    code = "CSGO-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA"
+
+    class Parser:
+        def __init__(self, filename):
+            assert filename == str(demo)
+
+        def parse_ticks(self, properties, *, players, ticks):
+            calls.append((properties, players, ticks))
+            return _Frame(
+                _snapshot(120, _PLAYER, 3, crosshair_code=code),
+                _snapshot(120, _OPPONENT, 2, crosshair_code=code),
+                _snapshot(150, _OPPONENT, 2, crosshair_code=" "),
+                _snapshot(180, _PLAYER, 3, crosshair_code=code),
+            )
+
+    monkeypatch.setattr(demoparser2, "DemoParser", Parser)
+    first = (str(_PLAYER), 120)
+    second = (str(_OPPONENT), 150)
+    third = (str(_PLAYER), 180)
+
+    assert recorded_crosshairs(demo, [third, second, first, first]) == {first, third}
+    assert calls == [(["crosshair_code"], sorted([_PLAYER, _OPPONENT]), [120, 150, 180])]
 
 
 @pytest.mark.parametrize(

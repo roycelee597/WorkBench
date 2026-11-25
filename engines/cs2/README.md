@@ -1,6 +1,6 @@
 # CS2 demo 高光引擎
 
-P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和剪辑时间。P2 在 Windows 上尝试录制 P1 选出的一段第一人称画面。预览和录制边界都使用 demo 的 tick。
+P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和剪辑时间。P2 在 Windows 上录制单段第一人称画面。P3 支持按编号批量录制，并生成玩家与受害者视角的合集。预览和录制边界都使用 demo 的 tick。
 
 ## 在 Windows 上预览一场对局
 
@@ -49,11 +49,32 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
 
 任务、demo、玩家和输出目录出错时分别返回 `INVALID_TASK`、`DEMO_PARSE_FAILED`、`PLAYER_NOT_FOUND`、`OUTPUT_WRITE_FAILED`。录制还会返回 `CS2_NOT_FOUND`、`HLAE_NOT_FOUND`、`RECORD_FAILED`、`FFMPEG_FAILED`、`GAMEINFO_FAILED` 或 `PERMISSION_DENIED`。终端中断返回 `CANCELLED`。其他异常返回 `INTERNAL_ERROR`，异常堆栈只写到标准错误。失败的最后一行是 `error`，退出状态为非零。
 
-工作目录内的 `parsed.json` 保存归一化事件，`highlights.json` 对应 `result.inspect`。每段预览带回合号 `round`、类别 `types`、标签 `tags`、`start_tick`、`end_tick`、`duration_s` 和 `victim_povs`。受害者窗口包含 `steamid64`（机器人或无法识别时为 `null`）、`death_tick`、起止 tick 和时长。
+工作目录内的 `parsed.json` 保存归一化事件，`highlights.json` 对应 `result.inspect`。每段预览带从 1 开始的编号 `id`、回合号 `round`、类别 `types`、标签 `tags`、`start_tick`、`end_tick`、`duration_s` 和 `victim_povs`。同一 demo、玩家和判定规则会生成相同编号。受害者窗口包含 `steamid64`（机器人或无法识别时为 `null`）、`death_tick`、起止 tick 和时长。
+
+## 在 Windows 上批量录制 P3
+
+先按 P2 的准备步骤安装 HLAE 和 FFmpeg，保持 Steam 运行，并退出正在游玩的 CS2。在仓库根目录运行以下命令，路径和玩家名均换成本机的值。也可用 SteamID64 指定玩家。
+
+```powershell
+uv run --project engines/cs2 --locked cs2-engine list-highlights --demo 'D:/DemoTest/match.dem' --player 'DemoPlayer'
+uv run --project engines/cs2 --locked cs2-engine record-batch `
+  --demo 'D:/DemoTest/match.dem' --player 'DemoPlayer' --select '1,3,5' `
+  --cs2-path 'D:/Games/Counter-Strike Global Offensive' --hlae-path 'D:/Tools/HLAE/HLAE.exe' `
+  --ffmpeg-path 'D:/Tools/FFmpeg/bin/ffmpeg.exe' --output-dir 'D:/DemoTest/output'
+```
+
+`list-highlights` 和 `record-batch` 使用默认高光类型和判定规则。编号只与使用默认类型和规则的 `inspect` 结果一致。列表会显示编号、回合、类型、标签及片段时长。可把 `--select '1,3,5'` 换成 `--all`。编号错误时会列出可选编号。
+
+- 受害者片段默认从死亡前 3 秒录到死亡后 1.5 秒，可用 `--victim-before` 和 `--victim-after` 修改。死亡前时长须大于 0 秒，死亡后时长可设为 0 秒。窗口按实际回合和 demo 的边界截断。同一次击杀若落在多个选中高光里，只录一次受害者片段。
+- 默认以 `--aspect 16:9` 录制，也可指定 `--aspect 4:3-stretched`。玩家与受害者均沿用 P2 的 HUD 和准星设置。受害者死亡后如游戏自动切换观战对象，录制保留受害者最后的视角。
+- X 光轮廓默认关闭。`--xray` 开启透视轮廓，`--no-xray` 关闭。玩家和受害者视角都使用同一个开关。
+- 默认优先使用一次 HLAE 会话批量捕获，未通过校验的片段逐段重试。`--recording-method startmovie` 使用逐段启动的原生录制方式。需要按 `Ctrl+C` 中断时，引擎会结束受托管的录制和编码进程，并执行原有的配置校验与恢复流程。
+- `--output-dir` 请使用仓库外的目录。每份 demo 有独立的目录，每次运行创建新的 `batch-*` 子目录。单段保存在 `player-clips` 和 `victim-clips` 中，文件名包含高光编号、回合和类型。播放器可打开 `highlights.mp4` 和 `victims.mp4` 检查合集，每个接缝约有 0.3 秒的音画淡出淡入。
+- `record-batch` 标准输出为 JSON Lines。`batch-results.json` 保存成功单段和合集的 ffprobe 校验、耗时与失败原因。有可用合集时，`done` 也包含失败明细。任何一个完整合集都未生成时返回 `BATCH_FAILED`。批次目录创建后，按 `Ctrl+C` 取消也会写出汇总。`cancelled` 标记中断，`segments` 和 `uncompleted` 分别列出已完成和未完成的单段。
 
 ## 在 Windows 上录制 P2 单段
 
-1. 安装新版 HLAE，保留安装目录下的 `HLAE.exe`、`x64/AfxHookSource2.dll` 和随附的 `resources/AfxHookSource2/snippets/mirv_script_spec_lock.js`。引擎依赖这个官方脚本锁定第一人称。解压 FFmpeg Windows 构建，让 `ffmpeg.exe` 和 `ffprobe.exe` 保持在同一个 `bin` 目录。Steam 保持运行，先退出平时游玩的 CS2。[HLAE 官方发布](https://github.com/advancedfx/advancedfx/releases/latest) · [FFmpeg 官网列出的 Windows 构建](https://ffmpeg.org/download.html#build-windows)
+1. 安装 HLAE 2.193.2 或更新版本，保留安装目录下的 `HLAE.exe`、`x64/AfxHookSource2.dll` 和随附的 `resources/AfxHookSource2/snippets/mirv_script_spec_lock.js`。引擎依赖这个官方脚本锁定第一人称。解压 FFmpeg Windows 构建，让 `ffmpeg.exe` 和 `ffprobe.exe` 保持在同一个 `bin` 目录。Steam 保持运行，先退出平时游玩的 CS2。[HLAE 官方发布](https://github.com/advancedfx/advancedfx/releases/latest) · [FFmpeg 官网列出的 Windows 构建](https://ffmpeg.org/download.html#build-windows)
 2. 在本机解压 `.dem`，用 P1 为目标玩家生成 `highlights.json`，从 `highlights` 数组选择一个片段，记下序号。第一段的序号是 `1`。把下面的 `record-task.json` 示例放到本机测试目录，换成自己的路径、片段序号和目标玩家 SteamID64。真实 demo、名单、任务文件及成品留在本机。
 
    ```json
@@ -70,7 +91,8 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
      "hlae_path": "C:/Tools/HLAE/HLAE.exe",
      "ffmpeg_path": "C:/Tools/FFmpeg/bin/ffmpeg.exe",
      "recording_method": "auto",
-     "aspect": "16:9"
+     "aspect": "16:9",
+     "xray": false
    }
    ```
 
@@ -79,6 +101,8 @@ P1 读取本地 `.dem`，列出可选玩家，并为指定玩家计算高光和�
    ```powershell
    uv run --project engines/cs2 --locked cs2-engine run --task 'D:/DemoTest/record-task.json'
    ```
+
+   X 光轮廓默认关闭。可在任务中设置 `xray`，或者给命令追加 `--xray` 或 `--no-xray`，命令行开关优先。
 
 4. 成功后打开 `output` 里的 MP4，检查是否为目标玩家第一人称，并检查准星、血量、护甲、弹药、击杀提示和音画同步。确认顶部队伍头像栏可见，切换武器时右侧武器栏出现。底部回放控制条、左下角版本信息和观战选手卡应当隐藏。`done` 和 `record-work/segments.json` 保存录制比例、原始画面分辨率、录制方式、文件时长和大小、从启动 HLAE 到退出 CS2 的耗时，以及 `gameinfo.gi` 的校验结果。可在录制前后分别用 PowerShell 的 `Get-FileHash -Algorithm SHA256 -LiteralPath` 比较游戏安装目录 `game/csgo/gameinfo.gi` 的哈希。
 5. 复验取消时，录制中按 `Ctrl+C`，检查 CS2 已退出、没有留下成品，并再次核对 `gameinfo.gi` 的哈希。P2 引擎本身不修改 `gameinfo.gi`。备份和启动时的 SHA-256、大小、修改时间用于防范 HLAE 或游戏意外改动。恢复时发现配置缺失或属于未知版本，会保留原备份和现有文件，并返回 `GAMEINFO_FAILED`。
