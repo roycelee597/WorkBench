@@ -179,18 +179,9 @@ def record_batch(
     started = monotonic()
     tools = _capture_tools(template)
     work_dir = _staging_root(template.work_dir)
-    try:
-        demo_directory = validate_record_path(template.output_dir / template.demo_path.stem)
-        demo_directory.mkdir(parents=True, exist_ok=True)
-        directory = Path(mkdtemp(prefix="batch-", dir=demo_directory))
-        work_dir.mkdir(parents=True, exist_ok=True)
-        for view in ("player", "victim"):
-            (directory / f"{view}-clips").mkdir()
-    except OSError:
-        raise RecordError("OUTPUT_WRITE_FAILED", "无法创建批量录制输出目录。") from None
-
+    demo_directory = validate_record_path(template.output_dir / template.demo_path.stem)
     failures = []
-    work = []
+    planned = []
     for clip in clips:
         if (
             clip.target_id is None
@@ -204,6 +195,28 @@ def record_batch(
                 )
             )
             continue
+        planned.append(clip)
+    if planned:
+        check_recording_space(
+            demo_directory,
+            work_dir,
+            (clip.segment.duration_s for clip in planned),
+            capture_size=template.capture_size,
+            demo_bytes=_demo_size(template.demo_path),
+            keep_raw=template.keep_raw,
+            native_dir=tools.gameinfo.parent if template.method == "startmovie" else None,
+        )
+    try:
+        demo_directory.mkdir(parents=True, exist_ok=True)
+        directory = Path(mkdtemp(prefix="batch-", dir=demo_directory))
+        work_dir.mkdir(parents=True, exist_ok=True)
+        for view in ("player", "victim"):
+            (directory / f"{view}-clips").mkdir()
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法创建批量录制输出目录。") from None
+
+    work = []
+    for clip in planned:
         path = _clip_path(directory, clip)
         task = replace(
             template,
@@ -217,16 +230,6 @@ def record_batch(
 
     # 按回放时间安排跳转，受害者合集仍按死亡时间排序。
     work.sort(key=lambda item: item[1].segment.start_tick)
-    if work:
-        check_recording_space(
-            directory,
-            work_dir,
-            (task.segment.duration_s for _, task, _ in work),
-            capture_size=template.capture_size,
-            demo_bytes=_demo_size(template.demo_path),
-            keep_raw=template.keep_raw,
-            native_dir=tools.gameinfo.parent if template.method == "startmovie" else None,
-        )
     try:
         reserved = _reserve_summary(directory, len(clips))
     except OSError:

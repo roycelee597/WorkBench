@@ -24,11 +24,13 @@ from .recording import (
     _run_encoder,
     _stage_demo,
     _staging_root,
+    _verify_writable,
 )
 from .recording_commands import _CLEAN_HUD, _POV_SCRIPT, _console_path, _validated_target, hlae_argv
 from .windows_job import WindowsJob, WindowsProcess
 
 _WRITE_RESERVE = 64 * 1024**2
+_MARKER_WRITE_FAILED = "marker-write-failed.xml"
 
 
 def _write_batch_config(
@@ -42,6 +44,7 @@ def _write_batch_config(
     options = {
         "hud": _CLEAN_HUD,
         "markers": markers.as_posix(),
+        "markerWriteFailure": (markers.parent / _MARKER_WRITE_FAILED).as_posix(),
         "clips": [
             {
                 "target": _validated_target(task.player_id),
@@ -72,10 +75,35 @@ def _write_batch_config(
     )
 
 
+def _verify_capture_path(capture: Path) -> None:
+    # capture.parent 是建好会话目录时取得的绝对路径。
+    if capture.resolve() != capture or capture.is_junction() or capture.is_symlink():
+        raise RecordError("OUTPUT_WRITE_FAILED", "录制原始文件目录已被重定向。")
+
+
+def _verify_raw_writable(capture: Path) -> None:
+    # 捕获文件夹尚未创建时检查其父目录。已有录制还要检查保存 TGA/WAV 的子目录。
+    _verify_capture_path(capture)
+    if not capture.exists():
+        _verify_writable(capture.parent)
+        return
+
+    def traversal_failed(error: OSError) -> None:
+        raise error
+
+    try:
+        for directory, children, _ in capture.walk(on_error=traversal_failed):
+            children[:] = [name for name in children if not (directory / name).is_junction()]
+            _verify_writable(directory)
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法访问批量录制原始文件目录。") from None
+
+
 def _wait_for_clip(
     job: WindowsJob,
     launch: WindowsProcess,
     markers: Path,
+    capture: Path,
     index: int,
     output_dir: Path,
     timeout: float,
@@ -84,6 +112,8 @@ def _wait_for_clip(
     next_space_check = 0.0
     while True:
         now = time.monotonic()
+        if (markers.parent / _MARKER_WRITE_FAILED).is_file():
+            raise RecordError("OUTPUT_WRITE_FAILED", "HLAE 无法写入批量录制标记。")
         if now >= next_space_check:
             require_free_space(markers, _WRITE_RESERVE)
             require_free_space(output_dir, _WRITE_RESERVE)
@@ -95,10 +125,14 @@ def _wait_for_clip(
                     return suffix == "ready"
             except FileNotFoundError:
                 pass
-        if launch.poll() not in (None, 0) or not job.active_processes():
-            raise RecordError("RECORD_FAILED", "批量回放在当前片段结束前退出。")
-        if now >= deadline:
-            raise RecordError("RECORD_FAILED", "等待当前片段离线录制结束超时。")
+        exited = launch.poll() not in (None, 0) or not job.active_processes()
+        if exited or now >= deadline:
+            _verify_writable(markers)
+            _verify_raw_writable(capture)
+            reason = (
+                "批量回放在当前片段结束前退出。" if exited else "等待当前片段离线录制结束超时。"
+            )
+            raise RecordError("RECORD_FAILED", reason)
         time.sleep(0.1)
 
 
@@ -158,7 +192,7 @@ def record_multiple(
         with tempfile.TemporaryDirectory(
             prefix="workbench-cs2-", dir=_staging_root(first.work_dir)
         ) as scratch:
-            private = Path(scratch)
+            private = Path(scratch).resolve()
             staged = _stage_demo(first.demo_path, private, 0)
             profile = private / "profile"
             markers = private / "markers"
@@ -174,6 +208,7 @@ def record_multiple(
                     tools.gameinfo, _recovery_dir(), worker_command, job_name=job_name
                 ),
             ):
+                started = None
                 try:
                     _ensure_cs2_closed()
                     require_free_space(
@@ -188,7 +223,6 @@ def record_multiple(
                         )
                     except OSError:
                         raise RecordError("RECORD_FAILED", "无法启动受托管的 CS2 进程。") from None
-                    elapsed = 0.0
                     for index, (task, output) in enumerate(items):
                         capture = captures[index]
                         try:
@@ -196,6 +230,7 @@ def record_multiple(
                                 job,
                                 launch,
                                 markers,
+                                capture,
                                 index,
                                 output.parent,
                                 max(90, task.segment.duration_s * 8 + 30),
@@ -205,16 +240,18 @@ def record_multiple(
                                 raise
                             warning(f"批量回放未完整退出。{error}")
                             break
-                        elapsed += time.monotonic() - started
                         if ready:
+                            _verify_capture_path(capture)
                             try:
                                 completed[index] = _encode_clip(
-                                    tools, task, capture, output, elapsed
+                                    tools, task, capture, output, time.monotonic() - started
                                 )
                             except RecordError as error:
                                 if error.code == "OUTPUT_WRITE_FAILED":
                                     raise
+                                _verify_raw_writable(capture)
                                 warning(f"批量回放第 {index + 1} 段未通过校验。{error}")
+                        _verify_capture_path(capture)
                         if task.keep_raw and index in completed:
                             new_raw_root = raw_root is None
                             if new_raw_root:
@@ -245,7 +282,6 @@ def record_multiple(
                                 private,
                                 raw_bytes(next_task.segment.duration_s, next_task.capture_size),
                             )
-                        started = time.monotonic()
                         (markers / f"{index}.continue").touch(exist_ok=False)
                     else:
                         # 给游戏处理最后一次确认及正常退出的机会。超时仍由 Job 清理。
@@ -254,6 +290,10 @@ def record_multiple(
                             time.sleep(0.1)
                 finally:
                     job.terminate()
+                    if started is not None:
+                        elapsed = time.monotonic() - started
+                        for index, clip in completed.items():
+                            completed[index] = replace(clip, capture_elapsed_s=elapsed)
     except OSError:
         raise RecordError("OUTPUT_WRITE_FAILED", "批量录制的临时数据或成品无法读写。") from None
     return completed
@@ -317,6 +357,7 @@ mirv.events.clientFrameStageNotify.on("workbench-p3", (event) => {
     if (phase === "flush") {
         if (Date.now() >= deadline) {
             if (!markerWriter.save(marker(pendingMarker))) {
+                markerWriter.save(options.markerWriteFailure);
                 phase = "done";
                 mirv.exec("quit");
                 return;

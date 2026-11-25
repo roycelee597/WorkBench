@@ -144,6 +144,19 @@ def _check_space(path: Path, required: int) -> None:
     require_free_space(path, required)
 
 
+def _verify_writable(directory: Path) -> None:
+    """区分丢失录制输出和工作目录本身的写入故障。"""
+    try:
+        with tempfile.TemporaryFile(dir=directory) as probe:
+            probe.write(b"cs2")
+            probe.flush()
+            os.fsync(probe.fileno())
+    except OSError:
+        raise RecordError(
+            "OUTPUT_WRITE_FAILED", "录制目录写入失败，请检查磁盘空间和权限。"
+        ) from None
+
+
 def _publish_video(source: Path, target: Path) -> None:
     """跨盘时先复制到成品盘的临时文件，再原子发布已校验的视频。"""
     try:
@@ -484,12 +497,17 @@ def _record_attempt(
                 if method == "hlae"
                 else sorted(native_outputs(native_roots, prefix))
             )
-            raw = _capture_sequence(
-                files,
-                math.ceil(segment.duration_s * 60),
-                task.capture_size,
-                pad_tail=task.death_tick is not None,
-            )
+            try:
+                raw = _capture_sequence(
+                    files,
+                    math.ceil(segment.duration_s * 60),
+                    task.capture_size,
+                    pad_tail=task.death_tick is not None,
+                )
+            except CaptureIncomplete:
+                for path in (*storage, *{file.parent for file in files}):
+                    _verify_writable(path)
+                raise
             notify("record", 1, "逐帧录制完成，已退出 CS2。")
             notify("compose", 0, "正在编码并验证 1080p 60 fps MP4。")
             duration = _run_encoder(job, tools, raw, temporary_mp4, directory / "probe.json")
@@ -519,8 +537,6 @@ def record_segment(
     fallback_reason = None
     retained = None
     try:
-        task.work_dir.mkdir(parents=True, exist_ok=True)
-        task.output_dir.mkdir(parents=True, exist_ok=True)
         scratch = _staging_root(task.work_dir)
         check_recording_space(
             task.output_dir,
@@ -532,6 +548,8 @@ def record_segment(
             compilation=False,
             native_dir=tools.gameinfo.parent if task.method == "startmovie" else None,
         )
+        scratch.mkdir(parents=True, exist_ok=True)
+        task.output_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="workbench-cs2-", dir=scratch) as private:
             private_path = Path(private)
             notify("prepare", 0, "正在把 demo 放入独立录制目录。")
@@ -552,6 +570,7 @@ def record_segment(
             for method in methods:
                 if method == "startmovie":
                     _check_space(tools.gameinfo.parent, raw_needed)
+                    _check_space(scratch, raw_needed)
                 try:
                     with tempfile.TemporaryDirectory(prefix=f"{method}-", dir=private_path) as raw:
                         attempt = Path(raw)

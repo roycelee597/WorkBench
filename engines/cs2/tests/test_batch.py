@@ -239,6 +239,8 @@ def test_cli_reports_disk_shortage_and_exits_before_capture(tmp_path, monkeypatc
     assert final["type"] == "error" and final["code"] == "OUTPUT_WRITE_FAILED"
     assert (task.work_dir.drive or "/") in final["message"]
     assert "需要约 " in final["message"] and "可用 0.10 GB，还差 " in final["message"]
+    assert not task.output_dir.exists()
+    assert not task.work_dir.exists()
     assert not list(tmp_path.rglob("*.mp4"))
     assert not list(tmp_path.rglob(".batch-summary-*"))
 

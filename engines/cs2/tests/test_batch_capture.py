@@ -1,5 +1,6 @@
 import errno
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from cs2_engine import batch_capture
 from cs2_engine.compilation import VideoInfo
 from cs2_engine.record_task import RecordError, RecordTask, Segment
-from cs2_engine.recording import CaptureTools
+from cs2_engine.recording import CaptureIncomplete, CaptureTools
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def session(tmp_path, monkeypatch):
         tools.cs2,
         tools.hlae,
         tools.ffmpeg,
-        "76561198000000001",
+        "00000000000000001",
         Segment(1, 128, 192, 1),
         "auto",
     )
@@ -81,7 +82,7 @@ def session(tmp_path, monkeypatch):
         state.captures = captures
         write_original_config(profile, demo, tasks, captures, crosshairs)
 
-    def wait_for_clip(_job, _launch, markers, index, _output, _timeout):
+    def wait_for_clip(_job, _launch, markers, capture, index, _output, _timeout):
         state.processed.append(index)
         for past in range(index):
             assert not state.captures[past].exists()
@@ -89,7 +90,7 @@ def session(tmp_path, monkeypatch):
         # 无法锁定第三段视角时，游戏只留下 skip 标记。
         if index == 2:
             return False
-        capture = state.captures[index]
+        assert capture == state.captures[index]
         capture.mkdir()
         (capture / f"frame-{index}.tga").touch()
         return True
@@ -97,6 +98,8 @@ def session(tmp_path, monkeypatch):
     def capture_sequence(files, _frames, _size, *, pad_tail):
         index = int(files[0].stem.split("-")[1])
         assert pad_tail is False
+        if index == 1 and state.failure == "raw":
+            raise CaptureIncomplete("合成原始文件缺失。")
         return SimpleNamespace(index=index, tail_padding_frames=int(index == 0))
 
     def run_encoder(job, _tools, raw, output, _report):
@@ -173,10 +176,17 @@ def test_batch_encodes_and_cleans_each_clip_before_releasing_game(session, keep_
         assert completed[0].raw_output is None
 
 
-@pytest.mark.parametrize("failure", ["encoder", "publish"])
-def test_batch_storage_error_aborts_and_only_keeps_finished_clips(session, failure):
+@pytest.mark.parametrize("failure", ["encoder", "publish", "raw"])
+def test_batch_storage_error_aborts_and_only_keeps_finished_clips(session, failure, monkeypatch):
     session.task = replace(session.task, keep_raw=True)
     session.failure = failure
+    if failure == "raw":
+
+        def write_denied(folder):
+            assert folder == session.captures[1]
+            raise RecordError("OUTPUT_WRITE_FAILED", "合成原始文件目录不可写。")
+
+        monkeypatch.setattr(batch_capture, "_verify_writable", write_denied)
 
     with pytest.raises(RecordError) as error:
         _record(session)
@@ -201,6 +211,70 @@ def test_disk_reserve_checked_before_waiting_for_raw_marker(tmp_path, monkeypatc
     monkeypatch.setattr(batch_capture, "require_free_space", no_space)
 
     with pytest.raises(RecordError) as error:
-        batch_capture._wait_for_clip(Game(), Game(), tmp_path, 0, tmp_path, 1)
+        batch_capture._wait_for_clip(Game(), Game(), tmp_path, tmp_path / "capture", 0, tmp_path, 1)
+
+    assert error.value.code == "OUTPUT_WRITE_FAILED"
+
+
+@pytest.mark.parametrize("failed_directory", ["markers", "screen", None])
+def test_abnormal_exit_checks_marker_and_raw_directories_before_fallback(
+    tmp_path, monkeypatch, failed_directory
+):
+    markers = tmp_path / "markers"
+    markers.mkdir()
+    capture = tmp_path / "capture"
+    screen = capture / "take0000" / "screen"
+    screen.mkdir(parents=True)
+    checked = []
+
+    def verify(directory):
+        checked.append(directory.name)
+        if directory.name == failed_directory:
+            raise RecordError("OUTPUT_WRITE_FAILED", "合成工作目录写入失败。")
+
+    game = SimpleNamespace(poll=lambda: 0, active_processes=lambda: 0)
+    monkeypatch.setattr(batch_capture, "require_free_space", lambda *_: None)
+    monkeypatch.setattr(batch_capture, "_verify_writable", verify)
+
+    with pytest.raises(RecordError) as error:
+        batch_capture._wait_for_clip(game, game, markers, capture, 0, tmp_path, 1)
+
+    assert error.value.code == ("OUTPUT_WRITE_FAILED" if failed_directory else "RECORD_FAILED")
+    assert checked == (
+        ["markers"]
+        if failed_directory == "markers"
+        else [
+            "markers",
+            "capture",
+            "take0000",
+            "screen",
+        ]
+    )
+
+
+def test_hlae_marker_write_error_aborts_even_when_storage_probe_would_pass(tmp_path):
+    (tmp_path / "marker-write-failed.xml").write_text("<campath />")
+    markers = tmp_path / "markers"
+    markers.mkdir()
+
+    with pytest.raises(RecordError, match="HLAE 无法写入") as error:
+        batch_capture._wait_for_clip(None, None, markers, tmp_path / "capture", 0, tmp_path, 1)
+
+    assert error.value.code == "OUTPUT_WRITE_FAILED"
+
+
+def test_raw_capture_directory_must_stay_inside_session(tmp_path, monkeypatch):
+    capture = tmp_path / "session" / "take-0000"
+    original_resolve = Path.resolve
+
+    def redirected(path, **kwargs):
+        if path == capture:
+            return tmp_path / "other-run"
+        return original_resolve(path, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", redirected)
+
+    with pytest.raises(RecordError, match="已被重定向") as error:
+        batch_capture._verify_raw_writable(capture)
 
     assert error.value.code == "OUTPUT_WRITE_FAILED"

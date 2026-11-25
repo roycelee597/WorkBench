@@ -90,8 +90,11 @@ def check_recording_space(
     retained_raw = sum(raw_clips) if keep_raw else 0
     # 成品预算包含单段、两种视角合集和汇总空间。合成时只有一个合集的中间文件。
     output_bytes = total_mp4 * (2 if compilation else 1) + 1024**2 + len(clips) * 2048
-    # HLAE 在工作卷写 TGA。startmovie 可能先写在安装卷，再把需要保留的文件搬入工作卷。
-    live_raw = retained_raw or (largest_raw if native_dir is None else 0)
+    # startmovie 也可能在工作卷的隔离配置目录写出原始文件。保留时复制的
+    # 目标和原始文件会暂时共存，因此还要为本段原始文件留一份空间。
+    live_raw = retained_raw or largest_raw
+    if keep_raw and native_dir is not None:
+        live_raw += largest_raw
     capture_workspace = live_raw + largest_mp4
     compose_workspace = (
         retained_raw + 2 * total_mp4 + ceil(total_seconds * _PCM_BYTES_PER_SECOND)
@@ -100,13 +103,15 @@ def check_recording_space(
     )
     working_bytes = demo_bytes + _PROFILE_BYTES + max(capture_workspace, compose_workspace)
 
-    paths = [(output_dir, output_bytes), (work_dir, working_bytes)]
-    if native_dir is not None:
-        paths.append((native_dir, largest_raw))
     budgets: dict[int | str, tuple[str, Path, int]] = {}
     try:
-        for path, needed in paths:
-            key, label, existing = _find_volume(path)
+        work_volume = _find_volume(work_dir)
+        volumes = [(_find_volume(output_dir), output_bytes), (work_volume, working_bytes)]
+        if native_dir is not None:
+            native_volume = _find_volume(native_dir)
+            if native_volume[0] != work_volume[0]:
+                volumes.append((native_volume, largest_raw))
+        for (key, label, existing), needed in volumes:
             if key in budgets:
                 label, existing, previous = budgets[key]
                 needed += previous

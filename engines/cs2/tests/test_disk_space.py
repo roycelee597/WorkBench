@@ -12,11 +12,16 @@ _NATIVE = Path("native")
 _SIZE = (1920, 1080)
 
 
-def _budgets(monkeypatch, durations, *, keep_raw=False, shared=False, native=False):
+def _budgets(
+    monkeypatch, durations, *, keep_raw=False, shared=False, native=False, native_on_work=False
+):
     seen = {}
     volumes = {_OUTPUT: (1, "D:", _OUTPUT), _WORK: (2, "E:", _WORK), _NATIVE: (3, "F:", _NATIVE)}
     if shared:
         volumes[_WORK] = (1, "D:", _WORK)
+    if native_on_work:
+        key, label, _ = volumes[_WORK]
+        volumes[_NATIVE] = (key, label, _NATIVE)
     monkeypatch.setattr(disk_space, "_find_volume", volumes.__getitem__)
 
     def track(label, _existing, needed):
@@ -73,12 +78,25 @@ def test_shared_physical_volume_adds_both_requirements_once(monkeypatch):
 
 def test_startmovie_accounts_for_install_drive_and_restored_raw(monkeypatch):
     regular = _budgets(monkeypatch, [5, 10])
+    regular_kept = _budgets(monkeypatch, [5, 10], keep_raw=True)
     native = _budgets(monkeypatch, [5, 10], native=True)
     kept = _budgets(monkeypatch, [5, 10], native=True, keep_raw=True)
 
-    assert native["E:"] < regular["E:"]
-    assert native["F:"] == kept["F:"] > disk_space.raw_bytes(10, _SIZE)
-    assert kept["E:"] > native["E:"] + disk_space.raw_bytes(15, _SIZE)
+    assert native["E:"] == regular["E:"]
+    largest = disk_space.raw_bytes(10, _SIZE)
+    assert native["F:"] == kept["F:"] > largest
+    assert kept["E:"] > 2 * largest + disk_space.raw_bytes(5, _SIZE)
+    assert kept["E:"] > regular_kept["E:"]
+
+
+@pytest.mark.parametrize("keep_raw", [False, True])
+def test_startmovie_install_and_profile_on_same_volume_reserve_one_live_raw_peak(
+    monkeypatch, keep_raw
+):
+    distinct = _budgets(monkeypatch, [5, 10], native=True, keep_raw=keep_raw)
+    shared = _budgets(monkeypatch, [5, 10], native=True, native_on_work=True, keep_raw=keep_raw)
+
+    assert shared == {name: bytes_ for name, bytes_ in distinct.items() if name != "F:"}
 
 
 def test_insufficient_space_reports_each_affected_volume(monkeypatch):
