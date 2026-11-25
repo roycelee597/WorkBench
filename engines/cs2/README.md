@@ -60,17 +60,33 @@ uv run --project engines/cs2 --locked cs2-engine list-highlights --demo 'D:/Demo
 uv run --project engines/cs2 --locked cs2-engine record-batch `
   --demo 'D:/DemoTest/match.dem' --player 'DemoPlayer' --select '1,3,5' `
   --cs2-path 'D:/Games/Counter-Strike Global Offensive' --hlae-path 'D:/Tools/HLAE/HLAE.exe' `
-  --ffmpeg-path 'D:/Tools/FFmpeg/bin/ffmpeg.exe' --output-dir 'D:/DemoTest/output'
+  --ffmpeg-path 'D:/Tools/FFmpeg/bin/ffmpeg.exe' --output-dir 'D:/DemoTest/output' `
+  --work-dir 'E:/CS2-Scratch'
 ```
 
 `list-highlights` 和 `record-batch` 使用默认高光类型和判定规则。编号只与使用默认类型和规则的 `inspect` 结果一致。列表会显示编号、回合、类型、标签及片段时长。可把 `--select '1,3,5'` 换成 `--all`。编号错误时会列出可选编号。
 
 - 受害者片段默认从死亡前 3 秒录到死亡后 1.5 秒，可用 `--victim-before` 和 `--victim-after` 修改。死亡前时长须大于 0 秒，死亡后时长可设为 0 秒。窗口按实际回合和 demo 的边界截断。同一次击杀若落在多个选中高光里，只录一次受害者片段。
 - 默认以 `--aspect 16:9` 录制，也可指定 `--aspect 4:3-stretched`。玩家与受害者均沿用 P2 的 HUD 和准星设置。受害者死亡后如游戏自动切换观战对象，录制保留受害者最后的视角。
-- X 光轮廓默认关闭。`--xray` 开启透视轮廓，`--no-xray` 关闭。玩家和受害者视角都使用同一个开关。
-- 默认优先使用一次 HLAE 会话批量捕获，未通过校验的片段逐段重试。`--recording-method startmovie` 使用逐段启动的原生录制方式。需要按 `Ctrl+C` 中断时，引擎会结束受托管的录制和编码进程，并执行原有的配置校验与恢复流程。
-- `--output-dir` 请使用仓库外的目录。每份 demo 有独立的目录，每次运行创建新的 `batch-*` 子目录。单段保存在 `player-clips` 和 `victim-clips` 中，文件名包含高光编号、回合和类型。播放器可打开 `highlights.mp4` 和 `victims.mp4` 检查合集，每个接缝约有 0.3 秒的音画淡出淡入。
-- `record-batch` 标准输出为 JSON Lines。`batch-results.json` 保存成功单段和合集的 ffprobe 校验、耗时与失败原因。有可用合集时，`done` 也包含失败明细。任何一个完整合集都未生成时返回 `BATCH_FAILED`。批次目录创建后，按 `Ctrl+C` 取消也会写出汇总。`cancelled` 标记中断，`segments` 和 `uncompleted` 分别列出已完成和未完成的单段。
+- X 光轮廓默认关闭。`--xray` 开启透视轮廓，`--no-xray` 关闭。玩家和受害者视角都使用同一个开关。[CS2 1.42.0.1 的 spec_show_xray 定义](https://github.com/SteamTracking/GameTracking-CS2/blob/1049512/DumpSource2/convars.txt#L9922-L9923)
+- 默认在一次 HLAE 会话中逐段录制。每段录完后暂停 CS2，完成 FFmpeg 编码和 ffprobe 校验，发布 MP4 并清理原始文件后再开始下一段。未通过录制校验的片段逐段重试。`--recording-method startmovie` 使用逐段启动的原生录制方式。
+- 每份 demo 在成品目录下有独立的目录，每次运行创建 `batch-*` 子目录。单段保存在 `player-clips` 和 `victim-clips` 中。合集为 `highlights.mp4` 和 `victims.mp4`，每个接缝约有 0.3 秒的音画淡出淡入。
+- `record-batch` 标准输出为 JSON Lines。`batch-results.json` 保存已完成成品的 ffprobe 校验、耗时和失败原因。受害者片段的 `tail_padding_frames` 记录用末帧补齐的帧数，实际补帧时会输出日志。有可用合集时，`done` 也包含失败明细。任何一个完整合集都未生成时返回 `BATCH_FAILED`。
+- 按 `Ctrl+C` 或遇到磁盘写入故障时，停止后续录制，结束受托管的进程并执行原有的配置校验与恢复流程。已发布的成品保留。中断汇总里的 `segments`、`failures` 和 `uncompleted` 分别列出已完成、已失败和未完成的片段。输出盘无法保存汇总时，会尝试将同名汇总写到工作盘，并在日志中报告路径。
+
+### 录制文件和空间
+
+批量和单段录制都接受 `--output-dir`（别名 `--out`）、`--work-dir` 和 `--keep-raw`。请使用仓库外的目录。`--work-dir` 默认是成品目录下的 `.cs2-work`。单段任务也可以用 JSON 的 `work_dir` 和 `keep_raw` 字段。HLAE 录制工作路径需要 ASCII，可以包含空格。成品路径或原 demo 路径包含中文时，可以另指定一个英文工作路径。
+
+| 文件                                             | 位置                                                                                                                                                |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MP4 单段、合集、批次汇总                         | `--output-dir`。批量放在每次的 `batch-*` 目录，单段任务的 `segments.json` 写入任务工作目录。跨盘发布时，会在成品盘暂存已校验的 MP4，再原子改名。    |
+| HLAE 原始 TGA/WAV、暂存 demo、编码和淡化临时文件 | `--work-dir` 下本次运行的专用目录。运行结束自动清理。`--keep-raw` 会将已完成片段的 TGA/WAV 保存在工作盘的独立 `raw-*` 目录，路径写入 `raw_output`。 |
+| `USRLOCALCSGO` 隔离配置                          | `--work-dir` 下的临时 `profile`，录制完成、失败或取消后清理。                                                                                       |
+
+实测 HLAE 2.193.2 在 1920×1080、60 fps 下，366 张 24 位 TGA 与一条 WAV 合计 2,277,894,632 字节。将文件长度相加，再除以 366 ÷ 60 秒，得到 **373.43 MB/s**。预算按 32 位 TGA、帧数容差和安全余量计算。开始前按卷分别预估单段成品、合集和临时数据。默认只为最长一段预留原始录制空间，开启 `--keep-raw` 时为所有选中片段预留。空间不足会在启动 CS2 前退出并列出对应卷的所需、可用和缺少空间。
+
+原生 `startmovie` 是路径例外。本机 CS2 1.42.0.1 测试传入绝对工作路径时未生成文件，所以启用该回退时仍由游戏在安装盘或隔离配置中产生原始文件。引擎在回退前检查安装盘，启用 `--keep-raw` 时把完整的原始文件复制到工作盘，再由原有的恢复流程清理游戏目录。
 
 ## 在 Windows 上录制 P2 单段
 
@@ -121,7 +137,7 @@ uv run --project engines/cs2 --locked cs2-engine record-batch `
 
 `aspect` 可选，默认为 `"16:9"`，CS2 以 1920×1080 渲染。`"4:3-stretched"` 让 CS2 以 1440×1080 渲染，FFmpeg 再横向拉伸至 1920×1080。两种模式均输出 60 fps 的 1080p MP4。录制时会校验原始帧尺寸，确保 CS2 实际按选定比例渲染。
 
-CS2 回放继续使用 Valve 的第一人称观战画面。录制会自动使用 demo 中目标玩家的准星设置。片段起点的准星设置缺失或无法读取时，引擎会输出一条提示，并使用独立录制配置中的 CS2 默认准星。
+CS2 回放继续使用 Valve 的第一人称观战画面。录制会自动使用 demo 中目标玩家的准星设置。片段起点的准星设置缺失或无法读取时，引擎会输出一条提示，并使用独立录制配置中的 CS2 默认准星。Bot 没有个人准星，始终使用默认准星。
 
 录制时通过 HLAE 的 `mirv_panorama` 定向隐藏部分面板。CS2 更新可能重命名 HUD 面板，使对应的隐藏规则静默失效。每次 CS2 更新后，请试录一段包含武器切换的片段，并按第 4 步核对 HUD。[HLAE 面板控制文档](https://github.com/advancedfx/advancedfx/wiki/Source2%3Amirv_panorama)
 

@@ -11,7 +11,13 @@ from .batch_plan import format_highlights, number_highlights, plan_batch, select
 from .gameinfo import GameInfoError, run_gameinfo_watchdog
 from .models import Demo
 from .parser import DemoParseError, parse_demo
-from .record_task import RecordError, RecordTask, read_record_task, validate_record_path
+from .record_task import (
+    WORK_SUBDIR,
+    RecordError,
+    RecordTask,
+    read_record_task,
+    validate_record_path,
+)
 from .recording import record_segment, recover_recording
 from .rules import HIGHLIGHT_TYPES, Rules, parse_rules
 from .scoring import score_demo
@@ -190,6 +196,8 @@ def run_recording(task: RecordTask) -> None:
         "recording_method": clip.method,
         "recording_elapsed_s": round(clip.capture_elapsed_s, 3),
         "size_bytes": clip.size_bytes,
+        "tail_padding_frames": clip.tail_padding_frames,
+        "raw_output": str(clip.raw_output) if clip.raw_output is not None else None,
         "gameinfo_restored": True,
         "fallback_reason": clip.fallback_reason,
     }
@@ -238,7 +246,7 @@ def run_batch_command(args: argparse.Namespace) -> int:
     destination = validate_record_path(args.output_dir)
     template = RecordTask(
         demo_path=path,
-        work_dir=destination,
+        work_dir=validate_record_path(args.work_dir or destination / WORK_SUBDIR),
         output_dir=destination,
         cs2_path=validate_record_path(args.cs2_path),
         hlae_path=validate_record_path(args.hlae_path),
@@ -248,13 +256,17 @@ def run_batch_command(args: argparse.Namespace) -> int:
         method=args.recording_method,
         aspect=args.aspect,
         xray=args.xray,
+        keep_raw=args.keep_raw,
     )
 
     def report(stage: str, current: int, total: int, message: str) -> None:
         emit("progress", stage=stage, current=current, total=total, message=message)
 
     results = record_batch(template, clips, _worker_command(), report, _warning)
-    summary = Path(results["output_dir"]) / "batch-results.json"
+    summary = results.pop("summary", str(Path(results["output_dir"]) / "batch-results.json"))
+    if error := results.get("error"):
+        emit("error", **error, summary=summary)
+        return 1
     if not results["compilations"]:
         emit("error", code="BATCH_FAILED", message="没有可用的合集成品。", summary=str(summary))
         return 1
@@ -288,7 +300,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     selection = batch.add_mutually_exclusive_group(required=True)
     selection.add_argument("--select", help="用逗号分隔的高光编号，例如 1,3,5")
     selection.add_argument("--all", action="store_true", help="录制所选玩家的全部高光")
-    batch.add_argument("--output-dir", required=True, type=Path, help="批量成品目录")
+    batch.add_argument("--output-dir", "--out", required=True, type=Path, help="批量成品目录")
+    run.add_argument("--output-dir", "--out", type=Path, help="覆盖单段录制成品目录")
+    for command in (run, batch):
+        command.add_argument(
+            "--work-dir", type=Path, help="录制工作目录，默认使用成品目录下的 .cs2-work"
+        )
+        command.add_argument(
+            "--keep-raw",
+            action="store_true",
+            default=None if command is run else False,
+            help="保留已完成片段的 TGA 和 WAV 原始文件",
+        )
     batch.add_argument("--cs2-path", required=True, type=Path, help="CS2 安装目录或 cs2.exe")
     batch.add_argument("--hlae-path", required=True, type=Path, help="HLAE.exe")
     batch.add_argument("--ffmpeg-path", required=True, type=Path, help="FFmpeg.exe")
@@ -326,12 +349,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             task = read_task(args.task)
             if isinstance(task, RecordTask):
-                if args.xray is not None:
-                    task = replace(task, xray=args.xray)
+                output = (
+                    validate_record_path(args.output_dir) if args.output_dir else task.output_dir
+                )
+                work = args.work_dir or task.work_dir
+                if args.output_dir and not args.work_dir and work == task.output_dir / WORK_SUBDIR:
+                    work = output / WORK_SUBDIR
+                task = replace(
+                    task,
+                    output_dir=output,
+                    work_dir=validate_record_path(work),
+                    xray=task.xray if args.xray is None else args.xray,
+                    keep_raw=task.keep_raw if args.keep_raw is None else args.keep_raw,
+                )
                 run_recording(task)
             else:
-                if args.xray is not None:
-                    raise InspectError("INVALID_TASK", "X 光选项仅用于录制任务。")
+                if any(
+                    option is not None
+                    for option in (args.xray, args.output_dir, args.work_dir, args.keep_raw)
+                ):
+                    raise InspectError("INVALID_TASK", "命令行录制选项仅用于录制任务。")
                 inspect_demo(task)
     except (InspectError, RecordError) as error:
         emit("error", code=error.code, message=str(error))

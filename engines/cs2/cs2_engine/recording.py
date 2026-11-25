@@ -1,4 +1,5 @@
 import csv
+import errno
 import json
 import math
 import os
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from .disk_space import check_recording_space, raw_bytes, require_free_space
 from .gameinfo import (
     GameInfoProtection,
     native_prefix_for_job,
@@ -59,6 +61,9 @@ class RecordedClip:
     capture_elapsed_s: float
     size_bytes: int
     fallback_reason: str | None = None
+    tail_padding_frames: int = 0
+    raw_output: Path | None = None
+    probe: dict | None = None
 
 
 def _game_location(cs2: Path) -> tuple[Path, Path]:
@@ -128,17 +133,28 @@ def _ensure_cs2_closed() -> None:
 
 
 def _staging_root(work_dir: Path) -> Path:
-    for path in (Path(tempfile.gettempdir()), work_dir):
-        path = validate_record_path(path)
-        value = path.as_posix()
-        if value.isascii() and not any(ord(char) < 32 or char in '";' for char in value):
-            return path
-    raise RecordError("INVALID_TASK", "系统临时目录含非 ASCII 字符，请提供英文 work_dir。")
+    path = validate_record_path(work_dir)
+    value = path.as_posix()
+    if not value.isascii() or any(ord(char) < 32 or char in '";' for char in value):
+        raise RecordError("INVALID_TASK", "录制工作目录需要使用不含引号和分号的 ASCII 路径。")
+    return path
 
 
 def _check_space(path: Path, required: int) -> None:
-    if shutil.disk_usage(path).free < required:
-        raise RecordError("OUTPUT_WRITE_FAILED", "录制磁盘空间不足，无法保存逐帧文件。")
+    require_free_space(path, required)
+
+
+def _publish_video(source: Path, target: Path) -> None:
+    """跨盘时先复制到成品盘的临时文件，再原子发布已校验的视频。"""
+    try:
+        source.replace(target)
+    except OSError as error:
+        if error.errno != errno.EXDEV and getattr(error, "winerror", None) != 17:
+            raise
+        with tempfile.TemporaryDirectory(prefix=".cs2-publish-", dir=target.parent) as transfer:
+            local = Path(transfer) / "video.mp4"
+            shutil.copyfile(source, local)
+            local.replace(target)
 
 
 def _stage_demo(source: Path, directory: Path, required: int) -> Path:
@@ -156,6 +172,15 @@ def _stage_demo(source: Path, directory: Path, required: int) -> Path:
             "OUTPUT_WRITE_FAILED", "无法暂存 demo，请检查读取权限和可用空间。"
         ) from None
     return staged
+
+
+def _demo_size(source: Path) -> int:
+    try:
+        return source.stat().st_size
+    except FileNotFoundError:
+        raise RecordError("DEMO_PARSE_FAILED", "找不到任务里的本地 demo 文件。") from None
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法读取 demo 的文件大小。") from None
 
 
 def _capture_sequence(
@@ -275,7 +300,12 @@ def ffmpeg_argv(executable: Path, raw: RawCapture, output: Path) -> list[str]:
 
 
 def _wait_for_game(
-    job: WindowsJob, tools: CaptureTools, profile: Path, timeout: float, aspect: CaptureAspect
+    job: WindowsJob,
+    tools: CaptureTools,
+    profile: Path,
+    timeout: float,
+    aspect: CaptureAspect,
+    storage: Sequence[Path] = (),
 ) -> None:
     try:
         argv = hlae_argv(tools.hlae, tools.cs2, profile, aspect=aspect)
@@ -287,6 +317,8 @@ def _wait_for_game(
                 raise RecordError("RECORD_FAILED", "HLAE 无法启动离线 CS2 回放。")
             if time.monotonic() >= deadline:
                 raise RecordError("RECORD_FAILED", "等待 CS2 离线录制结束超时。")
+            for path in storage:
+                _check_space(path, 16 * 1024**2)
             time.sleep(0.1)
         if launch.poll() != 0:
             raise RecordError("RECORD_FAILED", "HLAE 无法启动离线 CS2 回放。")
@@ -304,14 +336,50 @@ def _wait_for_encoder(process: WindowsProcess, timeout: float) -> int:
     return code
 
 
+def _encoding_exit_code(job: WindowsJob, argv: Sequence[str], cwd: Path, timeout: float) -> int:
+    # stderr 留在本次工作目录，用于区分空间/I/O 错误和可回退的编码错误。
+    try:
+        with tempfile.TemporaryFile(dir=cwd) as diagnostics:
+            process = job.start(argv, cwd=cwd, stderr=diagnostics)
+            code = _wait_for_encoder(process, timeout)
+            if code != 0:
+                diagnostics.seek(max(0, diagnostics.seek(0, os.SEEK_END) - 65536))
+                message = diagnostics.read().lower()
+                if any(
+                    text in message
+                    for text in (
+                        b"no space left",
+                        b"not enough space",
+                        b"disk quota exceeded",
+                        b"input/output error",
+                        b"i/o error",
+                        b"permission denied",
+                        b"read-only file system",
+                        b"error opening output",
+                        b"error writing",
+                        b"failed to write",
+                    )
+                ):
+                    raise RecordError(
+                        "OUTPUT_WRITE_FAILED", "编码文件写入失败，请检查磁盘空间和权限。"
+                    )
+                _check_space(cwd, 16 * 1024**2)
+            return code
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法启动编码或写入临时文件。") from None
+
+
 def _run_encoder(
     job: WindowsJob, tools: CaptureTools, raw: RawCapture, output: Path, report: Path
 ) -> float:
     try:
-        encode = job.start(ffmpeg_argv(tools.ffmpeg, raw, output), cwd=output.parent)
-        if _wait_for_encoder(encode, max(90, raw.frame_count)) != 0 or not output.is_file():
+        code = _encoding_exit_code(
+            job, ffmpeg_argv(tools.ffmpeg, raw, output), output.parent, max(90, raw.frame_count)
+        )
+        if code != 0 or not output.is_file():
             raise RecordError("FFMPEG_FAILED", "FFmpeg 未能生成 MP4 文件。")
-        probe = job.start(
+        probe = _encoding_exit_code(
+            job,
             [
                 str(tools.ffprobe),
                 "-v",
@@ -325,9 +393,10 @@ def _run_encoder(
                 str(report),
                 str(output),
             ],
-            cwd=output.parent,
+            output.parent,
+            30,
         )
-        if _wait_for_encoder(probe, 30) != 0:
+        if probe != 0:
             raise RecordError("FFMPEG_FAILED", "无法读取成品的画面和音轨信息。")
         metadata = json.loads(report.read_text(encoding="utf-8"))
         streams = metadata["streams"]
@@ -343,7 +412,9 @@ def _run_encoder(
         good_audio = any(
             stream["codec_type"] == "audio" and stream["codec_name"] == "aac" for stream in streams
         )
-    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法读取录制编码结果。") from None
+    except (KeyError, TypeError, ValueError, subprocess.SubprocessError):
         raise RecordError("FFMPEG_FAILED", "编码或验证 MP4 文件失败。") from None
     if (
         not good_video
@@ -367,7 +438,7 @@ def _record_attempt(
     notify: Callable[[str, int, str], None],
     *,
     observer_crosshair: bool,
-) -> tuple[float, float]:
+) -> tuple[float, float, int]:
     profile = directory / "profile"
     capture = directory / "capture"
     capture.mkdir(parents=True)
@@ -403,7 +474,10 @@ def _record_attempt(
             _ensure_cs2_closed()
             notify("record", 0, "已校验 gameinfo.gi 备份，正在启动离线回放。")
             started = time.monotonic()
-            _wait_for_game(job, tools, profile, max(180, segment.duration_s * 60), task.aspect)
+            storage = (capture, csgo) if method == "startmovie" else (capture,)
+            _wait_for_game(
+                job, tools, profile, max(180, segment.duration_s * 60), task.aspect, storage
+            )
             elapsed = time.monotonic() - started
             files = (
                 list(capture.rglob("*.tga")) + list(capture.glob("take*/audio.wav"))
@@ -419,10 +493,13 @@ def _record_attempt(
             notify("record", 1, "逐帧录制完成，已退出 CS2。")
             notify("compose", 0, "正在编码并验证 1080p 60 fps MP4。")
             duration = _run_encoder(job, tools, raw, temporary_mp4, directory / "probe.json")
+            if task.keep_raw and method == "startmovie":
+                for item in files:
+                    shutil.copyfile(item, capture / item.name)
         finally:
             # 先结束子进程，再退出保护上下文。看护进程在引擎崩溃时按同样顺序恢复。
             job.terminate()
-    return duration, elapsed
+    return duration, elapsed, raw.tail_padding_frames
 
 
 def record_segment(
@@ -437,22 +514,30 @@ def record_segment(
         raise RecordError("RECORD_FAILED", "P2 录制原型需要 Windows。")
     tools = _capture_tools(task)
     state_dir = _recovery_dir()
-    expected = math.ceil(task.segment.duration_s * 60)
-    width, height = task.capture_size
-    raw_bytes = expected * width * height * 4 + 64 * 1024**2
+    segment_seconds = task.segment.duration_s
+    raw_needed = raw_bytes(segment_seconds, task.capture_size)
     fallback_reason = None
+    retained = None
     try:
         task.work_dir.mkdir(parents=True, exist_ok=True)
         task.output_dir.mkdir(parents=True, exist_ok=True)
         scratch = _staging_root(task.work_dir)
-        with (
-            tempfile.TemporaryDirectory(prefix="workbench-cs2-", dir=scratch) as private,
-            tempfile.TemporaryDirectory(prefix=".cs2-output-", dir=task.output_dir) as encoding,
-        ):
+        check_recording_space(
+            task.output_dir,
+            scratch,
+            (segment_seconds,),
+            capture_size=task.capture_size,
+            demo_bytes=_demo_size(task.demo_path),
+            keep_raw=task.keep_raw,
+            compilation=False,
+            native_dir=tools.gameinfo.parent if task.method == "startmovie" else None,
+        )
+        with tempfile.TemporaryDirectory(prefix="workbench-cs2-", dir=scratch) as private:
             private_path = Path(private)
-            temporary_mp4 = Path(encoding) / "clip.mp4"
             notify("prepare", 0, "正在把 demo 放入独立录制目录。")
-            staged = _stage_demo(task.demo_path, private_path, raw_bytes)
+            staged = _stage_demo(
+                task.demo_path, private_path, 0 if task.method == "startmovie" else raw_needed
+            )
             if observer_crosshair is None:
                 notify("prepare", 0, "正在读取准星…")
                 observer_crosshair = has_recorded_crosshair(
@@ -462,22 +547,34 @@ def record_segment(
                 warning("未能从 demo 读取目标玩家的准星，使用 CS2 默认准星。")
             notify("prepare", 1, "录制输入已就绪。")
             methods = ("hlae", "startmovie") if task.method == "auto" else (task.method,)
+            token = uuid4().hex
+            target = task.output_dir / f"cs2-clip-{token[:12]}.mp4"
             for method in methods:
                 if method == "startmovie":
-                    _check_space(tools.gameinfo.parent, raw_bytes)
+                    _check_space(tools.gameinfo.parent, raw_needed)
                 try:
-                    duration, elapsed = _record_attempt(
-                        task,
-                        tools,
-                        staged,
-                        private_path / method,
-                        temporary_mp4,
-                        state_dir,
-                        worker_command,
-                        method,
-                        notify,
-                        observer_crosshair=observer_crosshair,
-                    )
+                    with tempfile.TemporaryDirectory(prefix=f"{method}-", dir=private_path) as raw:
+                        attempt = Path(raw)
+                        temporary_mp4 = attempt / "clip.mp4"
+                        duration, elapsed, padding = _record_attempt(
+                            task,
+                            tools,
+                            staged,
+                            attempt,
+                            temporary_mp4,
+                            state_dir,
+                            worker_command,
+                            method,
+                            notify,
+                            observer_crosshair=observer_crosshair,
+                        )
+                        size = temporary_mp4.stat().st_size
+                        if size <= 0:
+                            raise RecordError("FFMPEG_FAILED", "MP4 文件为空。")
+                        _publish_video(temporary_mp4, target)
+                        if task.keep_raw:
+                            retained = scratch / f"raw-{token}"
+                            (attempt / "capture").replace(retained)
                 except CaptureIncomplete as error:
                     if task.method != "auto" or method != "hlae":
                         raise
@@ -485,14 +582,9 @@ def record_segment(
                     warning(f"HLAE 逐帧录制未通过校验。{error}改用 CS2 原生 startmovie。")
                     continue
                 break
-            target = task.output_dir / f"cs2-clip-{uuid4().hex[:12]}.mp4"
-            size = temporary_mp4.stat().st_size
-            if size <= 0:
-                raise RecordError("FFMPEG_FAILED", "MP4 文件为空。")
-            temporary_mp4.replace(target)
     except OSError:
         raise RecordError(
             "OUTPUT_WRITE_FAILED", "录制工作目录、游戏临时文件或成品无法读写。"
         ) from None
     notify("compose", 1, "MP4 已验证，gameinfo.gi 校验通过。")
-    return RecordedClip(target, method, duration, elapsed, size, fallback_reason)
+    return RecordedClip(target, method, duration, elapsed, size, fallback_reason, padding, retained)
