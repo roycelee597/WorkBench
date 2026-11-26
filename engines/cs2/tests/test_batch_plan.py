@@ -152,7 +152,10 @@ def test_invalid_victim_timing_is_rejected(before, after):
         (["--no-xray", "--victim-before", "2", "--victim-after", "0.5"], False, (192, 352)),
     ],
 )
-def test_batch_cli_victim_defaults_and_xray(tmp_path, monkeypatch, flags, xray, windows):
+@pytest.mark.parametrize("explicit_work", [False, True])
+def test_batch_cli_victim_defaults_and_xray(
+    tmp_path, monkeypatch, flags, xray, windows, explicit_work
+):
     player = Player("target", "Synthetic")
     demo = Demo(64.0, (player,), (Round(1, 0, 500, 2, kills=(_kill(320, "victim"),)),))
     monkeypatch.setattr(cli, "_parse_demo", lambda _: demo)
@@ -160,6 +163,9 @@ def test_batch_cli_victim_defaults_and_xray(tmp_path, monkeypatch, flags, xray, 
 
     def record_batch(template, clips, *_args):
         assert template.xray is xray
+        assert template.work_dir == tmp_path / ("work" if explicit_work else ".cs2-work")
+        assert template.output_dir == tmp_path
+        assert template.keep_raw is explicit_work
         player_clip, victim_clip = clips
         assert player_clip.perspective == "player"
         assert victim_clip.perspective == "victim"
@@ -168,6 +174,7 @@ def test_batch_cli_victim_defaults_and_xray(tmp_path, monkeypatch, flags, xray, 
         return {"output_dir": str(tmp_path), "compilations": {"player": {}}}
 
     monkeypatch.setattr(batch, "record_batch", record_batch)
+    storage_flags = ["--work-dir", str(tmp_path / "work"), "--keep-raw"] if explicit_work else []
     assert (
         cli.main(
             [
@@ -186,6 +193,7 @@ def test_batch_cli_victim_defaults_and_xray(tmp_path, monkeypatch, flags, xray, 
                 "--ffmpeg-path",
                 str(tmp_path),
                 *flags,
+                *storage_flags,
             ]
         )
         == 0

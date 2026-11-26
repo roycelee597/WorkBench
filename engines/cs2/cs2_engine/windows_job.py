@@ -8,7 +8,7 @@ from ctypes import wintypes
 from math import ceil
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import BinaryIO, Self
 
 _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
@@ -202,7 +202,7 @@ class _Handle:
 
 
 @contextmanager
-def _process_attributes(api: _Win32, job: int, null: int) -> Iterator[int]:
+def _process_attributes(api: _Win32, job: int, inherited: Sequence[int]) -> Iterator[int]:
     size = ctypes.c_size_t()
     api.init_attributes(None, 2, 0, ctypes.byref(size))
     if not size.value:
@@ -212,7 +212,7 @@ def _process_attributes(api: _Win32, job: int, null: int) -> Iterator[int]:
     storage = (ctypes.c_size_t * ((size.value + word_size - 1) // word_size))()
     attributes = ctypes.addressof(storage)
     _check(api.init_attributes(attributes, 2, 0, ctypes.byref(size)))
-    std_handles = (wintypes.HANDLE * 1)(null)
+    std_handles = (wintypes.HANDLE * len(inherited))(*inherited)
     job_handles = (wintypes.HANDLE * 1)(job)
     try:
         _check(
@@ -358,7 +358,12 @@ class WindowsJob:
         return accounting.ActiveProcesses
 
     def start(
-        self, argv: Sequence[str], *, cwd: Path, env: Mapping[str, str] | None = None
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        stderr: BinaryIO | None = None,
     ) -> WindowsProcess:
         import msvcrt
 
@@ -382,23 +387,33 @@ class WindowsJob:
             os.set_handle_inheritable(null, True)
             startup.StartupInfo.hStdInput = null
             startup.StartupInfo.hStdOutput = null
-            startup.StartupInfo.hStdError = null
-            with _process_attributes(self._api, job, null) as attributes:
-                startup.lpAttributeList = attributes
-                _check(
-                    self._api.create_process(
-                        argv[0],
-                        command_line,
-                        None,
-                        None,
-                        True,
-                        flags,
-                        environment,
-                        str(cwd),
-                        ctypes.byref(startup),
-                        ctypes.byref(process),
+            error_handle = null if stderr is None else msvcrt.get_osfhandle(stderr.fileno())
+            startup.StartupInfo.hStdError = error_handle
+            inherited = [null]
+            if stderr is not None:
+                was_inheritable = os.get_handle_inheritable(error_handle)
+                os.set_handle_inheritable(error_handle, True)
+                inherited.append(error_handle)
+            try:
+                with _process_attributes(self._api, job, inherited) as attributes:
+                    startup.lpAttributeList = attributes
+                    _check(
+                        self._api.create_process(
+                            argv[0],
+                            command_line,
+                            None,
+                            None,
+                            True,
+                            flags,
+                            environment,
+                            str(cwd),
+                            ctypes.byref(startup),
+                            ctypes.byref(process),
+                        )
                     )
-                )
+            finally:
+                if stderr is not None:
+                    os.set_handle_inheritable(error_handle, was_inheritable)
         handle = _Handle(self._api, process.hProcess)
         _check(self._api.close_handle(process.hThread))
         return WindowsProcess(self._api, handle, process.dwProcessId)

@@ -1,5 +1,5 @@
 import json
-import time
+import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .record_task import OUTPUT_SIZE, RecordError
+from .recording import _encoding_exit_code, _publish_video
 from .windows_job import WindowsJob
 
 _FPS = 60
@@ -106,13 +107,10 @@ def _probe_argv(ffprobe: Path, source: Path, report: Path) -> list[str]:
 
 
 def _run(job: WindowsJob, argv: Sequence[str], cwd: Path, timeout: float, failure: str) -> None:
-    process = job.start(argv, cwd=cwd)
-    deadline = time.monotonic() + timeout
-    # 短间隔等待，在 Ctrl+C 时立即退出并关闭 Job。
-    while (code := process.poll()) is None:
-        if time.monotonic() >= deadline:
-            raise RecordError("FFMPEG_FAILED", failure)
-        time.sleep(0.1)
+    try:
+        code = _encoding_exit_code(job, argv, cwd, timeout)
+    except subprocess.TimeoutExpired:
+        raise RecordError("FFMPEG_FAILED", failure) from None
     if code != 0:
         raise RecordError("FFMPEG_FAILED", failure)
 
@@ -122,18 +120,25 @@ def _read_video_info(job: WindowsJob, ffprobe: Path, path: Path, report: Path) -
     try:
         _run(job, _probe_argv(ffprobe, path, report), report.parent, 30, failure)
         metadata = json.loads(report.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法读取 ffprobe 的临时结果。") from None
+    except ValueError:
         raise RecordError("FFMPEG_FAILED", failure) from None
     return _video_info(metadata)
 
 
-def probe_video(ffprobe: Path, path: Path) -> VideoInfo:
+def probe_video(ffprobe: Path, path: Path, *, work_dir: Path | None = None) -> VideoInfo:
     """检查单段或合集，返回 ffprobe 测得的格式、帧数和时长。"""
     try:
-        with TemporaryDirectory(prefix="workbench-cs2-probe-") as workspace, WindowsJob() as job:
+        with (
+            TemporaryDirectory(prefix="workbench-cs2-probe-", dir=work_dir) as workspace,
+            WindowsJob() as job,
+        ):
             report = Path(workspace) / "probe.json"
             return _read_video_info(job, ffprobe.resolve(), path.resolve(), report)
-    except (OSError, ValueError):
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法写入 ffprobe 的临时文件。") from None
+    except ValueError:
         raise RecordError("FFMPEG_FAILED", "无法启动 ffprobe 或写入验证结果。") from None
 
 
@@ -226,7 +231,14 @@ def compilation_argv(ffmpeg: Path, manifest: Path, output: Path) -> list[str]:
     ]
 
 
-def compile_videos(ffmpeg: Path, ffprobe: Path, inputs: Sequence[Path], output: Path) -> VideoInfo:
+def compile_videos(
+    ffmpeg: Path,
+    ffprobe: Path,
+    inputs: Sequence[Path],
+    output: Path,
+    *,
+    work_dir: Path | None = None,
+) -> VideoInfo:
     """按输入顺序拼接单段，验证成功后原子发布合集。"""
     if not inputs:
         raise RecordError("FFMPEG_FAILED", "没有可拼接的单段视频。")
@@ -236,7 +248,9 @@ def compile_videos(ffmpeg: Path, ffprobe: Path, inputs: Sequence[Path], output: 
         sources = [path.resolve() for path in inputs]
         if output.resolve() in sources:
             raise RecordError("FFMPEG_FAILED", "合集路径必须和单段视频不同。")
-        with TemporaryDirectory(prefix=".wb-cs2-compile-", dir=output.parent) as workspace:
+        with TemporaryDirectory(
+            prefix=".wb-cs2-compile-", dir=work_dir or output.parent
+        ) as workspace:
             directory = Path(workspace)
             report = directory / "probe.json"
             manifest = directory / "inputs.ffconcat"
@@ -272,7 +286,9 @@ def compile_videos(ffmpeg: Path, ffprobe: Path, inputs: Sequence[Path], output: 
                 info = _read_video_info(job, ffprobe, temporary, report)
                 if info.frame_count != total_frames:
                     raise RecordError("FFMPEG_FAILED", "合集视频的帧数与单段合计不符。")
-            temporary.replace(output)
-    except (OSError, ValueError):
+            _publish_video(temporary, output)
+    except OSError:
+        raise RecordError("OUTPUT_WRITE_FAILED", "无法写入合集临时文件或发布成品。") from None
+    except ValueError:
         raise RecordError("FFMPEG_FAILED", "无法启动编码进程或写入合集成品。") from None
     return info

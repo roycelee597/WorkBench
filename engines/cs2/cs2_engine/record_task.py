@@ -8,6 +8,7 @@ type CaptureMethod = Literal["auto", "hlae", "startmovie"]
 type CaptureAspect = Literal["16:9", "4:3-stretched"]
 
 OUTPUT_SIZE = (1920, 1080)
+WORK_SUBDIR = ".cs2-work"
 CAPTURE_SIZES: dict[CaptureAspect, tuple[int, int]] = {
     "16:9": OUTPUT_SIZE,
     "4:3-stretched": (1440, 1080),
@@ -42,6 +43,7 @@ class RecordTask:
     aspect: CaptureAspect = "16:9"
     death_tick: int | None = None
     xray: bool = False
+    keep_raw: bool = False
 
     @property
     def capture_size(self) -> tuple[int, int]:
@@ -120,6 +122,9 @@ def read_record_task(task: dict, base: Path) -> RecordTask:
     xray = task.get("xray", False)
     if type(xray) is not bool:
         raise RecordError("INVALID_TASK", "xray 必须是布尔值。")
+    keep_raw = task.get("keep_raw", False)
+    if type(keep_raw) is not bool:
+        raise RecordError("INVALID_TASK", "keep_raw 必须是布尔值。")
     method = task.get("recording_method", "auto")
     if method not in ("auto", "hlae", "startmovie"):
         raise RecordError("INVALID_TASK", "recording_method 必须是 auto、hlae 或 startmovie。")
@@ -127,10 +132,13 @@ def read_record_task(task: dict, base: Path) -> RecordTask:
     demo = _task_path(task, "demo_path", base)
     if demo.suffix.lower() != ".dem":
         raise RecordError("INVALID_TASK", "demo_path 必须指向解压后的 .dem 文件。")
+    output = _task_path(task, "output_dir", base)
     return RecordTask(
         demo_path=demo,
-        work_dir=_task_path(task, "work_dir", base),
-        output_dir=_task_path(task, "output_dir", base),
+        work_dir=_task_path(task, "work_dir", base)
+        if "work_dir" in task
+        else validate_record_path(output / WORK_SUBDIR),
+        output_dir=output,
         cs2_path=_task_path(task, "cs2_path", base),
         hlae_path=_task_path(task, "hlae_path", base),
         ffmpeg_path=_task_path(task, "ffmpeg_path", base),
@@ -141,4 +149,5 @@ def read_record_task(task: dict, base: Path) -> RecordTask:
         method=method,
         aspect=aspect,
         xray=xray,
+        keep_raw=keep_raw,
     )

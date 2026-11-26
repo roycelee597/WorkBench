@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import struct
@@ -50,6 +51,7 @@ def test_record_task_paths_and_selected_segment_are_resolved(tmp_path):
     assert task.segment == Segment(1, 1000, 1064, 1)
     assert task.aspect == "16:9"
     assert task.xray is False
+    assert task.keep_raw is False
     assert task.capture_size == (1920, 1080)
 
 
@@ -63,6 +65,7 @@ def test_record_task_paths_and_selected_segment_are_resolved(tmp_path):
         ({"aspect": "4:3"}, "INVALID_TASK"),
         ({"aspect": None}, "INVALID_TASK"),
         ({"xray": "true"}, "INVALID_TASK"),
+        ({"keep_raw": "true"}, "INVALID_TASK"),
         ({"demo_path": "match.zip"}, "INVALID_TASK"),
     ],
 )
@@ -222,6 +225,75 @@ def test_single_recording_cli_can_override_task_xray(
     assert cli.main(["run", "--task", str(path), *flags]) == 0
 
     assert [task.xray for task in recorded] == [expected]
+
+
+@pytest.mark.parametrize("explicit_work", [False, True])
+def test_single_recording_cli_routes_work_and_output_separately(
+    tmp_path, monkeypatch, explicit_work
+):
+    task = _task(tmp_path)
+    task.pop("work_dir")
+    path = tmp_path / "task.json"
+    path.write_text(json.dumps(task), encoding="utf-8")
+    recorded = []
+    monkeypatch.setattr(cli, "run_recording", recorded.append)
+    output = tmp_path / "output"
+    work = tmp_path / "work" if explicit_work else output / ".cs2-work"
+    args = ["run", "--task", str(path), "--out", str(output), "--keep-raw"]
+    if explicit_work:
+        args.extend(["--work-dir", str(work)])
+
+    assert cli.main(args) == 0
+
+    assert [(task.output_dir, task.work_dir, task.keep_raw) for task in recorded] == [
+        (output, work, True)
+    ]
+
+
+def test_cross_volume_publication_has_no_partial_target(tmp_path, monkeypatch):
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    output.mkdir()
+    source, target = work / "encoded.mp4", output / "finished.mp4"
+    source.write_bytes(b"verified")
+    replace = Path.replace
+
+    def cross_volume(path, destination):
+        if path == source:
+            raise OSError(errno.EXDEV, "synthetic cross-volume move")
+        return replace(path, destination)
+
+    monkeypatch.setattr(Path, "replace", cross_volume)
+    recording._publish_video(source, target)
+    assert target.read_bytes() == b"verified"
+    assert sorted(output.iterdir()) == [target]
+
+    target.unlink()
+
+    def fail(_source, temporary):
+        temporary.write_bytes(b"partial")
+        raise OSError(errno.ENOSPC, "synthetic full drive")
+
+    monkeypatch.setattr(recording.shutil, "copyfile", fail)
+    with pytest.raises(OSError, match="full drive"):
+        recording._publish_video(source, target)
+    assert not list(output.iterdir())
+
+
+def test_encoder_reports_write_failure_as_terminal(tmp_path):
+    class Job:
+        def start(self, _argv, *, cwd, stderr):
+            assert cwd == tmp_path
+            stderr.write(b"Error writing trailer: No space left on device")
+            return self
+
+        def poll(self):
+            return 1
+
+    with pytest.raises(RecordError, match="写入失败") as failure:
+        recording._encoding_exit_code(Job(), ["synthetic"], tmp_path, 1)
+    assert failure.value.code == "OUTPUT_WRITE_FAILED"
+    assert not list(tmp_path.iterdir())
 
 
 def test_unsafe_console_path_is_rejected_without_launch(tmp_path):
@@ -417,10 +489,12 @@ def test_capture_cancel_terminates_job_before_restoring_config(tmp_path, monkeyp
 @pytest.mark.skipif(os.name != "nt", reason="单段录制是 Windows 功能")
 @pytest.mark.parametrize("observer_crosshair", [True, False])
 @pytest.mark.parametrize("precomputed", [True, False])
+@pytest.mark.parametrize("keep_raw", [True, False])
 def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
-    tmp_path, monkeypatch, observer_crosshair, precomputed
+    tmp_path, monkeypatch, observer_crosshair, precomputed, keep_raw
 ):
     task = read_record_task(_task(tmp_path), tmp_path)
+    task = replace(task, keep_raw=keep_raw)
     task.demo_path.write_bytes(b"PBDEMS2\x00synthetic")
     tools = recording.CaptureTools(
         tmp_path / "cs2.exe",
@@ -431,7 +505,9 @@ def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
     )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "app-data"))
     monkeypatch.setattr(recording, "_capture_tools", lambda _task: tools)
-    monkeypatch.setattr(recording, "_staging_root", lambda _work_dir: tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(recording, "_staging_root", lambda _work_dir: work)
     monkeypatch.setattr(recording, "_check_space", lambda *_args: None)
     checks = []
     attempts = []
@@ -448,7 +524,7 @@ def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
         _task,
         _tools,
         _demo,
-        _directory,
+        directory,
         mp4,
         _state,
         _worker,
@@ -458,10 +534,15 @@ def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
         observer_crosshair,
     ):
         attempts.append((method, observer_crosshair))
+        assert mp4.is_relative_to(work)
+        capture = directory / "capture"
+        capture.mkdir()
+        (capture / "frame.tga").write_bytes(method.encode("ascii"))
         if method == "hlae":
             raise recording.CaptureIncomplete("图像未生成。")
+        assert not list(work.glob("*/hlae-*"))
         mp4.write_bytes(b"synthetic mp4")
-        return 1, 2
+        return 1, 2, 0
 
     monkeypatch.setattr(recording, "has_recorded_crosshair", check_crosshair)
     monkeypatch.setattr(recording, "_record_attempt", attempt)
@@ -481,6 +562,12 @@ def test_auto_uses_native_capture_after_incomplete_hlae_and_publishes_one_file(
     assert "图像未生成" in warnings[-1]
     assert clip.method == "startmovie" and clip.fallback_reason == "图像未生成。"
     assert list(task.output_dir.iterdir()) == [clip.output]
+    if keep_raw:
+        assert (clip.raw_output / "frame.tga").read_bytes() == b"startmovie"
+        assert list(work.iterdir()) == [clip.raw_output]
+    else:
+        assert clip.raw_output is None
+        assert not list(work.iterdir())
 
 
 def test_encoder_polling_allows_keyboard_interrupt(monkeypatch):
