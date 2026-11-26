@@ -7,7 +7,7 @@ from stat import S_ISREG
 from tempfile import NamedTemporaryFile, TemporaryDirectory, mkdtemp
 from time import monotonic
 
-from .batch_capture import record_multiple
+from .batch_capture import _retain_raw, record_multiple
 from .batch_plan import BatchClip
 from .compilation import compile_videos, probe_video
 from .disk_space import check_recording_space
@@ -235,6 +235,7 @@ def record_batch(
     except OSError:
         raise RecordError("OUTPUT_WRITE_FAILED", "无法为批量录制汇总预留空间。") from None
     bulk: dict[int, RecordedClip] = {}
+    raw_root = work_dir / f"batch-raw-{directory.name.removeprefix('batch-')}"
     attempted_bulk = len(work) > 1 and template.method != "startmovie"
     recordings = []
     compilations = {}
@@ -273,6 +274,7 @@ def record_batch(
                     warning,
                     crosshairs=crosshairs,
                     completed=bulk,
+                    raw_root=raw_root,
                 )
             except RecordError as error:
                 if error.code == "OUTPUT_WRITE_FAILED":
@@ -312,8 +314,7 @@ def record_batch(
                         if output.tail_padding_frames:
                             warning(f"{path.stem} 已在片尾补齐 {output.tail_padding_frames} 帧。")
                         if output.raw_output is not None:
-                            retained = work_dir / output.raw_output.name
-                            output.raw_output.replace(retained)
+                            retained = _retain_raw(output.raw_output, raw_root, path)
                             row["raw_output"] = str(retained)
             except (RecordError, OSError) as error:
                 if isinstance(error, OSError):

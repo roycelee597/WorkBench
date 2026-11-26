@@ -168,6 +168,20 @@ def _encode_clip(
     )
 
 
+def _retain_raw(capture: Path, raw_root: Path, output: Path) -> Path:
+    raw_root.mkdir(exist_ok=True)
+    if raw_root.is_symlink() or raw_root.is_junction():
+        raise OSError("批次原始文件目录不能是链接。")
+    destination = raw_root / output.stem
+    try:
+        capture.replace(destination)
+    except OSError:
+        with suppress(OSError):
+            raw_root.rmdir()
+        raise
+    return destination
+
+
 def record_multiple(
     items: Sequence[tuple[RecordTask, Path]],
     worker_command: Sequence[str],
@@ -176,6 +190,7 @@ def record_multiple(
     *,
     crosshairs: Sequence[bool],
     completed: dict[int, RecordedClip],
+    raw_root: Path,
 ) -> dict[int, RecordedClip]:
     """一次离线游戏会话，逐段录制、编码并发布。"""
     if not items:
@@ -200,7 +215,6 @@ def record_multiple(
             if not all(crosshairs):
                 warning("部分片段未能读取目标准星，使用 CS2 默认准星。")
             _write_batch_config(profile, staged, [task for task, _ in items], captures, crosshairs)
-            raw_root = None
             job_name = new_recording_job_name()
             with (
                 WindowsJob(job_name) as job,
@@ -253,19 +267,7 @@ def record_multiple(
                                 warning(f"批量回放第 {index + 1} 段未通过校验。{error}")
                         _verify_capture_path(capture)
                         if task.keep_raw and index in completed:
-                            new_raw_root = raw_root is None
-                            if new_raw_root:
-                                raw_root = Path(
-                                    tempfile.mkdtemp(prefix="batch-raw-", dir=first.work_dir)
-                                )
-                            raw_output = raw_root / output.stem
-                            try:
-                                capture.rename(raw_output)
-                            except OSError:
-                                if new_raw_root:
-                                    with suppress(OSError):
-                                        raw_root.rmdir()
-                                raise
+                            raw_output = _retain_raw(capture, raw_root, output)
                             completed[index] = replace(completed[index], raw_output=raw_output)
                         elif capture.exists():
                             shutil.rmtree(capture)

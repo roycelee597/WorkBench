@@ -145,6 +145,7 @@ def _record(session):
         session.warnings.append,
         crosshairs=[True] * len(session.outputs),
         completed=session.completed,
+        raw_root=session.task.work_dir / "batch-raw-test",
     )
 
 

@@ -6,7 +6,8 @@ from shutil import disk_usage
 from .record_task import RecordError
 
 _BYTES_PER_GB = 1_000_000_000
-_MP4_BYTES_PER_SECOND = 30_000_000
+# 本机成品约 2.5 MB/s，空间预算按 8 MB/s 预留。
+_MP4_BYTES_PER_SECOND = 8_000_000
 _PCM_BYTES_PER_SECOND = 48_000 * 2 * 2
 _PROFILE_BYTES = 64 * 1024**2
 _MIN_MARGIN_BYTES = 256 * 1024**2
