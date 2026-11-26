@@ -65,7 +65,13 @@ def test_large_compilation_temporaries_are_accounted_for(monkeypatch):
     long = _budgets(monkeypatch, [1] * 100)
 
     assert short["D:"] < long["D:"]
-    assert long["E:"] > 6_000_000_000
+    assert 2_000_000_000 < long["E:"] < 2_100_000_000
+
+
+def test_output_budget_uses_eight_megabytes_per_second_for_clips_and_compilations(monkeypatch):
+    budgets = _budgets(monkeypatch, [10, 20])
+
+    assert budgets["D:"] == 2 * 30 * 8_000_000 + 1024**2 + 2 * 2048 + 256 * 1024**2
 
 
 def test_shared_physical_volume_adds_both_requirements_once(monkeypatch):
@@ -112,7 +118,7 @@ def test_insufficient_space_reports_each_affected_volume(monkeypatch):
         disk_space.check_recording_space(_OUTPUT, _WORK, [10], capture_size=_SIZE, demo_bytes=0)
 
     assert exc.value.code == "OUTPUT_WRITE_FAILED"
-    assert "D: 需要约 0.87 GB，可用 0.01 GB，还差 0.86 GB" in str(exc.value)
+    assert "D: 需要约 0.43 GB，可用 0.01 GB，还差 0.42 GB" in str(exc.value)
     assert "E: 需要约" in str(exc.value) and "可用 0.05 GB，还差" in str(exc.value)
 
 

@@ -48,6 +48,7 @@ def _task_and_tools(tmp_path):
 
 def test_batch_retries_missing_segments_and_skips_a_failed_victim(tmp_path, monkeypatch):
     task, tools = _task_and_tools(tmp_path)
+    task = replace(task, keep_raw=True)
     clips = (
         BatchClip("player", task.segment, 4, "multikill", _PLAYER),
         BatchClip("victim", Segment(1, 120, 184, 1), 4, "multikill", _VICTIM, 1, 168),
@@ -65,11 +66,14 @@ def test_batch_retries_missing_segments_and_skips_a_failed_victim(tmp_path, monk
         queries.append(targets)
         return {(_PLAYER, 100), (_VICTIM, 140)}
 
-    def record_multiple(items, *_args, crosshairs, completed):
+    def record_multiple(items, *_args, crosshairs, completed, raw_root):
         assert crosshairs == [True, False, True]
         _, target = items[0]
         target.write_bytes(b"synthetic")
-        completed[0] = RecordedClip(target, "hlae", 1, 2, 9, probe=asdict(_Probe()))
+        raw = raw_root / target.stem
+        raw.mkdir(parents=True)
+        (raw / "frame.tga").write_bytes(b"bulk frame")
+        completed[0] = RecordedClip(target, "hlae", 1, 2, 9, raw_output=raw, probe=asdict(_Probe()))
         return completed
 
     def record_segment(item, *_args, observer_crosshair):
@@ -79,7 +83,10 @@ def test_batch_retries_missing_segments_and_skips_a_failed_victim(tmp_path, monk
         assert item.output_dir == item.work_dir and item.work_dir.parent == task.work_dir
         target = item.output_dir / "temporary.mp4"
         target.write_bytes(b"synthetic")
-        return RecordedClip(target, "hlae", 1, 3, 9, tail_padding_frames=2)
+        raw = item.work_dir / "raw-synthetic"
+        raw.mkdir()
+        (raw / "frame.tga").write_bytes(b"retry frame")
+        return RecordedClip(target, "hlae", 1, 3, 9, tail_padding_frames=2, raw_output=raw)
 
     def compile_videos(_ffmpeg, _ffprobe, inputs, output, *, work_dir):
         assert work_dir == task.work_dir
@@ -112,6 +119,13 @@ def test_batch_retries_missing_segments_and_skips_a_failed_victim(tmp_path, monk
     assert summary["individual_attempts"] == 2
     assert [(row["id"], row["kill_index"]) for row in summary["segments"]] == [(1, None), (1, 2)]
     assert [row["tail_padding_frames"] for row in summary["segments"]] == [0, 2]
+    (raw_root,) = task.work_dir.glob("batch-raw-*")
+    bulk_raw, retry_raw = [Path(row["raw_output"]) for row in summary["segments"]]
+    assert [bulk_raw, retry_raw] == [
+        raw_root / Path(clip.filename).stem for clip in (clips[0], clips[2])
+    ]
+    assert (bulk_raw / "frame.tga").read_bytes() == b"bulk frame"
+    assert (retry_raw / "frame.tga").read_bytes() == b"retry frame"
     assert len(summary["failures"]) == 1
     assert summary["failures"][0]["kill_index"] == 1
     assert summary["failures"][0]["message"] == "片段未生成。"

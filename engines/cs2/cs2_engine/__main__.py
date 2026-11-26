@@ -1,4 +1,5 @@
 import argparse
+import errno
 import json
 import sys
 import traceback
@@ -270,6 +271,14 @@ def run_batch_command(args: argparse.Namespace) -> int:
     if not results["compilations"]:
         emit("error", code="BATCH_FAILED", message="没有可用的合集成品。", summary=str(summary))
         return 1
+    if args.work_dir is None:
+        default_work = destination / WORK_SUBDIR
+        try:
+            if not (default_work.is_symlink() or default_work.is_junction()):
+                default_work.rmdir()
+        except OSError as error:
+            if error.errno not in (errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST):
+                _warning("无法清理默认的录制工作目录。")
     emit("done", **results, summary=str(summary))
     return 0
 

@@ -152,52 +152,60 @@ def test_invalid_victim_timing_is_rejected(before, after):
         (["--no-xray", "--victim-before", "2", "--victim-after", "0.5"], False, (192, 352)),
     ],
 )
-@pytest.mark.parametrize("explicit_work", [False, True])
-def test_batch_cli_victim_defaults_and_xray(
-    tmp_path, monkeypatch, flags, xray, windows, explicit_work
+@pytest.mark.parametrize(
+    "explicit_work, keep_raw, success",
+    [(False, False, True), (False, True, True), (True, False, True), (False, False, False)],
+    ids=["empty-default", "kept-raw", "explicit-work", "failed-recording"],
+)
+def test_batch_cli_victim_defaults_xray_and_work_directory(
+    tmp_path, monkeypatch, flags, xray, windows, explicit_work, keep_raw, success
 ):
     player = Player("target", "Synthetic")
     demo = Demo(64.0, (player,), (Round(1, 0, 500, 2, kills=(_kill(320, "victim"),)),))
     monkeypatch.setattr(cli, "_parse_demo", lambda _: demo)
     monkeypatch.setattr(cli, "score_demo", lambda *_args, **_kwargs: [_highlight(1, 250, 350)])
+    work = tmp_path / ("work" if explicit_work else ".cs2-work")
 
     def record_batch(template, clips, *_args):
         assert template.xray is xray
-        assert template.work_dir == tmp_path / ("work" if explicit_work else ".cs2-work")
+        assert template.work_dir == work
         assert template.output_dir == tmp_path
-        assert template.keep_raw is explicit_work
+        assert template.keep_raw is keep_raw
         player_clip, victim_clip = clips
         assert player_clip.perspective == "player"
         assert victim_clip.perspective == "victim"
         assert (victim_clip.segment.start_tick, victim_clip.segment.end_tick) == windows
         assert victim_clip.segment.duration_s == (windows[1] - windows[0]) / 64
-        return {"output_dir": str(tmp_path), "compilations": {"player": {}}}
+        work.mkdir()
+        if keep_raw:
+            (work / "batch-raw-test").mkdir()
+        return {"output_dir": str(tmp_path), "compilations": {"player": {}} if success else {}}
 
     monkeypatch.setattr(batch, "record_batch", record_batch)
-    storage_flags = ["--work-dir", str(tmp_path / "work"), "--keep-raw"] if explicit_work else []
-    assert (
-        cli.main(
-            [
-                "record-batch",
-                "--demo",
-                str(tmp_path / "demo.dem"),
-                "--player",
-                "Synthetic",
-                "--all",
-                "--output-dir",
-                str(tmp_path),
-                "--cs2-path",
-                str(tmp_path),
-                "--hlae-path",
-                str(tmp_path),
-                "--ffmpeg-path",
-                str(tmp_path),
-                *flags,
-                *storage_flags,
-            ]
-        )
-        == 0
-    )
+    storage_flags = ["--work-dir", str(work)] if explicit_work else []
+    if keep_raw:
+        storage_flags.append("--keep-raw")
+    assert cli.main(
+        [
+            "record-batch",
+            "--demo",
+            str(tmp_path / "demo.dem"),
+            "--player",
+            "Synthetic",
+            "--all",
+            "--output-dir",
+            str(tmp_path),
+            "--cs2-path",
+            str(tmp_path),
+            "--hlae-path",
+            str(tmp_path),
+            "--ffmpeg-path",
+            str(tmp_path),
+            *flags,
+            *storage_flags,
+        ]
+    ) == (0 if success else 1)
+    assert work.exists() == (explicit_work or keep_raw or not success)
 
 
 def test_list_help_explains_which_inspect_numbers_match(capsys):
